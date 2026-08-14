@@ -9,12 +9,15 @@ __pycache__/
 **/work/
 **/data/
 **/img/
-# 运行态 json(根级缓存/配置),保留 registry.json 与 config/ 子目录下的 json
+# 运行态 json(根级缓存/配置);config/ 下的 json 由插件运行时生成,同样忽略
 *.json
 !registry.json
-!**/config/*.json
 !**/pojo/**
 !**/yuanshen.com/**
+
+# JMComic Java 端运行时数据(日志/下载标记/QQ 号),不进仓库
+JMComic/log.txt
+JMComic/config/
 
 # 归档与临时文件
 *.zip
