@@ -16,7 +16,7 @@ from plugins.sd_common import (
 
 PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(PLUGIN_DIR, 'data.json')
-DEFAULT_MODEL_DIR = '/opt/touchgal/models/aigen'
+DEFAULT_MODEL_DIR = os.path.join(PLUGIN_DIR, 'models')
 DEFAULT_OUTPUT_DIR = os.path.join(PLUGIN_DIR, 'output')
 
 VAE_FILE = 'vae-ft-mse-840000-ema-pruned.safetensors'

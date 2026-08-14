@@ -9,6 +9,8 @@ __pycache__/
 **/work/
 **/data/
 **/img/
+# AI 模型权重(数 GB,不进 git)
+**/models/
 # 运行态 json(根级缓存/配置);config/ 下的 json 由插件运行时生成,同样忽略
 *.json
 !registry.json
