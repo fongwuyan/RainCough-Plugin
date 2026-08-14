@@ -8,7 +8,7 @@ from datetime import datetime
 from flask import request, jsonify, send_from_directory
 from PIL import Image
 from io import BytesIO
-from plugins.base import Plugin
+from plugins.base import Plugin, path_stats
 from plugins.sd_common import (
     get_pipe, get_img2img, list_models, resolve_model,
     new_job_id, JobManager, pipe_state,
@@ -309,6 +309,32 @@ class AigenPlugin(Plugin):
             'auto_switch_full': False,
             'full_threshold_mb': 0,
         }
+
+    # 可插拔设置: 注入「设置页 → 插件设置」
+    def get_setting_schema(self):
+        return [
+            {'key': 'storage_paths', 'label': 'AI 生图输出目录', 'type': 'paths'},
+        ]
+
+    def get_settings(self):
+        cfg = load_config()
+        return {'storage_paths': path_stats(cfg.get('storage_paths', [DEFAULT_OUTPUT_DIR])),
+                'active_path': cfg.get('active_path')}
+
+    def save_settings(self, data):
+        cfg = load_config()
+        if 'storage_paths' in data:
+            paths = [p for p in data['storage_paths'] if isinstance(p, str) and p.strip()]
+            outdir = cfg.get('output_dir') or DEFAULT_OUTPUT_DIR
+            if outdir and outdir not in paths:
+                paths.insert(0, outdir)
+            cfg['storage_paths'] = paths
+            if data.get('active_path') not in paths:
+                cfg['active_path'] = paths[0]
+            else:
+                cfg['active_path'] = data['active_path']
+        save_config(cfg)
+        return True, 'ok'
 
     def _register_routes(self):
 

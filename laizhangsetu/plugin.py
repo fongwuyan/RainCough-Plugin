@@ -9,7 +9,7 @@ from datetime import datetime
 from flask import request, jsonify, send_from_directory
 from PIL import Image, ImageFilter
 from io import BytesIO
-from plugins.base import Plugin
+from plugins.base import Plugin, path_stats
 
 LOLICON_API = 'https://api.lolicon.app/setu/v2'
 CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache')
@@ -148,6 +148,44 @@ class LaisetPlugin(Plugin):
             'auto_switch_full': cfg.get('auto_switch_full', True),
             'full_threshold_mb': cfg.get('full_threshold_mb', 1024),
         }
+
+    # 可插拔设置: 注入「设置页 → 插件设置」
+    def get_setting_schema(self):
+        return [
+            {'key': 'storage_paths', 'label': '图片库存储路径', 'type': 'paths'},
+            {'key': 'auto_switch_full', 'label': '满盘自动切换', 'type': 'switch',
+             'help': '剩余空间低于阈值时自动切换到下一存储路径'},
+            {'key': 'full_threshold_mb', 'label': '切换阈值 (MB)', 'type': 'number',
+             'help': '剩余空间低于该值时换盘'},
+        ]
+
+    def get_settings(self):
+        cfg = load_config()
+        return {'storage_paths': path_stats(cfg.get('storage_paths', [CACHE_DIR])),
+                'active_path': cfg.get('active_path'),
+                'auto_switch_full': cfg.get('auto_switch_full', True),
+                'full_threshold_mb': cfg.get('full_threshold_mb', 1024)}
+
+    def save_settings(self, data):
+        cfg = load_config()
+        if 'storage_paths' in data:
+            paths = [p for p in data['storage_paths'] if isinstance(p, str) and p.strip()]
+            if CACHE_DIR not in paths:
+                paths.insert(0, CACHE_DIR)
+            cfg['storage_paths'] = paths
+            if data.get('active_path') not in paths:
+                cfg['active_path'] = paths[0]
+            else:
+                cfg['active_path'] = data['active_path']
+        if 'auto_switch_full' in data:
+            cfg['auto_switch_full'] = bool(data['auto_switch_full'])
+        if 'full_threshold_mb' in data:
+            try:
+                cfg['full_threshold_mb'] = int(data['full_threshold_mb'])
+            except (TypeError, ValueError):
+                pass
+        save_config(cfg)
+        return True, 'ok'
 
     def _register_routes(self):
         config = load_config()
