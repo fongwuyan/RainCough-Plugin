@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集",
-  "updated": "2026-08-14 20:39:04",
+  "updated": "2026-08-17 18:42:23",
   "plugins": [
     {
       "name": "aigen",
@@ -57,6 +57,14 @@
       "path": "mcskin",
       "author": "",
       "description": "图片转 MC Java 皮肤：全身立绘映射、底+叠层、Steve/Alex 模型、3D 预览"
+    },
+    {
+      "name": "raincode",
+      "label": "AI 编程助手",
+      "version": "0.1.0",
+      "path": "raincode",
+      "author": "",
+      "description": "精简版 opencode: 流式对话 + 工具调用(shell/文件) + 会话历史 + 任务清单 + 技能, 默认接入 opencode 免费模型"
     },
     {
       "name": "toolbox",

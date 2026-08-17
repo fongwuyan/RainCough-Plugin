@@ -14,6 +14,8 @@ __pycache__/
 # 运行态 json(根级缓存/配置);config/ 下的 json 由插件运行时生成,同样忽略
 *.json
 !registry.json
+!raincode/agent/package.json
+!raincode/agent/tsconfig.json
 !**/pojo/**
 !**/yuanshen.com/**
 
