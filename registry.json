@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集",
-  "updated": "2026-08-22 21:28:13",
+  "updated": "2026-08-22 22:11:46",
   "plugins": [
     {
       "name": "aigen",
@@ -57,14 +57,6 @@
       "path": "mcskin",
       "author": "",
       "description": "图片转 MC Java 皮肤：全身立绘映射、底+叠层、Steve/Alex 模型、3D 预览"
-    },
-    {
-      "name": "raincode",
-      "label": "RainCode",
-      "version": "0.1.0",
-      "path": "raincode",
-      "author": "",
-      "description": "内置于面板的 AI 编程 Agent(精简版 opencode): 会话式编程, OpenAI 兼容接口一键接入, 工具调用、长期记忆、子智能体、技能、任务清单与审批控制"
     },
     {
       "name": "toolbox",

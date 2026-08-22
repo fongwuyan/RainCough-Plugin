@@ -21,7 +21,6 @@ KNOWN = [
     ('laizhangsetu', '来张涩图'),
     ('mcserver', 'MC 服务器'),
     ('mcskin', 'MC 皮肤'),
-    ('raincode', 'RainCode'),
     ('toolbox', '全能工具箱'),
     ('touchgal', 'TouchGal 游戏查找'),
     ('uptime', '站点监控'),
