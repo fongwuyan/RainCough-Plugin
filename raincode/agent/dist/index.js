@@ -2,9 +2,9 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildSystemPrompt } from './skills.js';
+import { buildSystemPrompt, sanitizeSkills } from './skills.js';
 import { streamChat } from './llm.js';
-import { buildToolDefs, execTool, redact } from './tools.js';
+import { buildToolDefs, execTool, execSkillByName, redact } from './tools.js';
 const VERSION = '0.1.0';
 function argVal(name, def) {
     const i = process.argv.indexOf(name);
@@ -14,15 +14,8 @@ const PORT = parseInt(argVal('--port', process.env.RC_AGENT_PORT || '8765'), 10)
 const DATA_DIR = path.resolve(argVal('--data', process.env.RC_DATA || path.join(process.cwd(), 'data')));
 const SECRET = argVal('--secret', process.env.RC_SECRET || '');
 const SESS_DIR = path.join(DATA_DIR, 'sessions');
+const MEMORY_PATH = path.join(DATA_DIR, 'memory.md');
 fs.mkdirSync(SESS_DIR, { recursive: true });
-const BASE_SYSTEM = `你是 RainCough 面板上的 AI 编程助手(精简版 opencode)。你运行在用户的 Linux 服务器上, 可以读取/编辑工作区文件并执行 shell 命令来完成任务。
-工作原则:
-- 优先使用工具完成任务, 而不是只给建议。
-- 执行命令时注意安全, 不做破坏性操作; 需要删除/覆盖前先确认。
-- 编辑文件前先读取确认内容, 修改后说明变更。
-- 长任务拆分为可验证的小步, 每步完成后简要汇报。
-- 使用 update_todo 工具维护任务清单。
-- 回答保持简洁, 用中文。`;
 const sessions = new Map();
 function saveSession(ss) {
     const copy = { ...ss };
@@ -52,7 +45,7 @@ function getSession(id) {
     if (!ss) {
         ss = {
             id, title: '新会话', created: Date.now(), updated: Date.now(),
-            messages: [], todos: [], pending: null, active_skills: [], model: null,
+            messages: [], todos: [], pending: null, active_skills: [], model: null, workspace: '',
             _busy: false, _cancel: false,
         };
     }
@@ -66,13 +59,17 @@ function sanitizeConfig(raw) {
     const c = {
         api_base: String((raw && raw.api_base) || 'https://opencode.ai/zen/v1').replace(/\/+$/, ''),
         api_key: String((raw && raw.api_key) || ''),
-        model: String((raw && raw.model) || 'deepseek-v4-flash-free'),
+        model: String((raw && raw.model) || ''),
         workspace: path.resolve(String((raw && raw.workspace) || path.join(DATA_DIR, 'workspace'))),
         approve_mode: approve,
+        agent_mode: (raw && raw.agent_mode) === 'plan' ? 'plan' : 'build',
         whitelist: Array.isArray(raw && raw.whitelist) ? raw.whitelist.map(String).filter(Boolean) : [],
         shell_timeout: Math.max(1, Number((raw && raw.shell_timeout) || 30)),
         output_cap: Math.max(1024, Number((raw && raw.output_cap) || 20000)),
         max_tool_steps: Math.max(1, Number((raw && raw.max_tool_steps) || 40)),
+        memory_path: String((raw && raw.memory_path) || MEMORY_PATH),
+        provider: String((raw && raw.provider) || ''),
+        principles: Array.isArray(raw && raw.principles) ? raw.principles.map(String).filter(Boolean) : [],
     };
     try {
         fs.mkdirSync(c.workspace, { recursive: true });
@@ -80,20 +77,9 @@ function sanitizeConfig(raw) {
     catch { /* noop */ }
     return c;
 }
-function sanitizeSkills(raw) {
-    if (!Array.isArray(raw))
-        return [];
-    return raw
-        .filter((s) => s && typeof s === 'object' && typeof s.instructions === 'string' && s.instructions.trim())
-        .map((s) => ({
-        name: String(s.name || 'skill'),
-        title: String(s.title || s.name || 'skill'),
-        description: String(s.description || ''),
-        instructions: s.instructions,
-        enabled: s.enabled !== false,
-    }));
-}
 const APPROVE_TOOLS = ['execute_shell', 'write_file', 'edit_file'];
+const PLAN_BLOCKED = ['execute_shell', 'write_file', 'edit_file'];
+const MAX_DELEGATE_DEPTH = 2;
 function needApproval(cfg, name, args) {
     if (!APPROVE_TOOLS.includes(name))
         return false;
@@ -135,6 +121,54 @@ function handleTodo(ss, args, emit) {
     }
     emit({ type: 'todo', todos: ss.todos });
 }
+function readMemory(cfg) {
+    try {
+        return fs.existsSync(cfg.memory_path) ? fs.readFileSync(cfg.memory_path, 'utf-8').trim() : '';
+    }
+    catch {
+        return '';
+    }
+}
+function handleMemory(cfg, args) {
+    const action = String(args.action || 'read');
+    let cur = readMemory(cfg);
+    if (action === 'read') {
+        return cur ? cur : '(暂无长期记忆)';
+    }
+    if (action === 'add') {
+        const text = String(args.text || '').trim();
+        if (!text)
+            return '缺少文本';
+        cur = cur ? cur.trimEnd() + '\n- ' + text : '- ' + text;
+    }
+    else if (action === 'replace') {
+        cur = String(args.text || '').trim();
+    }
+    else if (action === 'clear') {
+        cur = '';
+    }
+    else {
+        return '未知 action (read/add/replace/clear)';
+    }
+    try {
+        fs.writeFileSync(cfg.memory_path, cur, 'utf-8');
+    }
+    catch (e) {
+        return '记忆写入失败: ' + ((e && e.message) || e);
+    }
+    return cur ? '记忆已更新:\n' + cur : '记忆已清空';
+}
+async function handleDelegate(cfg, args, emit, depth) {
+    if (depth <= 0)
+        return '[子代理] 已达最大递归深度, 停止委派';
+    const prompt = String(args.prompt || '').trim();
+    if (!prompt)
+        return '[子代理] 缺少 prompt';
+    const subSystem = String(args.system || '').trim() ||
+        '你是一个专注处理子任务的子代理。不要调用任何工具, 只根据给定任务直接给出结果。用中文回答。';
+    const out = await streamChat(cfg, [{ role: 'system', content: subSystem }, { role: 'user', content: prompt }], [], {});
+    return out.content || '(子代理无输出)';
+}
 async function runToolWithEvents(cfg, name, args, emit) {
     emit({ type: 'tool', state: 'start', name, args });
     let content;
@@ -147,9 +181,13 @@ async function runToolWithEvents(cfg, name, args, emit) {
     emit({ type: 'tool', state: 'end', name, args, output: content.slice(0, 600) });
     return content;
 }
-async function continueLoop(ss, cfg, skills, emit) {
-    const defs = buildToolDefs();
-    const system = buildSystemPrompt(BASE_SYSTEM, skills);
+async function continueLoop(ss, cfg, skills, emit, depth = 0) {
+    if (depth > MAX_DELEGATE_DEPTH) {
+        emit({ type: 'error', error: '超过最大子代理嵌套深度' });
+        return;
+    }
+    const defs = buildToolDefs(skills);
+    const system = buildSystemPrompt(cfg.principles, readMemory(cfg));
     const maxSteps = cfg.max_tool_steps || 40;
     let steps = 0;
     try {
@@ -193,6 +231,39 @@ async function continueLoop(ss, cfg, skills, emit) {
                 if (tc.name === 'update_todo') {
                     handleTodo(ss, args, emit);
                     ss.messages.push({ role: 'tool', tool_call_id: tc.id, content: '任务清单已更新' });
+                    saveSession(ss);
+                    continue;
+                }
+                if (tc.name === 'memory') {
+                    const content = handleMemory(cfg, args);
+                    ss.messages.push({ role: 'tool', tool_call_id: tc.id, content });
+                    emit({ type: 'memory', content: readMemory(cfg) });
+                    saveSession(ss);
+                    continue;
+                }
+                if (tc.name === 'delegate') {
+                    const content = await handleDelegate(cfg, args, emit, depth);
+                    ss.messages.push({ role: 'tool', tool_call_id: tc.id, content });
+                    emit({ type: 'tool', state: 'start', name: 'delegate', args });
+                    emit({ type: 'tool', state: 'end', name: 'delegate', args, output: content.slice(0, 600) });
+                    saveSession(ss);
+                    continue;
+                }
+                // 用户自定义 skill: 函数型工具, 服务器端执行, 免审批
+                if ((skills || []).some((s) => s.enabled && s.name === tc.name)) {
+                    const content = await execSkillByName(cfg, skills, tc.name, args);
+                    emit({ type: 'tool', state: 'start', name: tc.name, args });
+                    emit({ type: 'tool', state: 'end', name: tc.name, args, output: content.content.slice(0, 600) });
+                    ss.messages.push({ role: 'tool', tool_call_id: tc.id, content: content.content });
+                    ss.updated = Date.now();
+                    saveSession(ss);
+                    continue;
+                }
+                if (cfg.agent_mode === 'plan' && PLAN_BLOCKED.includes(tc.name)) {
+                    ss.messages.push({
+                        role: 'tool', tool_call_id: tc.id,
+                        content: '[Plan 模式] 已阻止工具 %s: 规划模式只读, 不允许写文件/编辑/执行命令, 请切换到 build 模式执行'.replace('%s', tc.name),
+                    });
                     saveSession(ss);
                     continue;
                 }
@@ -351,6 +422,7 @@ const server = http.createServer(async (req, res) => {
                     if (!cfg.api_key)
                         throw new Error('未配置 API Key');
                     ss.model = body.model || ss.model;
+                    ss.workspace = cfg.workspace;
                     ss.active_skills = skills.map((s) => s.name);
                     if (body.message) {
                         ss.messages.push({ role: 'user', content: String(body.message) });

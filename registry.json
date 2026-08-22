@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集",
-  "updated": "2026-08-17 18:42:23",
+  "updated": "2026-08-22 21:28:13",
   "plugins": [
     {
       "name": "aigen",
@@ -60,11 +60,11 @@
     },
     {
       "name": "raincode",
-      "label": "AI 编程助手",
+      "label": "RainCode",
       "version": "0.1.0",
       "path": "raincode",
       "author": "",
-      "description": "精简版 opencode: 流式对话 + 工具调用(shell/文件) + 会话历史 + 任务清单 + 技能, 默认接入 opencode 免费模型"
+      "description": "内置于面板的 AI 编程 Agent(精简版 opencode): 会话式编程, OpenAI 兼容接口一键接入, 工具调用、长期记忆、子智能体、技能、任务清单与审批控制"
     },
     {
       "name": "toolbox",
@@ -89,6 +89,14 @@
       "path": "uptime",
       "author": "",
       "description": "站点探活监控：定时检测 HTTP 目标在线状态、响应时间与可用率"
+    },
+    {
+      "name": "vpn",
+      "label": "VPN 网络",
+      "version": "0.1.0",
+      "path": "vpn",
+      "author": "",
+      "description": "WireGuard / OpenVPN / v2ray 代理: 客户端+服务端连接管理, 节点订阅, 出网检测"
     },
     {
       "name": "yulotool",

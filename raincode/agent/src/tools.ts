@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import type { Config } from './types.js'
+import type { Config, Skill } from './types.js'
 
 const SECRET_HINTS = [
   'password', 'passwd', 'secret', 'token', 'apikey', 'api_key',
@@ -161,6 +161,73 @@ async function searchTool(cfg: Config, args: any): Promise<string> {
 
 export interface ToolOutput { content: string }
 
+/** 用 args 替换模板中的 {param} 占位符 */
+function interpolate(tpl: string, args: Record<string, any>): string {
+  return String(tpl || '').replace(/\{([a-zA-Z0-9_]+)\}/g, (_, n: string) => {
+    const v = args ? args[n] : undefined
+    return v === undefined || v === null ? '' : String(v)
+  })
+}
+
+// skill 可复用的映射: {skill参数名 -> 内置工具参数名}
+const TOOL_ALIASES: Record<string, string> = {
+  read_file: 'read_file',
+  write_file: 'write_file',
+  edit_file: 'edit_file',
+  list_dir: 'list_dir',
+  search: 'search',
+  execute_shell: 'execute_shell',
+}
+
+async function execHttpSkill(cfg: Config, url: string, method: string, headers: Record<string, string>, body: string, args: any): Promise<string> {
+  const finalUrl = interpolate(url, args)
+  const finalHeaders: Record<string, string> = {}
+  for (const [k, v] of Object.entries(headers || {})) finalHeaders[k] = interpolate(v, args)
+  const finalBody = interpolate(body, args)
+  if (!/^https?:\/\//i.test(finalUrl)) throw new Error('http skill 的 URL 需以 http(s):// 开头')
+  try {
+    const res = await fetch(finalUrl, {
+      method: String(method || 'GET').toUpperCase(),
+      headers: { ...finalHeaders },
+      body: finalBody ? finalBody : undefined,
+      signal: AbortSignal.timeout(Math.max(1, cfg.shell_timeout || 30) * 1000),
+    })
+    const text = await res.text()
+    const head = `[http ${res.status}] ${finalUrl}`
+    const capOut = Math.max(1024, cfg.output_cap || 20000)
+    return `${head}\n${cap(text, capOut)}`
+  } catch (e: any) {
+    throw new Error('http 请求失败: ' + ((e && e.message) || String(e)))
+  }
+}
+
+async function execSkill(cfg: Config, skill: Skill, args: any): Promise<string> {
+  const ex = skill.execution
+  if (ex.kind === 'shell') {
+    const command = interpolate(ex.command, args)
+    const r = await execShell(cfg, command)
+    const header = `[exit ${r.code}${r.timedout ? ' 超时被终止' : ''}]`
+    const parts: string[] = [header]
+    const outC = cap(r.stdout, cfg.output_cap || 20000)
+    const errC = cap(r.stderr, 4096)
+    if (outC.trim()) parts.push(redact(outC))
+    if (errC.trim()) parts.push('[stderr]\n' + redact(errC))
+    return parts.join('\n').trim()
+  }
+  if (ex.kind === 'tool') {
+    const toolName = TOOL_ALIASES[ex.tool] || ex.tool
+    const mapped: any = {}
+    for (const [skillParam, toolParam] of Object.entries(ex.argMap || {})) {
+      mapped[toolParam] = args ? args[skillParam] : undefined
+    }
+    return (await execTool(cfg, toolName, mapped)).content
+  }
+  if (ex.kind === 'http') {
+    return await execHttpSkill(cfg, ex.url, ex.method, ex.headers || {}, ex.body || '', args)
+  }
+  throw new Error('未知 skill 执行类型')
+}
+
 export async function execTool(cfg: Config, name: string, args: any): Promise<ToolOutput> {
   switch (name) {
     case 'execute_shell': {
@@ -188,12 +255,19 @@ export async function execTool(cfg: Config, name: string, args: any): Promise<To
   }
 }
 
-export function buildToolDefs(): any[] {
+/** 执行 skill 函数工具 (已启用且通过名称匹配) */
+export async function execSkillByName(cfg: Config, skills: Skill[], name: string, args: any): Promise<ToolOutput> {
+  const skill = (skills || []).find((s) => s.enabled && s.name === name)
+  if (!skill) return { content: '未知 skill: ' + name }
+  return { content: await execSkill(cfg, skill, args) }
+}
+
+export function buildToolDefs(skills?: Skill[]): any[] {
   const s = (name: string, description: string, props: Record<string, any>, req: string[]) => ({
     type: 'function',
     function: { name, description, parameters: { type: 'object', properties: props, required: req } },
   })
-  return [
+  const defs: any[] = [
     s(
       'execute_shell',
       '在服务器工作区内执行 bash 命令。用于构建、运行测试、安装依赖、查看状态、日志等。',
@@ -250,5 +324,36 @@ export function buildToolDefs(): any[] {
       },
       ['action']
     ),
+    s(
+      'memory',
+      '读写持久化长期记忆(跨会话共享)。action: read(读取)/add(追加一条, 需 text)/replace(整体覆盖, 需 text)/clear(清空)。用于记住用户的偏好、项目约定、关键决策等长期信息。',
+      {
+        action: { type: 'string', enum: ['read', 'add', 'replace', 'clear'] },
+        text: { type: 'string', description: 'add/replace 时的记忆文本' },
+      },
+      ['action']
+    ),
+    s(
+      'delegate',
+      '把子任务委派给一个子智能体处理并返回其结果。用于并行化分解的只读/分析类子任务。会消耗额外 tokens。',
+      {
+        prompt: { type: 'string', description: '要交给子代理执行的任务描述' },
+        system: { type: 'string', description: '可选, 子代理的系统提示词' },
+      },
+      ['prompt']
+    ),
   ]
+  // 将启用的 skill 注册为函数工具
+  for (const sk of (skills || [])) {
+    if (!sk || !sk.enabled || !sk.name) continue
+    const props: Record<string, any> = {}
+    const req: string[] = []
+    for (const p of (sk.params || [])) {
+      if (!p || !p.name) continue
+      props[p.name] = { type: p.type || 'string', description: p.description || '' }
+      if (p.required) req.push(p.name)
+    }
+    defs.push(s(String(sk.name), String(sk.description || sk.title || sk.name), props, req))
+  }
+  return defs
 }

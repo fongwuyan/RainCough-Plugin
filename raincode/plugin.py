@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""RainCough raincode — 精简版 opencode: AI 编程助手插件。
+"""RainCough raincode — 精简版 opencode: 内置于面板的 AI 编程 Agent 插件。
 
 架构: 前端 Vue 组件 -> 本插件(薄壳) -> Node/TS 零依赖 agent(dist/index.js, SSE)。
-功能: 流式对话 / 工具调用(shell+文件, 工作区沙箱) / 会话历史 / 任务清单 / 技能 /
-      审批(auto/confirm/whitelist) / 在线模型列表(OpenCode Zen 免费模型)。
-默认 LLM: OpenCode Zen https://opencode.ai/zen/v1 + deepseek-v4-flash-free(免费, 支持工具调用)。
+功能: 会话式编程(可切换工作目录/多会话) / 工具调用(shell+文件, 工作区沙箱) /
+      会话历史 / 任务清单 / 技能注入 / 单配置(API Base + Key + 模型) /
+      长期记忆(memory.md, 跨会话共享) / 子智能体(delegate) / 审批(auto/confirm/whitelist)。
 """
 import os
 import re
@@ -13,6 +13,7 @@ import time
 import signal
 import shutil
 import subprocess
+import threading
 import urllib.request
 
 from flask import request, jsonify, Response
@@ -24,6 +25,7 @@ AGENT_DIST = os.path.join(AGENT_DIR, 'dist', 'index.js')
 DATA_DIR = os.path.join(PLUGIN_ROOT, 'data')
 SESS_DIR = os.path.join(DATA_DIR, 'sessions')
 SKILL_DIR = os.path.join(DATA_DIR, 'skills')
+MEMORY_PATH = os.path.join(DATA_DIR, 'memory.md')
 WORKSPACE = os.path.join(DATA_DIR, 'workspace')
 CONF_PATH = os.path.join(DATA_DIR, 'config.json')
 SECRET_PATH = os.path.join(DATA_DIR, 'agent_secret')
@@ -39,9 +41,9 @@ for _d in (DATA_DIR, SESS_DIR, SKILL_DIR, WORKSPACE):
         pass
 
 DEFAULT_CONF = {
-    'api_base': 'https://opencode.ai/zen/v1',
+    'api_base': '',
     'api_key': '',
-    'model': 'deepseek-v4-flash-free',
+    'model': '',
     'workspace': WORKSPACE,
     'agent_port': 8765,
     'approve_mode': 'confirm',
@@ -52,27 +54,10 @@ DEFAULT_CONF = {
     'output_cap': 20000,
     'max_tool_steps': 40,
     'sudo_pw': '',
+    'providers': [],
+    'default_provider': '',
+    'principles': [],
 }
-
-# 离线兜底: opencode 免费模型(运行时拉取 /models 失败时使用)
-FALLBACK_FREE = [
-    {'id': 'deepseek-v4-flash-free', 'name': 'DeepSeek V4 Flash Free',
-     'context': 200000, 'max_tokens': 128000, 'reasoning': True},
-    {'id': 'mimo-v2.5-free', 'name': 'MiMo-V2.5 Free',
-     'context': 262144, 'max_tokens': 65536, 'reasoning': True},
-    {'id': 'north-mini-code-free', 'name': 'North Mini Code Free',
-     'context': 0, 'max_tokens': 0, 'reasoning': True},
-    {'id': 'nemotron-3-ultra-free', 'name': 'Nemotron 3 Ultra Free',
-     'context': 0, 'max_tokens': 0, 'reasoning': True},
-    {'id': 'nemotron-3.5-lightning-free', 'name': 'Nemotron 3.5 Lightning Free',
-     'context': 0, 'max_tokens': 0, 'reasoning': True},
-    {'id': 'big-pickle', 'name': 'Big Pickle',
-     'context': 0, 'max_tokens': 0, 'reasoning': True},
-    {'id': 'hy3-free', 'name': 'Hy3 Free',
-     'context': 0, 'max_tokens': 0, 'reasoning': True},
-    {'id': 'laguna-s-2.1-free', 'name': 'Laguna S 2.1 Free',
-     'context': 0, 'max_tokens': 0, 'reasoning': True},
-]
 
 
 # ---------------------------------------------------------------------------
@@ -85,11 +70,34 @@ def _load_conf():
         with open(CONF_PATH, 'r', encoding='utf-8') as f:
             saved = json.load(f)
         for k in ('api_base', 'api_key', 'model', 'workspace', 'agent_port',
-                  'approve_mode', 'shell_timeout', 'output_cap', 'max_tool_steps', 'sudo_pw'):
+                  'approve_mode', 'shell_timeout', 'output_cap', 'max_tool_steps',
+                  'sudo_pw'):
             if k in saved and saved[k] not in (None, ''):
                 cfg[k] = saved[k]
         if isinstance(saved.get('whitelist'), list):
             cfg['whitelist'] = [str(x) for x in saved['whitelist']]
+        if isinstance(saved.get('providers'), list):
+            cfg['providers'] = saved['providers']
+        if saved.get('default_provider'):
+            cfg['default_provider'] = str(saved['default_provider'])
+        if isinstance(saved.get('principles'), list):
+            cfg['principles'] = [str(x) for x in saved['principles'] if str(x).strip()]
+    except Exception:
+        pass
+    # 迁移: 若仅有旧版单配置且无 providers, 则生成一个默认服务商
+    try:
+        with open(CONF_PATH, 'r', encoding='utf-8') as f:
+            saved = json.load(f)
+        if not cfg.get('providers') and cfg.get('api_base') and cfg.get('api_key'):
+            cfg['providers'] = [{
+                'name': 'default',
+                'api_base': str(cfg.get('api_base') or '').strip().rstrip('/'),
+                'api_key': str(cfg.get('api_key') or ''),
+                'default_model': str(cfg.get('model') or ''),
+                'enabled': True,
+            }]
+            if not cfg.get('default_provider'):
+                cfg['default_provider'] = 'default'
     except Exception:
         pass
     if not cfg.get('workspace'):
@@ -115,7 +123,39 @@ def _config_out(cfg):
     out['api_key'] = '****' if cfg.get('api_key') else ''
     out['has_key'] = bool(cfg.get('api_key'))
     out['sudo_pw'] = '****' if cfg.get('sudo_pw') else ''
+    out['principles'] = [str(x) for x in (cfg.get('principles') or []) if str(x).strip()]
+    out['default_provider'] = str(cfg.get('default_provider') or '')
+    out['providers'] = _providers_out(cfg.get('providers'))
     return out
+
+
+def _providers_out(providers):
+    """脱敏返回服务商列表: key 用 has_key + '****' 回显。"""
+    out = []
+    for p in providers or []:
+        if not isinstance(p, dict):
+            continue
+        out.append({
+            'name': str(p.get('name') or ''),
+            'api_base': str(p.get('api_base') or ''),
+            'api_key': '****' if p.get('api_key') else '',
+            'has_key': bool(p.get('api_key')),
+            'default_model': str(p.get('default_model') or ''),
+            'enabled': bool(p.get('enabled', True)),
+        })
+    return out
+
+
+def _resolve_provider(cfg, name):
+    """按名称取服务商(仅启用的)。"""
+    name = str(name or '').strip()
+    if not name:
+        return None
+    for p in cfg.get('providers') or []:
+        if isinstance(p, dict) and str(p.get('name') or '') == name \
+                and p.get('enabled', True):
+            return p
+    return None
 
 
 def _secret():
@@ -289,7 +329,7 @@ def _save_json(path, data):
 # ---------------------------------------------------------------------------
 # 会话 / 技能 / 模型
 # ---------------------------------------------------------------------------
-def _session_list():
+def _session_list(workspace=None):
     out = []
     try:
         for fn in os.listdir(SESS_DIR):
@@ -298,6 +338,9 @@ def _session_list():
             s = _load_json(os.path.join(SESS_DIR, fn), {})
             if not s:
                 continue
+            sw = s.get('workspace', '')
+            if workspace is not None and sw != workspace:
+                continue
             out.append({
                 'id': s.get('id', fn[:-5]),
                 'title': s.get('title', '未命名'),
@@ -305,11 +348,30 @@ def _session_list():
                 'updated': s.get('updated', 0),
                 'messages': len(s.get('messages', [])),
                 'pending': bool(s.get('pending')),
+                'workspace': sw,
             })
     except Exception:
         pass
     out.sort(key=lambda x: x.get('updated', 0), reverse=True)
     return out
+
+
+def _workspace_list():
+    cfg = _load_conf()
+    ws = [cfg.get('workspace') or WORKSPACE]
+    for w in cfg.get('workspaces', []) or []:
+        if w and w not in ws:
+            ws.append(w)
+    try:
+        for fn in os.listdir(SESS_DIR):
+            if fn.endswith('.json'):
+                s = _load_json(os.path.join(SESS_DIR, fn), {})
+                sw = s.get('workspace', '')
+                if sw and sw not in ws:
+                    ws.append(sw)
+    except Exception:
+        pass
+    return ws
 
 
 def _session_path(sid):
@@ -326,18 +388,33 @@ def _skill_payload(names):
             s = _load_json(os.path.join(SKILL_DIR, fn), {})
             if not s or s.get('name') not in names:
                 continue
-            if not s.get('instructions'):
+            if not s.get('execution'):
                 continue
             payload.append({
                 'name': s.get('name'),
                 'title': s.get('title') or s.get('name'),
                 'description': s.get('description', ''),
-                'instructions': s.get('instructions'),
+                'params': s.get('params') or [],
+                'execution': s.get('execution'),
                 'enabled': True,
             })
     except Exception:
         pass
     return payload
+
+
+def _skill_struct_ok(skill):
+    """校验新结构 skill: 有 name + execution(kind=shell/tool/http) 及必要字段。"""
+    if not isinstance(skill, dict) or not isinstance(skill.get('execution'), dict):
+        return False
+    kind = skill['execution'].get('kind')
+    if kind == 'shell':
+        return bool(str(skill['execution'].get('command') or '').strip())
+    if kind == 'tool':
+        return bool(str(skill['execution'].get('tool') or '').strip())
+    if kind == 'http':
+        return bool(str(skill['execution'].get('url') or '').strip())
+    return False
 
 
 def _skill_list():
@@ -353,6 +430,8 @@ def _skill_list():
                 'name': s.get('name', fn[:-5]),
                 'title': s.get('title') or s.get('name') or fn[:-5],
                 'description': s.get('description', ''),
+                'params': s.get('params') or [],
+                'execution': s.get('execution'),
                 'enabled': s.get('enabled', True),
                 'updated': s.get('updated', 0),
             })
@@ -364,16 +443,31 @@ def _skill_list():
 
 def _agent_config_for(data):
     cfg = _load_conf()
+    prov = _resolve_provider(cfg, data.get('provider'))
+    if prov:
+        api_base = str(prov.get('api_base') or '').strip().rstrip('/')
+        api_key = str(prov.get('api_key') or '')
+        model = str(data.get('model') or prov.get('default_model') or '').strip()
+        provider_name = str(prov.get('name') or '')
+    else:
+        api_base = (cfg.get('api_base') or '').strip().rstrip('/')
+        api_key = cfg.get('api_key') or ''
+        model = str(data.get('model') or cfg.get('model') or '').strip()
+        provider_name = str(data.get('provider') or '').strip()
     return {
-        'api_base': cfg.get('api_base', DEFAULT_CONF['api_base']),
-        'api_key': cfg.get('api_key', ''),
-        'model': str(data.get('model') or cfg.get('model') or DEFAULT_CONF['model']),
+        'api_base': api_base,
+        'api_key': api_key,
+        'model': model,
+        'provider': provider_name,
+        'principles': [str(x) for x in (cfg.get('principles') or []) if str(x).strip()],
         'workspace': cfg.get('workspace') or WORKSPACE,
         'approve_mode': str(data.get('mode') or cfg.get('approve_mode') or 'confirm'),
+        'agent_mode': str(data.get('agent_mode') or 'build'),
         'whitelist': cfg.get('whitelist', []),
         'shell_timeout': int(cfg.get('shell_timeout', 30)),
         'output_cap': int(cfg.get('output_cap', 20000)),
         'max_tool_steps': int(cfg.get('max_tool_steps', 40)),
+        'memory_path': MEMORY_PATH,
     }
 
 
@@ -409,20 +503,40 @@ def _proxy_sse(method, path, body):
 # ---------------------------------------------------------------------------
 class RcPlugin(Plugin):
     name = 'raincode'
-    label = 'AI 编程助手'
+    label = 'RainCode'
     icon = ''
-    description = '精简版 opencode: 流式对话 + 工具调用(shell/文件) + 会话历史 + 任务清单 + 技能, 默认接入 opencode 免费模型'
+    description = '内置于面板的 AI 编程 Agent(精简版 opencode): 会话式编程, OpenAI 兼容接口一键接入, 工具调用、长期记忆、子智能体、技能、任务清单与审批控制'
+
+    def __init__(self):
+        super().__init__()
+        # 面板启动后自动拉起 agent(幂等: 已健康则跳过), 避免面板重启连带杀死 agent 后无人自愈
+        try:
+            threading.Thread(target=self._auto_start_agent, daemon=True).start()
+        except Exception as e:
+            print('[raincode] auto-start thread failed: %s' % e)
+
+    def _auto_start_agent(self):
+        try:
+            time.sleep(2)
+            r = _start_agent()
+            if not (r or {}).get('ok'):
+                print('[raincode] agent auto-start failed: %s' % (r or {}).get('error'))
+            elif r.get('svc'):
+                print('[raincode] agent auto-start ok (svc=%s)' % r.get('svc'))
+        except Exception as e:
+            print('[raincode] agent auto-start exception: %s' % e)
 
     def get_setting_schema(self):
         cfg = _load_conf()
         return [
             {'key': 'api_base', 'label': 'API Base(OpenAI 兼容)', 'type': 'text',
-             'value': cfg.get('api_base', DEFAULT_CONF['api_base']),
-             'help': '默认 OpenCode Zen: https://opencode.ai/zen/v1'},
+             'value': cfg.get('api_base', ''),
+             'help': '如 https://api.deepseek.com/v1 或 https://api.openai.com/v1'},
             {'key': 'api_key', 'label': 'API Key', 'type': 'text', 'value': '',
-             'help': 'opencode 免费模型需首充激活后可用; 留空则保留已保存的 Key'},
-            {'key': 'model', 'label': '默认模型', 'type': 'text',
-             'value': cfg.get('model', DEFAULT_CONF['model'])},
+             'help': '已配置时留空表示保留'},
+            {'key': 'model', 'label': '模型', 'type': 'text',
+             'value': cfg.get('model', ''),
+             'help': '如 deepseek-chat / gpt-4o'},
             {'key': 'workspace', 'label': '工作区目录(agent 可读写范围)', 'type': 'text',
              'value': cfg.get('workspace', WORKSPACE)},
             {'key': 'agent_port', 'label': 'Agent 服务端口', 'type': 'number',
@@ -437,12 +551,15 @@ class RcPlugin(Plugin):
     def get_settings(self):
         cfg = _load_conf()
         return {
-            'api_base': cfg.get('api_base', DEFAULT_CONF['api_base']),
+            'api_base': cfg.get('api_base', ''),
             'api_key': '',
-            'model': cfg.get('model', DEFAULT_CONF['model']),
+            'model': cfg.get('model', ''),
             'workspace': cfg.get('workspace', WORKSPACE),
             'agent_port': cfg.get('agent_port', 8765),
             'approve_mode': cfg.get('approve_mode', 'confirm'),
+            'providers': _providers_out(cfg.get('providers')),
+            'default_provider': str(cfg.get('default_provider') or ''),
+            'principles': [str(x) for x in (cfg.get('principles') or []) if str(x).strip()],
         }
 
     def save_settings(self, data):
@@ -475,6 +592,7 @@ class RcPlugin(Plugin):
                           'port': cfg.get('agent_port', 8765),
                           'svc': 'systemd' if os.path.isfile(_unit_path()) else 'spawn'},
                 'workspace': cfg.get('workspace', WORKSPACE),
+                'workspaces': _workspace_list(),
                 'config': _config_out(cfg),
             })
 
@@ -500,57 +618,143 @@ class RcPlugin(Plugin):
                     cfg['agent_port'] = int(data['agent_port'])
                 except Exception:
                     pass
+            if isinstance(data.get('workspaces'), list):
+                cfg['workspaces'] = [str(x).strip() for x in data['workspaces'] if str(x).strip()]
+            cur = cfg.get('workspace') or WORKSPACE
+            wslist = cfg.get('workspaces') or []
+            if cur and cur not in wslist:
+                wslist.append(cur)
+                cfg['workspaces'] = wslist
             if data.get('api_key'):
                 cfg['api_key'] = str(data['api_key']).strip()
+            if data.get('default_provider') is not None:
+                cfg['default_provider'] = str(data['default_provider']).strip()
+            if isinstance(data.get('principles'), list):
+                cfg['principles'] = [str(x).strip() for x in data['principles'] if str(x).strip()]
+            if isinstance(data.get('providers'), list):
+                # 整体替换服务商, '****' 表示保留旧 key
+                old = {str(p.get('name') or ''): p for p in cfg.get('providers') or [] if isinstance(p, dict)}
+                np_ = []
+                for item in data['providers']:
+                    if not isinstance(item, dict):
+                        continue
+                    r = dict(item)
+                    if r.get('api_key') == '****':
+                        prev = old.get(str(r.get('name') or '')) or {}
+                        r['api_key'] = prev.get('api_key') or ''
+                    np_.append(r)
+                cfg['providers'] = np_
             if isinstance(data.get('whitelist'), list):
                 cfg['whitelist'] = [str(x).strip() for x in data['whitelist'] if str(x).strip()]
             _save_conf(cfg)
             return jsonify({'status': True, 'config': _config_out(cfg)})
 
+        @self.route('/providers', methods=['GET', 'POST'])
+        def providers():
+            if request.method == 'GET':
+                return jsonify({'status': True, 'providers': _providers_out(_load_conf().get('providers'))})
+            data = request.get_json(silent=True) or {}
+            action = str(data.get('action') or 'save')
+            cfg = _load_conf()
+            providers = list(cfg.get('providers') or [])
+            if action == 'save':
+                # 保存全部服务商(整体替换)。key 为 '****' 时视为未改动保留旧值。
+                new_providers = []
+                old = {str(p.get('name') or ''): p for p in providers if isinstance(p, dict)}
+                for item in data.get('providers') or []:
+                    if not isinstance(item, dict):
+                        continue
+                    raw = dict(item)
+                    name = str(raw.get('name') or '').strip()
+                    if not name or not re.match(r'^[A-Za-z0-9_\- ]{1,40}$', name):
+                        return jsonify({'error': '服务商名称非法'}), 400
+                    if raw.get('api_key') == '****':
+                        prev = old.get(name) or {}
+                        raw['api_key'] = prev.get('api_key') or ''
+                    new_providers.append(raw)
+                cfg['providers'] = new_providers
+                if data.get('default_provider') is not None:
+                    cfg['default_provider'] = str(data['default_provider']).strip()
+            elif action == 'delete':
+                name = str(data.get('name') or '').strip()
+                providers = [p for p in providers
+                             if not (isinstance(p, dict) and str(p.get('name') or '') == name)]
+                cfg['providers'] = providers
+                if cfg.get('default_provider') == name:
+                    cfg['default_provider'] = ''
+            else:
+                return jsonify({'error': '未知 action'}), 400
+            _save_conf(cfg)
+            return jsonify({'status': True, 'providers': _providers_out(cfg.get('providers')),
+                            'default_provider': cfg.get('default_provider') or ''})
+
         @self.route('/models', methods=['GET'])
         def models():
             cfg = _load_conf()
-            key = cfg.get('api_key', '')
-            live = None
-            if key:
+            prov = _resolve_provider(cfg, request.args.get('provider'))
+            agg = {'base': '', 'model': '', 'models': []}
+            if prov:
+                agg['base'] = str(prov.get('api_base') or '').strip().rstrip('/')
+                agg['model'] = str(prov.get('default_model') or '')
+            else:
+                agg['base'] = (cfg.get('api_base') or '').strip().rstrip('/')
+                agg['model'] = str(cfg.get('model') or '')
+            base = agg['base']
+            models_list = []
+            if base:
+                base_l = base.lower()
+                if 'deepseek' in base_l:
+                    models_list = ['deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner']
+                elif 'openai' in base_l or 'api.openai' in base_l:
+                    models_list = ['gpt-4o', 'gpt-4o-mini', 'gpt-4', 'gpt-3.5-turbo']
+                elif 'moonshot' in base_l or 'kimi' in base_l:
+                    models_list = ['kimi-k2', 'moonshot-v1-8k']
+                elif 'qwen' in base_l or 'dashscope' in base_l:
+                    models_list = ['qwen-max', 'qwen-plus', 'qwen-turbo']
+                elif 'zhipu' in base_l or 'bigmodel' in base_l:
+                    models_list = ['glm-4', 'glm-4-plus', 'glm-4-flash']
+                elif 'ollama' in base_l or 'localhost' in base_l or '127.0.0.1' in base_l:
+                    models_list = ['llama3', 'qwen2.5', 'mistral']
+                else:
+                    models_list = ['']
+            if agg['model'] not in models_list:
+                models_list.insert(0, agg['model'])
+            agg['models'] = [m for m in models_list if m]
+            return jsonify({'status': True, 'models': agg['models'],
+                            'current': agg['model'], 'base': agg['base']})
+
+        @self.route('/principles', methods=['GET', 'POST'])
+        def principles():
+            cfg = _load_conf()
+            if request.method == 'GET':
+                return jsonify({'status': True, 'principles': cfg.get('principles') or []})
+            data = request.get_json(silent=True) or {}
+            if isinstance(data.get('principles'), list):
+                cfg['principles'] = [str(x).strip() for x in data['principles'] if str(x).strip()]
+                _save_conf(cfg)
+            return jsonify({'status': True, 'principles': cfg.get('principles') or []})
+
+        @self.route('/workspace/browse', methods=['GET'])
+        def workspace_browse():
+            """列出某目录下的子目录, 供前端选择工作目录。参数: path=绝对路径。"""
+            p = request.args.get('path', '').strip() or WORKSPACE
+            base = os.path.abspath(os.path.expanduser(p))
+            out = {'path': base, 'name': os.path.basename(base) or base,
+                   'parent': None, 'dirs': [], 'exists': os.path.isdir(base)}
+            parent = os.path.dirname(base) or '/'
+            if base != parent and os.path.isdir(parent):
+                out['parent'] = parent
+            if out['exists']:
                 try:
-                    base = cfg.get('api_base', DEFAULT_CONF['api_base']).rstrip('/')
-                    req = urllib.request.Request(base + '/models',
-                                                 headers={'Authorization': 'Bearer ' + key})
-                    with urllib.request.urlopen(req, timeout=12) as r:
-                        data = json.loads(r.read().decode('utf-8'))
-                    items = data.get('data') if isinstance(data, dict) else data
-                    arr = []
-                    for m in (items or []):
-                        if not isinstance(m, dict):
+                    for e in os.listdir(base):
+                        if e.startswith('.'):
                             continue
-                        mid = m.get('id') or ''
-                        cost = m.get('cost') or {}
-                        try:
-                            inp = cost.get('input', 0)
-                            out = cost.get('output', 0)
-                        except Exception:
-                            inp = out = None
-                        if not mid:
-                            continue
-                        if inp == 0 and out == 0:
-                            arr.append({
-                                'id': mid,
-                                'name': m.get('name') or mid,
-                                'context': m.get('context_window') or m.get('contextWindow') or 0,
-                                'max_tokens': m.get('max_tokens') or m.get('maxTokens') or 0,
-                                'reasoning': bool(m.get('reasoning')),
-                            })
-                    if arr:
-                        live = arr
+                        fp = os.path.join(base, e)
+                        if os.path.isdir(fp):
+                            out['dirs'].append(e)
                 except Exception:
                     pass
-            if live:
-                return jsonify({'status': True, 'models': live, 'source': 'live',
-                                'suggested': 'deepseek-v4-flash-free'})
-            return jsonify({'status': True, 'models': FALLBACK_FREE, 'source': 'fallback',
-                            'suggested': 'deepseek-v4-flash-free',
-                            'note': '在线模型列表获取失败(未配置 Key 或网络不可达), 显示内置默认列表'})
+            return jsonify(out)
 
         @self.route('/start', methods=['POST'])
         def start():
@@ -562,7 +766,9 @@ class RcPlugin(Plugin):
 
         @self.route('/sessions', methods=['GET'])
         def sessions():
-            return jsonify({'status': True, 'sessions': _session_list()})
+            ws = request.args.get('workspace') or None
+            return jsonify({'status': True, 'workspaces': _workspace_list(),
+                            'sessions': _session_list(ws)})
 
         @self.route('/sessions/', methods=['GET', 'DELETE'])
         def sessions_crud():
@@ -600,20 +806,22 @@ class RcPlugin(Plugin):
             if not re.match(r'^[A-Za-z0-9_-]{1,32}$', name):
                 return jsonify({'error': '技能名需为字母数字_-'}), 400
             title = str(data.get('title') or name).strip()
-            instructions = str(data.get('instructions') or '').strip()
-            if not instructions:
-                return jsonify({'error': '技能内容(instructions)不能为空'}), 400
+            execution = data.get('execution') or {}
             s = {
                 'name': name, 'title': title,
                 'description': str(data.get('description') or '').strip(),
-                'instructions': instructions,
+                'params': data.get('params') or [],
+                'execution': execution,
                 'enabled': bool(data.get('enabled', True)),
                 'updated': int(time.time()),
             }
+            if not _skill_struct_ok(s):
+                return jsonify({'error': '技能需配置 execution(shell/tool/http) 且字段完整'}), 400
             _save_json(os.path.join(SKILL_DIR, name + '.json'), s)
             return jsonify({'ok': True, 'skill': {
                 'name': name, 'title': title,
-                'description': s['description'], 'enabled': s['enabled'],
+                'description': s['description'], 'params': s['params'],
+                'execution': s['execution'], 'enabled': s['enabled'],
                 'updated': s['updated']}})
 
         @self.route('/skills/toggle', methods=['POST'])
@@ -641,6 +849,28 @@ class RcPlugin(Plugin):
                 return jsonify({'error': '技能不存在'}), 404
             return jsonify({'ok': True})
 
+        @self.route('/memory', methods=['GET', 'POST'])
+        def memory():
+            if request.method == 'GET':
+                content = ''
+                try:
+                    if os.path.isfile(MEMORY_PATH):
+                        with open(MEMORY_PATH, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                except Exception:
+                    pass
+                return jsonify({'status': True, 'content': content})
+            data = request.get_json(silent=True) or {}
+            if 'content' not in data:
+                return jsonify({'error': '缺少 content'}), 400
+            try:
+                os.makedirs(DATA_DIR, exist_ok=True)
+                with open(MEMORY_PATH, 'w', encoding='utf-8') as f:
+                    f.write(str(data['content']))
+            except Exception as e:
+                return jsonify({'error': '写入失败: %s' % e}), 500
+            return jsonify({'ok': True})
+
         @self.route('/chat', methods=['POST'])
         def chat():
             data = request.get_json(silent=True) or {}
@@ -648,8 +878,10 @@ class RcPlugin(Plugin):
             if not message:
                 return jsonify({'error': '消息为空'}), 400
             cfg = _load_conf()
-            if not cfg.get('api_key'):
-                return jsonify({'error': '未配置 API Key, 请到设置页填写'}), 400
+            if not (cfg.get('api_base') and cfg.get('api_key')):
+                return jsonify({'error': '尚未配置 API Base 与 Key, 请先到设置页填写'}), 400
+            if not cfg.get('model'):
+                return jsonify({'error': '尚未配置模型, 请先到设置页填写模型名称'}), 400
             if not _agent_health():
                 r = _start_agent()
                 if not r.get('ok'):

@@ -4,20 +4,37 @@ export interface Config {
   model: string
   workspace: string
   approve_mode: 'auto' | 'confirm' | 'whitelist'
+  agent_mode: 'build' | 'plan'
   whitelist: string[]
   shell_timeout: number
   output_cap: number
   max_tool_steps: number
+  memory_path: string
+  provider: string
+  principles: string[]
+}
+
+export interface SkillParam {
+  name: string
+  type: 'string' | 'number' | 'boolean'
+  description: string
+  required: boolean
 }
 
 export interface Skill {
   name: string
   title: string
   description: string
-  instructions: string
   enabled: boolean
+  params: SkillParam[]
+  execution: SkillExecution
   builtin?: boolean
 }
+
+export type SkillExecution =
+  | { kind: 'shell'; command: string }
+  | { kind: 'tool'; tool: string; argMap: Record<string, string> }
+  | { kind: 'http'; method: string; url: string; headers: Record<string, string>; body: string }
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool'
 
@@ -68,6 +85,7 @@ export interface SessionState {
   pending: PendingTool | null
   active_skills: string[]
   model: string | null
+  workspace: string
   _busy?: boolean
   _cancel?: boolean
 }
