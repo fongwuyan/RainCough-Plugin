@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集",
-  "updated": "2026-08-22 22:11:46",
+  "updated": "2026-08-23 14:08:31",
   "plugins": [
     {
       "name": "aigen",
@@ -9,6 +9,14 @@
       "path": "aigen",
       "author": "",
       "description": "本地 SD1.5 文生图/图生图，支持 EasyNegative、VAE 修复、Real-ESRGAN 超分"
+    },
+    {
+      "name": "backup",
+      "label": "系统备份",
+      "version": "0.1.0",
+      "path": "backup",
+      "author": "",
+      "description": "目录打包备份与保留轮换: 多来源路径/tar.gz 定时打包, 保留 N 份, 运行历史, 接入任务队列"
     },
     {
       "name": "docker",

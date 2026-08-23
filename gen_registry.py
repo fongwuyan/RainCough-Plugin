@@ -15,6 +15,7 @@ OUT = os.path.join(ROOT, 'registry.json')
 
 KNOWN = [
     ('aigen', 'AI 生图'),
+    ('backup', '系统备份'),
     ('docker', 'Docker 管理'),
     ('JMComic', 'JMComic 搜索与阅读'),
     ('kvm', 'KVM 虚拟机'),
