@@ -494,6 +494,19 @@ class BackupPlugin(Plugin):
                         os.path.abspath(filename) and filename.startswith(j.get('target', '')):
                     target = filename
                     break
+            if not target:
+                # 任务已删除的孤儿归档: 允许删除命中归档命名规则且位于已知备份根目录下的文件
+                pat = re.compile(r'.+-\d{8}-\d{6}\.tar(\.gz)?$')
+                roots = [j.get('target', '') for j in jobs.values()]
+                roots += [_conf().get('default_target', ''), '/opt/touchgal/backups']
+                ok_root = False
+                for r in roots:
+                    r = str(r or '').strip()
+                    if r and filename.startswith(r.rstrip(os.sep) + os.sep):
+                        ok_root = True
+                        break
+                if ok_root and pat.match(os.path.basename(filename)) and os.path.isfile(filename):
+                    target = filename
             if not target or not os.path.isfile(target):
                 return jsonify({'error': '归档不存在'}), 404
             try:
