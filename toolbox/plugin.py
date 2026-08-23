@@ -62,7 +62,7 @@ def _dhash_from_bytes(data, size=16):
 
 
 def _hamming(a, b):
-    return bin(a ^ b).count('1')
+    return (a ^ b).bit_count()  # 内置 C 实现
 
 
 def _load_feeds():

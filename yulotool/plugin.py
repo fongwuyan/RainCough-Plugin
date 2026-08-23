@@ -301,6 +301,16 @@ def secure_wipe(path, passes=3):
         if size <= 0:
             os.remove(path)
             return True
+        # 优先用 coreutils shred(内核级覆写, C 循环, 远快于 Python 逐块写)
+        try:
+            shred = shutil.which('shred')
+        except Exception:
+            shred = None
+        if shred:
+            rc = subprocess.run([shred, '-n', str(max(1, int(passes))), '-z', '-u', path],
+                                capture_output=True, timeout=3600)
+            if rc.returncode == 0:
+                return not os.path.exists(path)
         with open(path, 'r+b') as f:
             for p in range(passes):
                 f.seek(0)
