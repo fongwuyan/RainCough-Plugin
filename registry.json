@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集",
-  "updated": "2026-08-23 14:08:31",
+  "updated": "2026-08-24 17:15:18",
   "plugins": [
     {
       "name": "aigen",
@@ -11,20 +11,12 @@
       "description": "本地 SD1.5 文生图/图生图，支持 EasyNegative、VAE 修复、Real-ESRGAN 超分"
     },
     {
-      "name": "backup",
-      "label": "系统备份",
-      "version": "0.1.0",
-      "path": "backup",
-      "author": "",
-      "description": "目录打包备份与保留轮换: 多来源路径/tar.gz 定时打包, 保留 N 份, 运行历史, 接入任务队列"
-    },
-    {
       "name": "docker",
       "label": "Docker 管理",
       "version": "0.1.0",
       "path": "docker",
       "author": "",
-      "description": "Docker 容器与镜像管理：列表、启停、删除、日志、拉取/删除镜像"
+      "description": "容器/镜像/卷/网络/日志与 Compose 管理"
     },
     {
       "name": "JMComic",
@@ -96,7 +88,7 @@
       "version": "0.1.0",
       "path": "vpn",
       "author": "",
-      "description": "WireGuard / OpenVPN / v2ray 代理: 客户端+服务端连接管理, 节点订阅, 出网检测"
+      "description": "VPN 网络"
     },
     {
       "name": "yulotool",
