@@ -1,0 +1,135 @@
+{
+  "name": "JMComic",
+  "label": "JMComic",
+  "version": "2.0.0",
+  "description": "禁漫天堂搜索与漫画阅读(接口库 v4 迁移)",
+  "author": "RainCough",
+  "icon": "",
+  "requirements": ["jmcomic>=2.7", "requests>=2.31"],
+  "frontend": {
+    "entry": "assets/plugin.js",
+    "vue": "3.5",
+    "pages": [
+      {
+        "path": "",
+        "title": "JMComic"
+      }
+    ]
+  },
+  "backend": {
+    "lang": "python",
+    "exec": [
+      "python",
+      "server_v4.py"
+    ],
+    "capabilities": [
+      "invoke",
+      "heartbeat",
+      "log.tail"
+    ]
+  },
+  "interfaces": [
+    {
+      "id": "jmcomic.search",
+      "visibility": "all",
+      "version": "1",
+      "description": "搜索"
+    },
+    {
+      "id": "jmcomic.meta",
+      "visibility": "all",
+      "version": "1",
+      "description": "漫画元信息"
+    },
+    {
+      "id": "jmcomic.album",
+      "visibility": "all",
+      "version": "1",
+      "description": "漫画详情+章节"
+    },
+    {
+      "id": "jmcomic.chapter",
+      "visibility": "all",
+      "version": "1",
+      "description": "章节图片列表"
+    },
+    {
+      "id": "jmcomic.download",
+      "visibility": "main",
+      "version": "1",
+      "description": "加入下载队列"
+    },
+    {
+      "id": "jmcomic.download.status",
+      "visibility": "all",
+      "version": "1",
+      "description": "下载进度"
+    },
+    {
+      "id": "jmcomic.library.list",
+      "visibility": "all",
+      "version": "1",
+      "description": "本地库"
+    },
+    {
+      "id": "jmcomic.library.delete",
+      "visibility": "main",
+      "version": "1",
+      "description": "删除本子"
+    },
+    {
+      "id": "jmcomic.config.get",
+      "visibility": "all",
+      "version": "1",
+      "description": "读取配置"
+    },
+    {
+      "id": "jmcomic.config.save",
+      "visibility": "main",
+      "version": "1",
+      "description": "保存配置"
+    },
+    {
+      "id": "jmcomic.info",
+      "visibility": "all",
+      "version": "1",
+      "description": "插件信息"
+    },
+    {
+      "id": "jmcomic.image",
+      "visibility": "all",
+      "version": "1",
+      "description": "按需取单张漫画图(base64)"
+    },
+    {
+      "id": "jmcomic.cover",
+      "visibility": "all",
+      "version": "1",
+      "description": "本子封面(缓存 cache/ 直出)"
+    },
+    {
+      "id": "jmcomic.download.cancel",
+      "visibility": "main",
+      "version": "1",
+      "description": "取消下载(排队立即/下载中标记后清残留)"
+    },
+    {
+      "id": "jmcomic.covers",
+      "visibility": "all",
+      "version": "1",
+      "description": "批量封面(一次取N个)"
+    },
+    {
+      "id": "jmcomic.prefetch",
+      "visibility": "all",
+      "version": "1",
+      "description": "章节图片批量预取(URL化)"
+    },
+    {
+      "id": "jmcomic.perf.stats",
+      "visibility": "all",
+      "version": "1",
+      "description": "性能统计(命中/解码/耗时采样)"
+    }
+  ]
+}
