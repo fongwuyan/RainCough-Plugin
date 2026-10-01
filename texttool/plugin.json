@@ -1,7 +1,7 @@
 {
   "name": "texttool",
   "label": "文本工具",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "description": "正则匹配/文本替换/JSON↔YAML 转换/文本统计(接口库 v4 迁移)",
   "author": "RainCough",
   "icon": "",
