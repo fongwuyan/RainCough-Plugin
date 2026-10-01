@@ -4,8 +4,10 @@
 扫描根目录下含 plugin.json(v4) 的插件目录, 读取 name/label/version/description/interfaces。
 要求: 面板 v4 接口库(pluginx); 插件=独立 systemd 单元, 无端口。
 运行: python gen_registry.py
+     python gen_registry.py --stdout   # 只打印 JSON 不写盘(受限环境/需要调用方落盘时用)
 """
 import os
+import sys
 import json
 import time
 
@@ -51,6 +53,11 @@ def main():
         'updated': time.strftime('%Y-%m-%d %H:%M:%S'),
         'plugins': plugins,
     }
+    if '--stdout' in sys.argv:
+        # 不写盘: 交给调用方落盘(如 Windows 沙箱里 python 写盘被拦)
+        json.dump(registry, sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write('\n')
+        return
     with open(OUT, 'w', encoding='utf-8') as f:
         json.dump(registry, f, ensure_ascii=False, indent=2)
     print('generated %s with %d plugins' % (OUT, len(plugins)))

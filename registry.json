@@ -1,11 +1,11 @@
 {
   "name": "RainCough 插件集(v4)",
-  "updated": "2026-09-19 20:51:06",
+  "updated": "2026-10-01 14:48:17",
   "plugins": [
     {
       "name": "JMComic",
       "label": "JMComic",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "JMComic",
       "author": "RainCough",
       "description": "禁漫天堂搜索与漫画阅读(接口库 v4 迁移)",
@@ -22,13 +22,17 @@
         "jmcomic.config.save",
         "jmcomic.info",
         "jmcomic.image",
-        "jmcomic.download.status"
+        "jmcomic.cover",
+        "jmcomic.download.cancel",
+        "jmcomic.covers",
+        "jmcomic.prefetch",
+        "jmcomic.perf.stats"
       ]
     },
     {
       "name": "aigen",
       "label": "AI 生图",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "aigen",
       "author": "RainCough",
       "description": "本地 SD1.5 文生图/图生图, 支持 EasyNegative、VAE、Real-ESRGAN(接口库 v4 迁移)",
@@ -50,7 +54,7 @@
     {
       "name": "compress",
       "label": "解压压缩",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "compress",
       "author": "RainCough",
       "description": "解压/压缩/格式转换/对比(7z)(接口库 v4 迁移)",
@@ -67,7 +71,7 @@
     {
       "name": "dltool",
       "label": "下载工具",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "dltool",
       "author": "RainCough",
       "description": "下载/分片/重命名与文档转换(接口库 v4 迁移)",
@@ -85,7 +89,7 @@
     {
       "name": "docker",
       "label": "Docker 管理",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "docker",
       "author": "RainCough",
       "description": "容器/镜像/卷/网络/Compose 管理(接口库 v4 迁移)",
@@ -116,7 +120,7 @@
     {
       "name": "filehash",
       "label": "文件校验",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "filehash",
       "author": "RainCough",
       "description": "哈希计算/生成/校验与目录统计查重(接口库 v4 迁移)",
@@ -132,7 +136,7 @@
     {
       "name": "imagetool",
       "label": "图像工具",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "imagetool",
       "author": "RainCough",
       "description": "图片相似度与图像处理(ImageMagick)(接口库 v4 迁移)",
@@ -145,7 +149,7 @@
     {
       "name": "kvm",
       "label": "KVM 虚拟机",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "kvm",
       "author": "RainCough",
       "description": "KVM/QEMU 虚拟机管理: 列表、启停、详情、VNC、存储池与镜像(接口库 v4 迁移)",
@@ -169,7 +173,7 @@
     {
       "name": "laizhangsetu",
       "label": "来张涩图",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "laizhangsetu",
       "author": "RainCough",
       "description": "调用 Lolicon API 获取随机 Pixiv 图片, 支持标签搜索、R18、图片缓存(接口库 v4 迁移)",
@@ -187,7 +191,7 @@
     {
       "name": "mcserver",
       "label": "MC 服务器",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "mcserver",
       "author": "RainCough",
       "description": "多实例 Minecraft 服务器: 实时控制台、监控、启停、实例 CRUD、核心切换(接口库 v4 迁移)",
@@ -215,7 +219,7 @@
     {
       "name": "mcskin",
       "label": "图片转皮肤",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "mcskin",
       "author": "RainCough",
       "description": "图片转 MC Java 皮肤: 立绘映射、AI 上色(接口库 v4 迁移)",
@@ -239,7 +243,7 @@
     {
       "name": "ocrqr",
       "label": "识别二维码",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "ocrqr",
       "author": "RainCough",
       "description": "OCR 识别(rapidocr)与二维码生成/解码(接口库 v4 迁移)",
@@ -254,7 +258,7 @@
     {
       "name": "texttool",
       "label": "文本工具",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "texttool",
       "author": "RainCough",
       "description": "正则匹配/文本替换/JSON↔YAML 转换/文本统计(接口库 v4 迁移)",
@@ -269,7 +273,7 @@
     {
       "name": "touchgal",
       "label": "TouchGal 游戏查找",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "touchgal",
       "author": "RainCough",
       "description": "搜索 Galgame 游戏资源、获取下载链接、图片识别(接口库 v4 迁移)",
@@ -284,7 +288,7 @@
     {
       "name": "uptime",
       "label": "Uptime 监控",
-      "version": "3.0.0",
+      "version": "1.0.0",
       "path": "uptime",
       "author": "RainCough",
       "description": "站点探活监控: 定时检测 HTTP 目标在线状态、响应时间与可用率(接口库 v4 迁移)",
@@ -303,7 +307,7 @@
     {
       "name": "vpn",
       "label": "VPN 网络",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "vpn",
       "author": "RainCough",
       "description": "v2ray/wireguard/openvpn 订阅管理: 订阅拉取、节点测试、连接控制(接口库 v4 迁移)",
@@ -337,7 +341,7 @@
     {
       "name": "webspy",
       "label": "采集解析",
-      "version": "2.0.0",
+      "version": "1.0.0",
       "path": "webspy",
       "author": "RainCough",
       "description": "搜索/链接检测/RSS/正文提取(接口库 v4 迁移)",
