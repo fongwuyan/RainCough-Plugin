@@ -36,3 +36,10 @@ JMComic/config/
 *.orig
 __pycache__/
 *.pyc
+
+# 插件运行时产物(每台机器不同, 不属于源码)
+*/notes.json
+*/config.json
+*/.rc.endpoint
+*/.runtime.log
+*/.create-*.xml

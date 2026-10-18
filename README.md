@@ -34,6 +34,35 @@ sudo systemctl restart rc-v6.service
 启动后插件会出现在 `/api/plugins` 与侧栏「插件」菜单。首次启动需要在「服务」里
 把该插件设为开机自启（autostart），否则面板重启后它不会自动拉起。
 
+## 仓库内含插件
+
+| 插件 | 说明 | 系统依赖 |
+|---|---|---|
+| `JMComic` | 禁漫天堂搜索与漫画阅读 | Python + `jmcomic` / `requests`（`plugin.json` 的 `requirements` 已声明，面板启动前会预检） |
+| `vm` | KVM/QEMU 虚拟机管理：列表、启停、实时监控、创建、快照、VNC 控制台 | `libvirt-clients`(`virsh`) + `qemu-utils`(`qemu-img`)，创建虚拟机额外需要 `virtinst` |
+
+### vm 插件：权限说明
+
+管理虚拟机需要能对 libvirt 的 system 实例做写操作。满足任一条件即可：
+
+1. 面板以 **root** 运行（`install.sh` 默认配置）
+2. 运行面板的用户在 **`libvirt` 组**（`sudo usermod -aG libvirt <用户>`，重新登录生效）
+3. 该用户具备**免密 sudo**（`NOPASSWD`）
+4. libvirt socket 权限开放（如 `0666`）
+
+不满足时插件仍能**列出**虚拟机（libvirt 允许普通用户只读），但启停/创建/删除会被禁用，
+界面会明确提示原因，不会静默失败。
+
+安装依赖（Debian/Ubuntu）：
+
+```bash
+sudo apt install libvirt-daemon-system libvirt-clients qemu-utils virtinst
+sudo systemctl enable --now libvirtd
+```
+
+> 插件不保存任何 sudo 密码。早期实现曾把密码写进 `config.json`，现已彻底移除 ——
+> 那既会泄露，也会因时间戳过期而失效。
+
 ## 插件运行时
 
 v6 面板支持多种语言的插件后端，由 `internal/pluginrt` 自动解析 `backend.exec`：

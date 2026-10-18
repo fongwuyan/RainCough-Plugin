@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集(v4)",
-  "updated": "2026-10-01 14:48:17",
+  "updated": "2026-10-18 12:52:30",
   "plugins": [
     {
       "name": "JMComic",
@@ -8,7 +8,7 @@
       "version": "1.00.1",
       "path": "JMComic",
       "author": "RainCough",
-      "description": "禁漫天堂搜索与漫画阅读(接口库 v4 迁移, 支持 py/php/go/java 运行时)",
+      "description": "禁漫天堂搜索与漫画阅读(接口库 v4 迁移)",
       "interfaces": [
         "jmcomic.search",
         "jmcomic.meta",
@@ -26,7 +26,37 @@
         "jmcomic.download.cancel",
         "jmcomic.covers",
         "jmcomic.prefetch",
-        "jmcomic.perf.stats"
+        "jmcomic.perf.stats",
+        "jmcomic.batch.start",
+        "jmcomic.batch.status",
+        "jmcomic.batch.stop"
+      ]
+    },
+    {
+      "name": "vm",
+      "label": "虚拟机",
+      "version": "1.0.0",
+      "path": "vm",
+      "author": "RainCough",
+      "description": "KVM/QEMU 虚拟机管理：列表、启停、实时监控、创建、快照、VNC 控制台",
+      "interfaces": [
+        "vm.info",
+        "vm.list",
+        "vm.detail",
+        "vm.stats",
+        "vm.action",
+        "vm.autostart",
+        "vm.note.get",
+        "vm.note.save",
+        "vm.images.list",
+        "vm.pools.list",
+        "vm.create",
+        "vm.delete",
+        "vm.console",
+        "vm.snapshot.list",
+        "vm.snapshot.create",
+        "vm.snapshot.revert",
+        "vm.snapshot.delete"
       ]
     }
   ]
