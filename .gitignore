@@ -30,3 +30,9 @@ JMComic/config/
 *.7z
 *.tar.gz
 .DS_Store
+
+# 编辑器/构建临时备份, 不入库
+*.bak
+*.orig
+__pycache__/
+*.pyc
