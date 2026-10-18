@@ -1,0 +1,10 @@
+# 插件后端脚本与清单固定 LF —— 它们在 Linux 上被 python3 执行,
+# CRLF 虽不至于立刻报错, 但会让 shebang 失效、git diff 噪音变大。
+*.py     text eol=lf
+*.json   text eol=lf
+*.sh     text eol=lf
+*.md     text eol=lf
+
+# 前端构建产物是 JS, 也保持 LF
+*.js     text eol=lf
+*.css    text eol=lf
