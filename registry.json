@@ -1,11 +1,11 @@
 {
   "name": "RainCough 插件集(v4)",
-  "updated": "2026-10-18 18:07:50",
+  "updated": "2026-10-18 19:02:10",
   "plugins": [
     {
       "name": "JMComic",
       "label": "JMComic",
-      "version": "1.00.6",
+      "version": "1.00.7",
       "path": "JMComic",
       "author": "RainCough",
       "description": "禁漫天堂搜索与漫画阅读(接口库 v4 迁移)",
