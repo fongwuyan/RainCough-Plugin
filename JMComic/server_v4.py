@@ -26,6 +26,25 @@ import threading as _th
 # 提到 6：实际并发仍受 server.py 的 _cdn_lock(4) 约束，不会把站点打爆。
 _SERVE_LOCK = _th.BoundedSemaphore(6)
 
+# 内置下载器：自己按页并发下载（见 downloader.py 顶部说明）。
+# 延迟到首次使用时初始化，避免插件启动就去读状态文件。
+_DL = None
+_DL_LOCK = _th.Lock()
+
+
+def _dl():
+    global _DL
+    if _DL is None:
+        with _DL_LOCK:
+            if _DL is None:
+                import downloader as _dlm
+                _DL = _dlm.Downloader(
+                    plugin_dir=M.PLUGIN_DIR,
+                    server_module=M,
+                )
+    return _DL
+
+
 # 性能统计
 _PERF = {'covers_hit': 0, 'covers_miss': 0, 'page_hit': 0, 'page_miss': 0, 'recent_ms': []}
 import time as _time
@@ -108,6 +127,11 @@ def _chapter_files(aid, cid):
 _COVER_INFLIGHT = set()
 _COVER_INFLIGHT_LOCK = _th.Lock()
 
+# 确认拿不到封面的 aid（本子无图 / 取图失败）。
+# 记下来有两个作用：不必反复重试；顺序裁剪时可以跳过它，避免堵住后面。
+_COVER_FAILED = set()
+_COVER_FAILED_MAX = 5000
+
 
 # 封面缩略图尺寸：卡片最宽也就 120dp，360px 已经足够（3x 屏也清晰）
 COVER_THUMB_W = 360
@@ -155,6 +179,33 @@ def _make_thumb(src_path, aid):
         return thumb
     except Exception:
         return None
+
+
+def _prefix_filter(aids, covers):
+    """只保留「从列表头开始连续就绪」的那部分。
+
+    ★ 这是「按顺序加载」的关键：批量接口无论走哪条路径（首次触发生成 /
+      后续只查缓存），返回给前端的 covers 都必须是列表前缀。
+      否则前端会出现「第 3 个有图、第 2 个还空着」的乱序观感。
+
+    跳过规则：确认拿不到的（_COVER_FAILED）直接跳过，不算断点 ——
+    否则一个没有封面的本子会让后面全部不显示。
+    """
+    out = {}
+    for a in aids:
+        if a in covers:
+            out[a] = covers[a]
+        elif a in _COVER_FAILED:
+            continue
+        else:
+            break
+    return out
+
+
+def _mark_cover_failed(aid):
+    if len(_COVER_FAILED) > _COVER_FAILED_MAX:
+        _COVER_FAILED.clear()
+    _COVER_FAILED.add(aid)
 
 
 def _thumb_url_if_exists(aid):
@@ -510,6 +561,9 @@ def jm_cover(params):
 # 列表页 20 个未缓存封面要等十几秒，前端只能一直转圈。
 COVER_BATCH_TIMEOUT = 4.0
 
+# 每块并发数。小一点顺序感更强（前 4 个先出来），太大就回到"乱序"观感。
+COVER_CHUNK = 4
+
 
 @rc.interface("jmcomic.covers")
 def jm_covers(params):
@@ -543,32 +597,124 @@ def jm_covers(params):
             pending.append(a)
 
     if cached_only:
-        return {'ok': True, 'covers': covers, 'total': len(aids),
+        pref = _prefix_filter(aids, covers)
+        return {'ok': True, 'covers': pref, 'total': len(aids),
                 'pending': len(pending), 'cached_only': True}
 
     generated = 0
+    failed_aids = []
     if pending:
-        ex = _cf.ThreadPoolExecutor(max_workers=6)
+        # ★ 并发生成，但**按顺序收集**。
+        #
+        # 之前两种做法都不对：
+        #   · 全部并发、谁先完成返回谁 → 界面上"第 5 个先出图、第 1 个还空着"
+        #   · 分块串行 → 顺序是对的，但块与块之间互相等待，慢一倍
+        #
+        # 现在：先把任务全部提交（并发跑，速度最快），再按列表顺序逐个取结果。
+        # 前一个没好就不返回后一个 —— 返回给前端的 covers 永远是列表前缀，
+        # 前端从上往下填充，观感就是"一个一个按顺序出图"。
+        # 已经生成完但排在后面的，下次请求立刻命中（已落盘），不会重复劳动。
+        deadline = _time.time() + COVER_BATCH_TIMEOUT
+        ex = _cf.ThreadPoolExecutor(max_workers=COVER_CHUNK)
         try:
-            futs = {ex.submit(_ensure_cover, a): a for a in pending}
-            done, _ = _cf.wait(futs, timeout=COVER_BATCH_TIMEOUT)
-            for f in done:
-                a = futs[f]
+            futures = [(a, ex.submit(_ensure_cover, a)) for a in pending]
+            for a, f in futures:
+                remain = deadline - _time.time()
+                if remain <= 0.05:
+                    break
                 try:
-                    u = f.result()
-                    if u:
-                        covers[a] = u
-                        generated += 1
+                    u = f.result(timeout=remain)
+                except _cf.TimeoutError:
+                    # 只是还没轮到它完成，不是"没有" —— 留给下次请求
+                    break
                 except Exception:
-                    pass
+                    failed_aids.append(a)
+                    continue
+                if u:
+                    covers[a] = u
+                    generated += 1
+                else:
+                    # 确认拿不到（本子没图/取图失败）→ 记下来，让裁剪时跳过这个位置，
+                    # 否则它会成为顺序门控上永远过不去的坎，把后面全堵住
+                    failed_aids.append(a)
+                    _mark_cover_failed(a)
         finally:
-            # 不等剩余任务：它们会继续生成并写入 cache/，下次请求直接命中
             ex.shutdown(wait=False, cancel_futures=False)
 
-    # pending 是「本次没给出来的」数量。注意不能写成 len(pending)-len(covers)，
-    # 因为 covers 里还含第一遍命中的，那样会算出负数。
-    return {'ok': True, 'covers': covers, 'total': len(aids),
-            'pending': len(pending) - generated}
+    pref = _prefix_filter(aids, covers)
+    return {'ok': True, 'covers': pref, 'total': len(aids),
+            'pending': len(pending) - generated - len(failed_aids),
+            'failed': failed_aids}
+
+
+# ---------------------------------------------------------------- 内置下载器
+#
+# 与旧的 jmcomic.download 的区别：旧的是 jmcomic 库的黑盒 download_album，
+# 只有"在跑/完成"两个状态，失败就整本重来；且单页 timeout=30s ——
+# 而本机到 CDN 的 TTFB 实测约 41s，必然超时。
+# 新实现按页并发下载、按页重试、断点续传、进度可观测。
+
+@rc.interface("jmcomic.dl.start")
+def jm_dl_start(params):
+    """开始下载。{aid, name?, author?, workers?}"""
+    aid = _s(params, 'aid')
+    if not aid or not aid.isdigit():
+        _err('缺少漫画ID')
+    try:
+        workers = int(_p(params).get('workers') or 6)
+    except (TypeError, ValueError):
+        workers = 6
+    r = _dl().start(aid, _s(params, 'name'), _s(params, 'author'), workers)
+    return {'ok': True, 'result': r, 'task': _dl().status(aid)}
+
+
+@rc.interface("jmcomic.dl.status")
+def jm_dl_status(params):
+    """单个任务的进度。{aid}"""
+    aid = _s(params, 'aid')
+    t = _dl().status(aid)
+    if not t:
+        return {'ok': True, 'task': None}
+    return {'ok': True, 'task': t}
+
+
+@rc.interface("jmcomic.dl.list")
+def jm_dl_list(params):
+    """所有下载任务（按更新时间倒序）。"""
+    return {'ok': True, 'tasks': _dl().list_all()}
+
+
+@rc.interface("jmcomic.dl.pause")
+def jm_dl_pause(params):
+    aid = _s(params, 'aid')
+    return {'ok': True, 'result': _dl().pause(aid)}
+
+
+@rc.interface("jmcomic.dl.resume")
+def jm_dl_resume(params):
+    aid = _s(params, 'aid')
+    return {'ok': True, 'result': _dl().resume(aid), 'task': _dl().status(aid)}
+
+
+@rc.interface("jmcomic.dl.cancel")
+def jm_dl_cancel(params):
+    aid = _s(params, 'aid')
+    return {'ok': True, 'result': _dl().cancel(aid)}
+
+
+@rc.interface("jmcomic.dl.remove")
+def jm_dl_remove(params):
+    """移除任务；delete_files=true 时连同已下文件一起删。"""
+    aid = _s(params, 'aid')
+    delete = str(_p(params).get('delete_files') or '').lower() in ('1', 'true', 'yes')
+    return {'ok': True, 'result': _dl().remove(aid, delete)}
+
+
+@rc.interface("jmcomic.dl.retry_failed")
+def jm_dl_retry_failed(params):
+    """只补下失败的页（不用整本重来）。"""
+    aid = _s(params, 'aid')
+    return {'ok': True, 'result': _dl().retry_failed(aid), 'task': _dl().status(aid)}
 
 
 @rc.interface("jmcomic.prefetch")
@@ -850,11 +996,11 @@ if __name__ == "__main__":
         version=_META["version"],
         manifest={"label": "JMComic", "description": "禁漫搜索/阅读/库"},
         frontend={"pages": [{"path": "", "title": "JMComic"}]},
-        iface_ids=["jmcomic.search", "jmcomic.meta", "jmcomic.album", "jmcomic.chapter",
-                   "jmcomic.cover", "jmcomic.covers", "jmcomic.prefetch", "jmcomic.image",
-                   "jmcomic.perf.stats", "jmcomic.download", "jmcomic.download.status",
-                   "jmcomic.download.cancel", "jmcomic.library.list", "jmcomic.library.delete",
-                   "jmcomic.config.get", "jmcomic.config.save", "jmcomic.info",
-                   "jmcomic.batch.start", "jmcomic.batch.status", "jmcomic.batch.stop"],
+        # ★ 不要在这里硬编码接口清单。
+        #   原来写死了 20 个 ID，新增的 @rc.interface 虽然注册了 handler，
+        #   但 rc.serve 的 iface_ids 参数会覆盖 _handlers.keys() ——
+        #   面板侧就看不到新接口，调用时报"接口不属于该插件"。
+        #   传 None 让 rcplugin 自动取全部已注册接口。
+        iface_ids=None,
         plugin_dir=os.path.dirname(os.path.abspath(__file__)),
     )
