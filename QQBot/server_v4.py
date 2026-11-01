@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""QQ Bot 插件 —— 统一控制台网关。
+"""雨咯Bot 插件 —— 统一控制台网关。
 
-两块后端：
+三块后端：
   · NapCat（协议端）—— 概览 / QQ 账户 / 运行日志，走它自己的 WebUI API
-  · rcbot（机器人）—— 模型提供商 / 人格 / 会话 / 上下文，走 127.0.0.1:6710
+  · rcbot（机器人）—— 模型提供商 / 人格 / 会话 / 上下文 / 聊天记录，走 127.0.0.1:6710
+  · NapCat 实例管理 —— systemd 模板多实例（tools/napcat_inst.py）
 
 插件本身不持有业务状态，只做转发与聚合；NapCat 的 Credential 与日志环形缓冲
 是唯一的进程内缓存，重启即失效、可自愈。
@@ -26,8 +27,9 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rcplugin as rc  # noqa: E402
 
-NAME = "QQBot"          # ★ 必须与插件目录名一致
-VERSION = "1.2.0"
+NAME = "QQBot"          # ★ 必须与插件目录名一致（目录名即插件身份，不改）
+VERSION = "1.3.0"
+LABEL = "雨咯Bot"
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(DIR, "data")
@@ -38,9 +40,16 @@ DEFAULT_CFG = {
     "api": "http://127.0.0.1:6710",          # rcbot
     "timeout": 90,
     "napcat": {
-        "base": "http://127.0.0.1:6099",     # NapCat WebUI
+        "base": "http://127.0.0.1:6099",     # NapCat WebUI（默认实例）
         "token": "rcnapcat",
         "unit": "napcat",                    # systemd 单元名（读历史日志用）
+    },
+    # ★ 多实例：NapCat 实例的 systemd 管理
+    "instances": {
+        "base_dir": "/opt/napcat/instances",
+        "webui_base": 6099,      # WebUI = base + index
+        "onebot_base": 6700,     # OneBot = base + 2*index（避开 rcbot 的 6710）
+        "manage_enabled": True,  # 是否允许面板增删实例（需要 root）
     },
 }
 
@@ -159,6 +168,65 @@ def _nc(path, body=None, method="POST", timeout=15, retry=True):
 
 def _nc_data(path, body=None, method="POST", timeout=15):
     r = _nc(path, body, method, timeout)
+    if r.get("code") not in (0, None):
+        raise RuntimeError("NapCat %s 失败：%s" % (path, r.get("message") or r.get("code")))
+    return r.get("data")
+
+
+# ---- 指定实例的 NapCat 调用（多账号时每个实例有自己的 WebUI 端口与 token）
+#
+# Credential 是 per-instance 的（登录的是那个实例的 WebUI），
+# 所以要单独缓存，不能共用 _CRED。
+
+_CRED_AT = {}
+_CRED_AT_LOCK = threading.RLock()
+
+
+def _nc_login_at(base, token, force=False):
+    """对指定 WebUI 登录，返回 Credential。"""
+    with _CRED_AT_LOCK:
+        key = base + "|" + token
+        c = _CRED_AT.get(key)
+        if not force and c and c["exp"] > time.time():
+            return c["val"]
+        digest = hashlib.sha256((token + ".napcat").encode("utf-8")).hexdigest()
+        url = base.rstrip("/") + "/api/auth/login"
+        data = json.dumps({"token": digest}).encode("utf-8")
+        req = urllib.request.Request(url, data=data,
+                                     headers={"Content-Type": "application/json"},
+                                     method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                d = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception as e:
+            raise RuntimeError("连不上 NapCat WebUI（%s）：%s" % (base, str(e)[:120]))
+        cred = (d.get("data") or {}).get("Credential") or ""
+        if not cred:
+            raise RuntimeError("NapCat 登录失败：token 不对？")
+        _CRED_AT[key] = {"val": cred, "exp": time.time() + 50 * 60}
+        return cred
+
+
+def _nc_at(base, token, path, body=None, method="POST", timeout=15, retry=True):
+    url = base.rstrip("/") + "/api" + path
+    data = json.dumps(body if body is not None else {}).encode("utf-8") if method == "POST" else None
+    headers = {"Content-Type": "application/json",
+               "Authorization": "Bearer " + _nc_login_at(base, token)}
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        if retry and e.code in (401, 403):
+            _nc_login_at(base, token, force=True)
+            return _nc_at(base, token, path, body, method, timeout, retry=False)
+        raise RuntimeError("NapCat %s 返回 HTTP %s" % (path, e.code))
+    except Exception as e:
+        raise RuntimeError("NapCat 请求失败（%s）：%s" % (path, str(e)[:120]))
+
+
+def _nc_data_at(base, token, path, body=None, method="POST", timeout=15):
+    r = _nc_at(base, token, path, body, method, timeout)
     if r.get("code") not in (0, None):
         raise RuntimeError("NapCat %s 失败：%s" % (path, r.get("message") or r.get("code")))
     return r.get("data")
@@ -531,11 +599,435 @@ def nc_logs_clear(params):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- NapCat 实例管理
+#
+# 一个 QQ 号 = 一个 NapCat 实例 = 一套 systemd 单元（napcat@<uin> + xvfb@<n>）。
+# 端口：WebUI = 6099+index，OneBot = 6700+2*index（避开 rcbot 的 6710）。
+
+
+def _inst_cfg():
+    return _cfg().get("instances") or {}
+
+
+def _run(cmd, timeout=60):
+    """跑一条命令，返回 (rc, 输出)。"""
+    try:
+        p = subprocess.run(cmd, shell=True, capture_output=True, timeout=timeout)
+        return p.returncode, ((p.stdout or b"") + (p.stderr or b"")).decode("utf-8", "replace")
+    except Exception as e:
+        return 1, str(e)
+
+
+def _inst_dir(uin):
+    base = (_inst_cfg().get("base_dir") or "/opt/napcat/instances").rstrip("/")
+    return os.path.join(base, str(uin))
+
+
+def _inst_env(uin):
+    """读实例的 env 文件（端口/display）。"""
+    out = {}
+    try:
+        with open(os.path.join(_inst_dir(uin), "env"), "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    out[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return out
+
+
+def _inst_list():
+    """列出所有实例目录。"""
+    base = (_inst_cfg().get("base_dir") or "/opt/napcat/instances").rstrip("/")
+    out = []
+    try:
+        for n in sorted(os.listdir(base)):
+            d = os.path.join(base, n)
+            if os.path.isdir(d):
+                out.append(n)
+    except Exception:
+        pass
+    return out
+
+
+def _unit_state(unit):
+    rc_, o = _run("systemctl is-active %s 2>/dev/null" % unit, timeout=15)
+    return (o or "").strip() or "unknown"
+
+
+def _unit_enabled(unit):
+    rc_, o = _run("systemctl is-enabled %s 2>/dev/null" % unit, timeout=15)
+    return (o or "").strip() or "unknown"
+
+
+@rc.interface("qqbot.inst.list")
+def inst_list(params):
+    """实例列表：每个 QQ 号一个 NapCat 实例。"""
+    cfg = _cfg()
+    icfg = _inst_cfg()
+    base = (icfg.get("base_dir") or "/opt/napcat/instances").rstrip("/")
+    items = []
+    for uin in _inst_list():
+        env = _inst_env(uin)
+        webui_port = env.get("WEBUI_PORT") or ""
+        ob_port = env.get("ONEBOT_PORT") or ""
+        disp = env.get("DISPLAY") or ""
+        items.append({
+            "uin": uin,
+            "unit": "napcat@%s" % uin,
+            "xvfb_unit": "xvfb@%s" % (disp.lstrip(":") or "1"),
+            "state": _unit_state("napcat@%s" % uin),
+            "enabled": _unit_enabled("napcat@%s" % uin),
+            "webui_port": int(webui_port) if webui_port.isdigit() else 0,
+            "onebot_port": int(ob_port) if ob_port.isdigit() else 0,
+            "display": disp,
+            "dir": _inst_dir(uin),
+            "webui": ("http://127.0.0.1:%s" % webui_port) if webui_port else "",
+        })
+    # rcbot 侧的实际连接状态（哪些号真的连上了）
+    try:
+        st = _data("/api/accounts", timeout=15) or {}
+        live = {str(a.get("uin") or ""): a for a in (st.get("items") or [])}
+    except Exception:
+        live = {}
+    for it in items:
+        a = live.get(str(it["uin"]))
+        if a:
+            it["online"] = bool(a.get("online"))
+            it["nick"] = a.get("nick") or ""
+            it["avatar"] = a.get("avatar") or ""
+            it["account_id"] = a.get("id") or ""
+            it["connected"] = bool(a.get("connected"))
+        else:
+            it["online"] = False
+            it["nick"] = ""
+            it["avatar"] = ""
+    return {"ok": True, "data": {"items": items, "base_dir": base,
+                                 "count": len(items)}}
+
+
+@rc.interface("qqbot.inst.add")
+def inst_add(params):
+    """新增实例：建目录 + 写 env + 写 systemd 模板 + 启动 + 取二维码。
+
+    需要 root（非 root 面板会明确拒绝，不 sudo）。
+    """
+    p = params or {}
+    uin = str(p.get("uin") or "").strip()
+    if not uin.isdigit():
+        raise RuntimeError("uin 必须是数字")
+    if os.geteuid() != 0:
+        raise RuntimeError("新增实例需要 root 权限（当前面板不是 root 运行）")
+    if os.path.isdir(_inst_dir(uin)):
+        raise RuntimeError("这个 QQ 号的实例已经存在了")
+
+    icfg = _inst_cfg()
+    base = (icfg.get("base_dir") or "/opt/napcat/instances").rstrip("/")
+    d = os.path.join(base, uin)
+    for sub in ("home", "work", "logs"):
+        os.makedirs(os.path.join(d, sub), exist_ok=True)
+    os.makedirs(os.path.join(d, "work", "config"), exist_ok=True)
+
+    # 分配端口：实测空闲，且 OneBot 避开 rcbot 的 6710
+    _, used_out = _run("ss -ltn 2>/dev/null | awk 'NR>1{print $4}'", timeout=15)
+    used = set()
+    for line in (used_out or "").splitlines():
+        m = re.search(r":(\d+)\s*$", line.strip())
+        if m:
+            used.add(int(m.group(1)))
+    wb = int(icfg.get("webui_base") or 6099)
+    ob = int(icfg.get("onebot_base") or 6700)
+    idx = 0
+    while True:
+        wp = wb + idx
+        op = ob + 2 * idx
+        if op != 6710 and wp not in used and op not in used:
+            break
+        idx += 1
+    disp = 1
+    _, disp_out = _run("ps aux 2>/dev/null | grep -o 'Xvfb :[0-9]*'", timeout=15)
+    used_d = set(int(x) for x in re.findall(r":(\d+)", disp_out or ""))
+    while disp in used_d:
+        disp += 1
+
+    with open(os.path.join(d, "env"), "w", encoding="utf-8") as f:
+        f.write("# 由雨咯Bot 面板生成 —— 每个实例一份\n")
+        f.write("WEBUI_PORT=%d\n" % wp)
+        f.write("ONEBOT_PORT=%d\n" % op)
+        f.write("DISPLAY=:%d\n" % disp)
+        f.write("INDEX=%d\n" % idx)
+
+    token = (cfg_napcat_token())
+    wcfg = os.path.join(d, "work", "config", "webui.json")
+    if not os.path.exists(wcfg):
+        with open(wcfg, "w", encoding="utf-8") as f:
+            json.dump({"host": "0.0.0.0", "port": wp, "token": token,
+                       "loginRate": 100}, f, ensure_ascii=False)
+
+    # systemd 模板
+    _write_units()
+    _run("systemctl daemon-reload", timeout=30)
+
+    # 启动
+    _run("systemctl enable napcat@%s" % uin, timeout=30)
+    _run("systemctl start napcat@%s" % uin, timeout=60)
+
+    # 把账号加进 rcbot 配置（这样 rcbot 会连它）
+    try:
+        _data("/api/accounts", "POST", {
+            "action": "add", "uin": uin,
+            "ws_url": "ws://127.0.0.1:%d" % op,
+            "webui": "http://127.0.0.1:%d" % wp,
+            "unit": "napcat@%s" % uin,
+            "instance_dir": d,
+        }, timeout=25)
+    except Exception as e:
+        return {"ok": False, "error": "实例已建好，但加进 rcbot 失败：%s" % str(e)[:200],
+                "data": {"uin": uin, "webui_port": wp, "onebot_port": op}}
+
+    return {"ok": True, "data": {"uin": uin, "webui_port": wp,
+                                 "onebot_port": op, "display": ":%d" % disp,
+                                 "dir": d, "unit": "napcat@%s" % uin}}
+
+
+def cfg_napcat_token():
+    return (_cfg().get("napcat") or {}).get("token") or "rcnapcat"
+
+
+_XVFB_UNIT = """[Unit]
+Description=Xvfb display :%i (for napcat@%i)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/Xvfb :%i -screen 0 1080x760x16 +extension GLX +render
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+_NAPCAT_UNIT = """[Unit]
+Description=NapCat instance %i (QQ %i)
+After=network-online.target xvfb@%i.service
+Wants=network-online.target
+Requires=xvfb@%i.service
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=/opt/napcat/instances/%i/home
+Environment=NAPCAT_WORKDIR=/opt/napcat/instances/%i/work
+Environment=NAPCAT_QUICK_ACCOUNT=%i
+Environment=DISPLAY=:%i
+EnvironmentFile=-/opt/napcat/instances/%i/env
+WorkingDirectory=/opt/napcat/napcat
+ExecStart=/opt/napcat/QQ/qq --no-sandbox
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+TimeoutStopSec=30
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _write_units():
+    """写 systemd 模板单元。"""
+    for name, content in (("xvfb@.service", _XVFB_UNIT),
+                           ("napcat@.service", _NAPCAT_UNIT)):
+        path = os.path.join("/etc/systemd/system", name)
+        try:
+            old = ""
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    old = f.read()
+            if old != content:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+        except Exception:
+            pass
+
+
+@rc.interface("qqbot.inst.action")
+def inst_action(params):
+    """实例操作：start / stop / restart / qrcode / quick_login / remove。"""
+    p = params or {}
+    uin = str(p.get("uin") or "").strip()
+    act = (p.get("action") or "").lower()
+    if not uin:
+        raise RuntimeError("缺少 uin")
+    env = _inst_env(uin)
+    wp = env.get("WEBUI_PORT") or ""
+    unit = "napcat@%s" % uin
+    token = cfg_napcat_token()
+
+    if act in ("start", "stop", "restart"):
+        _run("systemctl %s %s" % (act, unit), timeout=90)
+        return {"ok": True, "data": {"uin": uin, "action": act,
+                                     "state": _unit_state(unit)}}
+
+    if act == "remove":
+        if os.geteuid() != 0:
+            raise RuntimeError("删除实例需要 root 权限")
+        _run("systemctl disable --now %s" % unit, timeout=60)
+        disp = env.get("DISPLAY", ":1").lstrip(":")
+        _run("systemctl stop xvfb@%s" % disp, timeout=30)
+        try:
+            _data("/api/accounts", "POST", {"action": "remove", "id": "a%s" % uin},
+                  timeout=25)
+        except Exception:
+            pass
+        import shutil
+        d = _inst_dir(uin)
+        if os.path.isdir(d) and not p.get("keep_data"):
+            shutil.rmtree(d, ignore_errors=True)
+        return {"ok": True, "data": {"uin": uin, "removed": True}}
+
+    # 下面的都要连 WebUI，先确认端口
+    if not wp:
+        raise RuntimeError("这个实例没有 env 文件，端口未知")
+    base = "http://127.0.0.1:%s" % wp
+    if act == "qrcode":
+        st = _nc_data_at(base, token, "/QQLogin/CheckLoginStatus") or {}
+        q = _nc_data_at(base, token, "/QQLogin/GetQQLoginQrcode") or {}
+        return {"ok": True, "data": {"qrcode": q.get("qrcode") or st.get("qrcodeurl") or "",
+                                     "login": bool(st.get("isLogin")),
+                                     "phase": st.get("loginPhase") or "",
+                                     "webui": base}}
+
+    if act == "quick_login":
+        r = _nc_data_at(base, token, "/QQLogin/SetQuickLogin", {"uin": uin})
+        return {"ok": True, "data": r}
+
+    if act == "status":
+        st = _nc_data_at(base, token, "/QQLogin/CheckLoginStatus") or {}
+        return {"ok": True, "data": {"login": bool(st.get("isLogin")),
+                                     "phase": st.get("loginPhase") or "",
+                                     "coreReady": bool(st.get("coreReady"))}}
+
+    raise RuntimeError("不认识的动作：%s" % act)
+
+
+@rc.interface("qqbot.inst.logs")
+def inst_logs(params):
+    """实例日志（journalctl）。"""
+    p = params or {}
+    uin = str(p.get("uin") or "").strip()
+    unit = "napcat@%s" % uin if uin else (p.get("unit") or "napcat")
+    n = max(50, min(2000, int(p.get("lines") or 400)))
+    _, out = _run("journalctl -u %s -n %d --no-pager 2>/dev/null" % (unit, n), timeout=30)
+    items = [{"level": _guess_level(x), "text": x, "ts": 0}
+             for x in (out or "").splitlines() if x.strip()]
+    return {"ok": True, "items": items, "source": "journal", "total": len(items)}
+
+
 # ---------------------------------------------------------------- 机器人状态
 
 @rc.interface("rcbot.status")
 def status(params):
     return {"ok": True, "data": _data("/api/status", timeout=25)}
+
+
+# ---------------------------------------------------------------- 聊天记录
+
+@rc.interface("qqbot.chat.sessions")
+def chat_sessions(params):
+    """聊天记录会话列表。"""
+    p = params or {}
+    q = {}
+    for k in ("account_id", "kind", "kw", "limit"):
+        if p.get(k) not in (None, ""):
+            q[k] = p[k]
+    qs = urllib.parse.urlencode(q)
+    return {"ok": True, "data": _data("/api/chat/sessions" + ("?" + qs if qs else ""),
+                                       timeout=30)}
+
+
+@rc.interface("qqbot.chat.messages")
+def chat_messages(params):
+    """聊天记录消息分页。"""
+    p = params or {}
+    q = {}
+    for k in ("session_id", "before_id", "limit", "kw"):
+        if p.get(k) not in (None, ""):
+            q[k] = p[k]
+    if not q.get("session_id"):
+        raise RuntimeError("缺少 session_id")
+    qs = urllib.parse.urlencode(q)
+    return {"ok": True, "data": _data("/api/chat/messages?" + qs, timeout=30)}
+
+
+@rc.interface("qqbot.chat.stats")
+def chat_stats(params):
+    """聊天记录统计 + 媒体占用 + 磁盘水位。"""
+    p = params or {}
+    q = {}
+    if p.get("account_id"):
+        q["account_id"] = p["account_id"]
+    qs = urllib.parse.urlencode(q)
+    return {"ok": True, "data": _data("/api/chat/stats" + ("?" + qs if qs else ""),
+                                       timeout=30)}
+
+
+@rc.interface("qqbot.chat.export")
+def chat_export(params):
+    """导出 JSON。
+
+    rcbot 的 /api/chat/export 返回的是**文件下载**（带 Content-Disposition），
+    不是 JSON-RPC 那样的 {ok,data}，所以这里不能用 _data() —— 要直接取字节再解析。
+    """
+    p = params or {}
+    q = {}
+    for k in ("account_id", "session_id", "from", "to"):
+        if p.get(k) not in (None, ""):
+            q[k] = p[k]
+    qs = urllib.parse.urlencode(q)
+    url = _cfg()["api"].rstrip("/") + "/api/chat/export" + ("?" + qs if qs else "")
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            raw = r.read().decode("utf-8", "replace")
+    except Exception as e:
+        raise RuntimeError("导出失败：%s" % str(e)[:200])
+    try:
+        doc = json.loads(raw)
+    except Exception as e:
+        raise RuntimeError("导出结果不是合法 JSON：%s" % str(e)[:120])
+    return {"ok": True, "data": doc}
+
+
+@rc.interface("qqbot.chat.purge_media")
+def chat_purge_media(params):
+    """清理媒体文件（保留消息文本）。"""
+    p = params or {}
+    if p.get("confirm") is not True:
+        raise RuntimeError("需要 confirm=true")
+    return {"ok": True, "data": _data("/api/chat/purge-media", "POST", {
+        "account_id": p.get("account_id") or "",
+        "session_id": p.get("session_id") or "",
+        "from": int(p.get("from") or 0),
+        "to": int(p.get("to") or 0),
+        "confirm": True,
+    }, timeout=300)}
+
+
+@rc.interface("rcbot.accounts")
+def rcbot_accounts(params):
+    """rcbot 侧的账号列表（连接状态）。"""
+    return {"ok": True, "data": _data("/api/accounts", timeout=25)}
+
+
+@rc.interface("rcbot.account.save")
+def rcbot_account_save(params):
+    """新增/修改/删除账号（rcbot 侧配置）。"""
+    p = params or {}
+    return {"ok": True, "data": _data("/api/accounts", "POST", p, timeout=25)}
 
 
 # ---------------------------------------------------------------- 设置（触发 / 上下文 / 能力）
@@ -654,7 +1146,10 @@ IFACES = [
     "qqbot.health", "qqbot.conn.get", "qqbot.conn.save",
     "qqbot.nc.overview", "qqbot.nc.account", "qqbot.nc.action",
     "qqbot.nc.logs", "qqbot.nc.logs.clear",
-    "rcbot.status",
+    "qqbot.inst.list", "qqbot.inst.add", "qqbot.inst.action", "qqbot.inst.logs",
+    "qqbot.chat.sessions", "qqbot.chat.messages", "qqbot.chat.stats",
+    "qqbot.chat.export", "qqbot.chat.purge_media",
+    "rcbot.status", "rcbot.accounts", "rcbot.account.save",
     "rcbot.config.get", "rcbot.config.save", "rcbot.tools.search",
     "rcbot.providers", "rcbot.provider.save", "rcbot.provider.delete",
     "rcbot.provider.test", "rcbot.provider.models",
@@ -671,8 +1166,8 @@ if __name__ == "__main__":
         endpoint=os.environ.get("RC_ENDPOINT", ""),
         name=NAME,
         version=VERSION,
-        manifest={"label": "QQ Bot", "description": "NapCat + RainCough Bot 统一控制台"},
-        frontend={"pages": [{"path": "", "title": "QQ Bot"}]},
+        manifest={"label": LABEL, "description": "NapCat + RainCough Bot 统一控制台"},
+        frontend={"pages": [{"path": "", "title": LABEL}]},
         iface_ids=IFACES,
         plugin_dir=DIR,
     )

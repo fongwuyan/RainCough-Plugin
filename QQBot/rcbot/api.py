@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
-"""HTTP API：给 RainCough 插件做转发用，只监听 127.0.0.1。"""
+"""HTTP API：给 RainCough 插件做转发用，只监听 127.0.0.1。
+
+2026-11-01 新增：
+  /api/accounts*  多账号（连接状态、账号级配置）
+  /api/chat/*     全量聊天记录（会话、消息、导出、统计、清理）
+"""
 import json
+import os
 import time
 
 from aiohttp import web
 
-from . import compress, config, llm, logbuf, search, store
+from . import chats, compress, config, llm, logbuf, media, search, store
 from .bot import attach_images
 
 
@@ -24,20 +30,27 @@ async def _body(request):
         return {}
 
 
-def make_app(ob, bot):
+def make_app(mgr, bot):
     app = web.Application(client_max_size=8 * 1024 * 1024)
 
     # ---------------- 状态
 
     async def status(request):
         cfg = config.load()
-        st = await ob.status()
-        stats = await store.stats()
+        accounts = await mgr.status_all()
+        stats_ = await store.stats()
         prov = config.get_provider(cfg)
         persona = config.get_persona(cfg)
+        # 单账号时保留旧的 onebot 字段，前端老代码不用改
+        onebot = accounts[0] if len(accounts) == 1 else {
+            'connected': any(a.get('online') for a in accounts),
+            'self_id': accounts[0].get('self_id', '') if accounts else '',
+            'accounts': accounts,
+        }
         return ok({
-            'onebot': st,
-            'stats': stats,
+            'onebot': onebot,
+            'accounts': accounts,
+            'stats': stats_,
             'bot': cfg.get('bot'),
             'provider': (prov or {}).get('id'),
             'provider_model': (prov or {}).get('model'),
@@ -47,6 +60,93 @@ def make_app(ob, bot):
             'last_error': bot.last_error,
             'ts': int(time.time()),
         })
+
+    # ---------------- 账号
+
+    async def get_accounts(request):
+        cfg = config.load()
+        items = await mgr.status_all()
+        # 配置里有但还没连上的（刚加的号），也要显示出来
+        live = {a.get('id') for a in items}
+        for a in config.get_accounts(cfg):
+            if a['id'] not in live:
+                items.append({'id': a['id'], 'uin': a.get('uin') or '', 'online': False,
+                              'connected': False, 'nick': a.get('nick') or '',
+                              'avatar': a.get('avatar') or '', 'ws_url': a.get('ws_url') or '',
+                              'webui': a.get('webui') or '', 'unit': a.get('unit') or '',
+                              'enabled': bool(a.get('enabled', True)),
+                              'persona_id': a.get('persona_id') or '',
+                              'provider_id': a.get('provider_id') or '',
+                              'instance_dir': a.get('instance_dir') or '',
+                              'pending': True})
+        return ok({'items': items, 'count': len(items)})
+
+    async def post_accounts(request):
+        """新增/修改/删除账号。action = add | update | remove | toggle"""
+        b = await _body(request)
+        action = (b.get('action') or 'update').lower()
+        cfg = config.load()
+        obcfg = cfg.setdefault('onebot', {})
+        accs = obcfg.setdefault('accounts', [])
+        aid = (b.get('id') or '').strip()
+
+        def find(it):
+            for i, a in enumerate(accs):
+                if a.get('id') == aid:
+                    return i, a
+            return -1, None
+
+        if action == 'add':
+            uin = str(b.get('uin') or '').strip()
+            if not uin:
+                return bad('缺少 uin')
+            new_id = config.account_id(uin)
+            if any(a.get('id') == new_id for a in accs):
+                return bad('这个 QQ 号已经在列表里了')
+            acc = {
+                'id': new_id,
+                'uin': uin,
+                'ws_url': (b.get('ws_url') or '').strip(),
+                'access_token': b.get('access_token') or '',
+                'enabled': True,
+                'nick': b.get('nick') or '',
+                'avatar': b.get('avatar') or '',
+                'webui': b.get('webui') or '',
+                'unit': b.get('unit') or '',
+                'instance_dir': b.get('instance_dir') or '',
+            }
+            accs.append(acc)
+            await store.upsert_account(new_id, uin=uin, nick=acc['nick'])
+            config.save(cfg)
+            return ok({'id': new_id})
+
+        if action == 'remove':
+            i, a = find(aid)
+            if i < 0:
+                return bad('没有这个账号', 404)
+            accs.pop(i)
+            config.save(cfg)
+            return ok({'id': aid})
+
+        i, a = find(aid)
+        if i < 0:
+            return bad('没有这个账号', 404)
+        for k in ('ws_url', 'access_token', 'nick', 'avatar', 'webui', 'unit',
+                  'instance_dir', 'persona_id', 'provider_id'):
+            if k in b:
+                a[k] = b[k]
+        if 'enabled' in b:
+            a['enabled'] = bool(b['enabled'])
+        if isinstance(b.get('bot'), dict):
+            a['bot'] = b['bot']
+        config.save(cfg)
+        db_fields = {k: a[k] for k in ('nick', 'avatar', 'persona_id', 'provider_id')
+                     if k in a}
+        db_fields['enabled'] = 1 if a.get('enabled', True) else 0
+        if 'bot' in a:
+            db_fields['bot_cfg'] = a['bot']
+        await store.upsert_account(aid, **db_fields)
+        return ok({'id': aid})
 
     # ---------------- 配置
 
@@ -193,7 +293,8 @@ def make_app(ob, bot):
     # ---------------- 会话
 
     async def get_sessions(request):
-        rows = await store.list_sessions()
+        account_id = request.query.get('account_id') or ''
+        rows = await store.list_sessions(account_id)
         cfg = config.load()
         gnames = getattr(bot, '_group_names', {}) or {}
         for r in rows:
@@ -257,8 +358,9 @@ def make_app(ob, bot):
         sid = request.query.get('sid') or ''
         cfg = config.load()
         sess = await store.get_session(sid) if sid else None
-        persona = config.get_persona(cfg, (sess or {}).get('persona_id'))
-        provider = config.get_provider(cfg, (sess or {}).get('provider_id'))
+        acct = config.find_account(cfg, (sess or {}).get('account_id')) or {}
+        persona = config.get_persona(cfg, (sess or {}).get('persona_id'), acct)
+        provider = config.get_provider(cfg, (sess or {}).get('provider_id'), acct)
         system = (persona or {}).get('prompt') or ''
         msgs = await store.recent_messages(sid, int((cfg.get('context') or {}).get('max_history_messages') or 200))
         summ = await store.get_summary(sid)
@@ -302,13 +404,17 @@ def make_app(ob, bot):
         cfg = config.load()
         sid = (b.get('sid') or '').strip()
         if not sid:
-            sid = 'private:__test__'
-            await store.ensure_session('private', '__test__', title='试聊', mode='private')
+            dacc = config.default_account(cfg) or {}
+            sid = store.session_key('private', '__test__', 'private',
+                                    dacc.get('id') or '')
+            await store.ensure_session('private', '__test__', title='试聊', mode='private',
+                                       account_id=dacc.get('id') or '')
         sess = await store.get_session(sid)
         if not sess:
             return bad('会话不存在', 404)
-        persona = config.get_persona(cfg, (sess or {}).get('persona_id'))
-        provider = config.get_provider(cfg, (sess or {}).get('provider_id'))
+        acct = config.find_account(cfg, (sess or {}).get('account_id')) or {}
+        persona = config.get_persona(cfg, (sess or {}).get('persona_id'), acct)
+        provider = config.get_provider(cfg, (sess or {}).get('provider_id'), acct)
         if not provider:
             return bad('没有可用的模型提供商')
         system = (persona or {}).get('prompt') or ''
@@ -332,9 +438,91 @@ def make_app(ob, bot):
         return ok({'reply': reply, 'sid': sid, 'meta': meta,
                    'messages': len(messages)})
 
+    # ---------------- 聊天记录（全量档案）
+
+    async def chat_sessions(request):
+        q = request.query
+        rows = await chats.list_sessions(
+            account_id=q.get('account_id') or '',
+            kind=q.get('kind') or '',
+            keyword=q.get('kw') or '',
+            limit=int(q.get('limit') or 200))
+        # 会话标题：群名/对方昵称
+        gnames = getattr(bot, '_group_names', {}) or {}
+        for r in rows:
+            r['display'] = gnames.get(str(r.get('target_id')), '') or (
+                str(r.get('target_id') or ''))
+        return ok({'items': rows})
+
+    async def chat_messages(request):
+        q = request.query
+        sid = q.get('session_id') or ''
+        if not sid:
+            return bad('缺少 session_id')
+        rows = await chats.list_messages(
+            sid,
+            before_id=int(q.get('before_id') or 0),
+            limit=int(q.get('limit') or 50),
+            keyword=q.get('kw') or '')
+        return ok({'items': rows, 'count': len(rows)})
+
+    async def chat_stats(request):
+        account_id = request.query.get('account_id') or ''
+        cfg = config.load()
+        root = chats.media_root(cfg)
+        usage = media.dir_usage(root)
+        disk = media.disk_free(root)
+        st = await chats.stats(account_id)
+        used_pct = 0
+        if disk.get('total'):
+            used_pct = int(disk['used'] * 100 / disk['total'])
+        return ok({
+            'chat': st,
+            'media': usage,
+            'disk': dict(disk, used_pct=used_pct),
+            'media_dir': root,
+        })
+
+    async def chat_export(request):
+        q = request.query
+        doc, name = await chats.export(
+            account_id=q.get('account_id') or '',
+            session_id=q.get('session_id') or '',
+            date_from=int(q.get('from') or 0),
+            date_to=int(q.get('to') or 0))
+        body = json.dumps(doc, ensure_ascii=False, indent=2).encode('utf-8')
+        # 文件名只有 ASCII，去掉引号 —— Content-Disposition 里的引号没转义会让
+        # aiohttp 抛 ValueError（500）
+        safe = ''.join(ch for ch in name if ch.isalnum() or ch in '-_.').strip() or 'chat-export.json'
+        # ★ content_type 里不能带 charset —— aiohttp 会抛
+        #   "charset must not be in content_type argument"（这是 500 的真正原因）
+        return web.Response(
+            body=body,
+            content_type='application/json',
+            charset='utf-8',
+            headers={'Content-Disposition': 'attachment; filename="%s"' % safe})
+
+    async def chat_purge_media(request):
+        """只清媒体文件，保留消息文本（永久保留是明确要求）。"""
+        b = await _body(request)
+        if b.get('confirm') is not True:
+            return bad('需要 confirm=true')
+        r = await chats.purge_media_only(
+            account_id=b.get('account_id') or '',
+            session_id=b.get('session_id') or '',
+            date_from=int(b.get('from') or 0),
+            date_to=int(b.get('to') or 0))
+        return ok(r)
+
+    async def chat_media_check(request):
+        return ok(await chats.check_media_consistency())
+
     app.router.add_get('/api/status', status)
     app.router.add_get('/api/config', get_config)
     app.router.add_post('/api/config', post_config)
+
+    app.router.add_get('/api/accounts', get_accounts)
+    app.router.add_post('/api/accounts', post_accounts)
 
     app.router.add_get('/api/providers', get_providers)
     app.router.add_post('/api/providers', post_providers)
@@ -351,6 +539,13 @@ def make_app(ob, bot):
     app.router.add_post('/api/sessions/{sid}', post_session)
     app.router.add_post('/api/sessions/{sid}/clear', clear_session)
     app.router.add_post('/api/sessions/delete', del_session)
+
+    app.router.add_get('/api/chat/sessions', chat_sessions)
+    app.router.add_get('/api/chat/messages', chat_messages)
+    app.router.add_get('/api/chat/stats', chat_stats)
+    app.router.add_get('/api/chat/export', chat_export)
+    app.router.add_post('/api/chat/purge-media', chat_purge_media)
+    app.router.add_get('/api/chat/media-check', chat_media_check)
 
     app.router.add_get('/api/logs', get_logs)
     app.router.add_get('/api/stats', get_stats)

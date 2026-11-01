@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""OneBot 11 正向 WS 客户端：连 NapCat、收事件、调 API。"""
+"""OneBot 11 正向 WS 客户端：连 NapCat、收事件、调 API。
+
+一个实例 = 一条连接 = 一个 QQ 号（2026-11-01 多账号改造）。
+多账号的编排在 accounts.py，这里保持"只管自己那条连接"的职责。
+"""
 import asyncio
 import json
 
@@ -9,24 +13,36 @@ from . import logbuf
 
 
 class OneBot:
-    def __init__(self, cfg_getter, on_event):
+    def __init__(self, cfg_getter, on_event, account_id=''):
         self.cfg_getter = cfg_getter
         self.on_event = on_event          # async def (event) -> None
+        self.account_id = account_id
         self.ws = None
         self.connected = False
         self.self_id = ''
         self._pending = {}
         self._n = 0
         self._backoff = 1.0
+        self._stop = False
+
+    def stop(self):
+        """请求停止重连循环（账号被移除时用）。"""
+        self._stop = True
+        try:
+            if self.ws and not self.ws.closed:
+                asyncio.create_task(self.ws.close())
+        except Exception:
+            pass
 
     # ---------------- 连接
 
     async def run(self):
-        while True:
+        while not self._stop:
             cfg = self.cfg_getter().get('onebot') or {}
             url = (cfg.get('ws_url') or '').strip()
             if not url:
-                logbuf.warn('onebot', '没配 ws_url，5 秒后重试')
+                logbuf.warn('onebot', '账号 %s 没配 ws_url，5 秒后重试'
+                            % (self.account_id or '?'))
                 await asyncio.sleep(5)
                 continue
             headers = {}
@@ -39,8 +55,10 @@ class OneBot:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logbuf.warn('onebot', '连接失败：%s（%.0fs 后重连）'
-                            % (str(e)[:160], self._backoff))
+                logbuf.warn('onebot', '账号 %s 连接失败：%s（%.0fs 后重连）'
+                            % (self.account_id or '?', str(e)[:160], self._backoff))
+            if self._stop:
+                break
             self.connected = False
             self.ws = None
             await asyncio.sleep(self._backoff)
@@ -53,7 +71,7 @@ class OneBot:
                 self.ws = ws
                 self.connected = True
                 self._backoff = 1.0
-                logbuf.info('onebot', '已连上 %s' % url)
+                logbuf.info('onebot', '账号 %s 已连上 %s' % (self.account_id or '?', url))
                 async for msg in ws:
                     if msg.type == aiohttp.WSMsgType.TEXT:
                         try:
@@ -62,7 +80,7 @@ class OneBot:
                             logbuf.warn('onebot', '解析消息失败：%s' % str(e)[:160])
                     elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                         break
-        logbuf.warn('onebot', '连接断开')
+        logbuf.warn('onebot', '账号 %s 连接断开' % (self.account_id or '?'))
 
     def _handle(self, data):
         echo = data.get('echo')
@@ -77,7 +95,8 @@ class OneBot:
                 sid = data.get('self_id')
                 if sid:
                     self.self_id = str(sid)
-                    logbuf.info('onebot', '账号 %s 已就绪' % sid)
+                    logbuf.info('onebot', '账号 %s 已就绪（uin=%s）'
+                                % (self.account_id or '?', sid))
             return
         if self.on_event:
             asyncio.create_task(self._safe_event(data))
@@ -107,6 +126,7 @@ class OneBot:
             self._pending.pop(echo, None)
 
     async def send_text(self, kind, target, text, mention=None):
+        """发文本。返回 OneBot 响应（含 message_id，撤回打标要用）。"""
         segs = []
         if mention:
             segs.append({'type': 'at', 'data': {'qq': str(mention)}})
@@ -119,7 +139,8 @@ class OneBot:
                                {'user_id': int(target), 'message': segs})
 
     async def status(self):
-        out = {'connected': self.connected, 'self_id': self.self_id}
+        out = {'connected': self.connected, 'self_id': self.self_id,
+               'account_id': self.account_id}
         try:
             r = await self.call('get_login_info', timeout=8)
             out['login'] = r.get('data') or {}

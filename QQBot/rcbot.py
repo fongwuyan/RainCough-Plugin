@@ -1,8 +1,11 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """rcbot —— RainCough 自研 QQ 机器人核心。
 
 只做五件事：模型提供商、人格、会话管理、上下文压缩、运行日志。
 QQ 收发走 NapCat 的 OneBot 11 正向 WS（默认 ws://127.0.0.1:6700）。
+
+2026-11-01：支持多 QQ 号 —— 每个号一条 OneBot 连接，由 accounts.py 编排。
 """
 import asyncio
 import os
@@ -12,7 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aiohttp import web  # noqa: E402
 
-from rcbot import api, bot as botmod, config, logbuf, onebot, store  # noqa: E402
+from rcbot import accounts as accmod  # noqa: E402
+from rcbot import api, bot as botmod, config, logbuf, store  # noqa: E402
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -24,25 +28,37 @@ async def main():
 
     cfg = config.load()
     await store.init()
+    await store.ensure_columns()
 
-    ob = onebot.OneBot(config.load, None)
-    b = botmod.Bot(ob)
-    ob.on_event = b.on_event
-
-    asyncio.create_task(ob.run())
+    # 账号连接管理器：每个 QQ 号一条 OneBot WS
+    mgr = accmod.AccountManager(config.load, None)
+    b = botmod.Bot()
+    mgr.on_event = b.on_account_event
+    mgr.start()
 
     async def warm():
         """连上后补一次群名，失败就算了。"""
         for _ in range(60):
             await asyncio.sleep(2)
-            if ob.connected:
-                await asyncio.sleep(1)
-                await b.fill_group_names()
+            for acc in list(mgr.accounts.values()):
+                if acc.ob.connected:
+                    await asyncio.sleep(1)
+                    await b.fill_group_names(acc.ob)
+            if mgr.accounts and all(a.ob.connected for a in mgr.accounts.values()):
                 return
-
     asyncio.create_task(warm())
 
-    app = api.make_app(ob, b)
+    # 历史会话补账号前缀（一次性、幂等）
+    try:
+        dacc = config.default_account(config.load())
+        if dacc:
+            if await store.migrate_account_prefix(dacc.get('id')):
+                logbuf.info('main', '历史会话已补账号前缀：%s' % dacc.get('id'))
+            await store.upsert_account(dacc.get('id'), uin=dacc.get('uin') or '')
+    except Exception as e:
+        logbuf.warn('main', '会话迁移失败：%s' % str(e)[:200])
+
+    app = api.make_app(mgr, b)
     runner = web.AppRunner(app)
     await runner.setup()
     host = (cfg.get('http') or {}).get('host') or '127.0.0.1'
@@ -54,6 +70,7 @@ async def main():
     try:
         await asyncio.Event().wait()
     finally:
+        mgr.stop()
         await runner.cleanup()
         await store.close()
 

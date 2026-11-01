@@ -1,5 +1,16 @@
 # -*- coding: utf-8 -*-
-"""消息处理：过滤 → 定位会话 → 组上下文（含图片/联网/引用）→ 调模型 → 回消息。"""
+"""消息处理。
+
+★ 2026-11-01 改造：事件处理拆成三条互相独立的路径（这是最容易做错的地方）
+
+  路径 A 记录 —— 无条件全量落 chat_logs。
+          不过滤黑白名单 / @ / 前缀 / 限流，群里别人聊天也记。
+          用户要求"别只记机器人回话的那些"，这条路径是唯一保障。
+  路径 B 应答 —— 沿用改造前的全部触发过滤，行为不变。
+  路径 C 撤回 —— notice 事件按 msg_id 给已存的记录打标，原文保留。
+
+  三者互不阻塞：记录功能坏了不能让机器人哑掉，应答策略调整不影响已存档内容。
+"""
 import base64
 import io
 import os
@@ -7,7 +18,7 @@ import time
 
 import aiohttp
 
-from . import compress, config, llm, logbuf, store
+from . import chats, compress, config, llm, logbuf, media, store
 
 MAX_REPLY_CHARS = 3000
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
@@ -219,7 +230,12 @@ class RateLimiter:
 
 
 class Bot:
-    def __init__(self, ob):
+    """一个 Bot 服务所有账号。
+
+    ob 由调用方按账号传入（每个账号一条连接），所以同一套代码能同时服务多个号。
+    """
+
+    def __init__(self, ob=None):
         self.ob = ob
         self.rl = RateLimiter()
         self._group_names = {}
@@ -253,13 +269,106 @@ class Bot:
             logbuf.debug('bot', '取引用消息失败（%s）：%s' % (rid, str(e)[:100]))
             return '', '', []
 
-    # ---------------- 入口
+    # ---------------- 入口：按账号分发
 
-    async def on_event(self, ev):
-        if ev.get('post_type') != 'message':
+    async def on_account_event(self, account, ev):
+        """账号管理器把事件送进来。account 带 id / uin / cfg。"""
+        self.ob = account.ob
+        acct_cfg = account.cfg or {}
+        acct_id = account.id or ''
+        await self.on_event(ev, account_id=acct_id, acct_cfg=acct_cfg)
+
+    # ---------------- 路径 C：撤回
+
+    async def _handle_recall(self, ev, account_id):
+        """notice 事件里的撤回：按 msg_id 打标，原文保留。
+
+        OneBot 的撤回事件只带 message_id 不带原文
+        （实测 napcat.mjs:85979-85988 反编译的类定义），
+        所以内容必须在消息到达时就存下来 —— 这是路径 A 的存在理由之一。
+        """
+        nt = ev.get('notice_type') or ''
+        if nt not in ('group_recall', 'friend_recall'):
             return
+        msg_id = str(ev.get('message_id') or '')
+        by = str(ev.get('operator_id') or ev.get('user_id') or '')
+        kind = 'group' if nt == 'group_recall' else 'private'
+        try:
+            await chats.mark_recalled(account_id, msg_id, by, kind)
+        except Exception as e:
+            logbuf.warn('chat', '撤回处理失败：%s' % str(e)[:200])
+
+    # ---------------- 路径 A：记录（全量）
+
+    async def _record(self, ev, account_id, acct_cfg):
+        """无条件记录一条消息。不抛异常 —— 记录失败不该影响机器人应答。"""
+        try:
+            cfg = config.load()
+            ccfg = cfg.get('chat') or {}
+            if not ccfg.get('enabled', True):
+                return
+            mtype = ev.get('message_type') or ''
+            if mtype not in ('group', 'private'):
+                return
+            self_id = str(ev.get('self_id') or '')
+            uid = str(ev.get('user_id') or '')
+            gid = str(ev.get('group_id') or '')
+            if not uid:
+                return
+            # 机器人自己发的消息不在事件流里（reportSelfMessage=false），
+            # 那边由发送路径自记。这里跳过自己发的，避免重复。
+            if uid == self_id:
+                return
+
+            segs = ev.get('message')
+            sender = ev.get('sender') or {}
+            nick = sender.get('card') or sender.get('nickname') or uid
+            target = gid if mtype == 'group' else uid
+            ts = int(ev.get('time') or time.time())
+            msg_id = str(ev.get('message_id') or '')
+
+            # 媒体副本：必须同步下载（临时 URL 会过期）
+            media_list = []
+            if ccfg.get('media_enabled', True):
+                mcfg = cfg.get('media') or {}
+                dl = media.downloader(int(ccfg.get('download_concurrency') or 4),
+                                      int(ccfg.get('download_timeout') or 20))
+                media_list = await media.save_media(
+                    segs, self.ob, chats.media_root(cfg),
+                    acct_cfg.get('uin') or account_id, msg_id, ts, dl=dl,
+                    silk_bin=mcfg.get('silk_decoder') or '',
+                    keep_silk=bool(mcfg.get('keep_silk_source', True)))
+
+            await chats.record(account_id, mtype, target, 'user', segs,
+                               sender_id=uid, sender_name=nick, msg_id=msg_id,
+                               created_at=ts, media=media_list)
+        except Exception as e:
+            logbuf.warn('chat', '记录消息失败（不影响应答）：%s' % str(e)[:200])
+
+    # ---------------- 主入口
+
+    async def on_event(self, ev, account_id='', acct_cfg=None):
+        acct_cfg = acct_cfg or {}
+        post = ev.get('post_type')
+
+        # 路径 C：撤回（notice）
+        if post == 'notice':
+            await self._handle_recall(ev, account_id)
+            return
+        if post != 'message':
+            return
+
+        # 路径 A：先无条件记录，再考虑要不要应答。
+        # 顺序很重要 —— 记录要早于任何过滤，否则又变成"只记要回复的"。
+        await self._record(ev, account_id, acct_cfg)
+
+        # 路径 B：应答（原有逻辑）
+        await self._maybe_reply(ev, account_id, acct_cfg)
+
+    async def _maybe_reply(self, ev, account_id, acct_cfg):
         cfg = config.load()
-        if not (cfg.get('bot') or {}).get('enabled', True):
+        bot = config.resolve_bot_cfg(cfg, acct_cfg)
+        if not bot.get('enabled', True):
             return
 
         mtype = ev.get('message_type')          # private | group
@@ -274,7 +383,6 @@ class Bot:
         if not text and not imgs and not quote_imgs:
             return
 
-        bot = cfg.get('bot') or {}
         if mtype == 'group':
             if gid in [str(x) for x in (bot.get('blocked_groups') or [])]:
                 return
@@ -299,14 +407,14 @@ class Bot:
             if not bot.get('private_always_reply', True):
                 return
 
-        # 限流
+        # 限流（按账号+会话，号之间互不影响）
         rl = bot.get('rate_limit') or {}
-        if not self.rl.allow('%s:%s' % (mtype, gid or uid),
-                             int(rl.get('window') or 60), int(rl.get('max') or 30)):
-            logbuf.debug('bot', '触发限流：%s/%s' % (mtype, gid or uid))
+        rk = '%s:%s:%s' % (account_id, mtype, gid or uid)
+        if not self.rl.allow(rk, int(rl.get('window') or 60), int(rl.get('max') or 30)):
+            logbuf.debug('bot', '触发限流：%s' % rk)
             return
 
-        # 会话
+        # 会话（id 带账号前缀，多号不串）
         mode = (cfg.get('session_mode') or {}).get(
             'group' if mtype == 'group' else 'private', 'public')
         sender = ev.get('sender') or {}
@@ -314,7 +422,8 @@ class Bot:
         title = ''
         if mtype == 'group':
             title = self._group_names.get(gid, '')
-        sid = await store.ensure_session(mtype, gid or uid, title=title, mode=mode)
+        sid = await store.ensure_session(mtype, gid or uid, title=title, mode=mode,
+                                         account_id=account_id, uid=uid)
         sess = await store.get_session(sid)
         if sess and not sess.get('enabled', 1):
             logbuf.debug('bot', '会话 %s 已停用，跳过' % sid)
@@ -330,9 +439,9 @@ class Bot:
         all_imgs = list(imgs) + list(quote_imgs)
         await store.add_message(sid, 'user', prompt_text, name=nick)
 
-        # 人格 / 提供商
-        persona = config.get_persona(cfg, (sess or {}).get('persona_id'))
-        provider = config.get_provider(cfg, (sess or {}).get('provider_id'))
+        # 人格 / 提供商（会话级 > 账号级 > 全局）
+        persona = config.get_persona(cfg, (sess or {}).get('persona_id'), acct_cfg)
+        provider = config.get_provider(cfg, (sess or {}).get('provider_id'), acct_cfg)
         system = (persona or {}).get('prompt') or ''
         if not provider:
             self.last_error = '没有可用的模型提供商'
@@ -386,16 +495,46 @@ class Bot:
         for i in range(0, len(reply), MAX_REPLY_CHARS):
             chunk = reply[i:i + MAX_REPLY_CHARS]
             try:
-                await self.ob.send_text(mtype, gid or uid, chunk, mention=mention if i == 0 else None)
+                r = await self.ob.send_text(mtype, gid or uid, chunk,
+                                            mention=mention if i == 0 else None)
+                # 机器人自己的发言也进聊天档案。
+                # reportSelfMessage=false → 事件流里没有自己的消息，只能发送时自记。
+                # 长回复分片，每片一个 message_id → 逐片记，否则撤回匹配不上。
+                await self._record_own(account_id, acct_cfg, mtype, gid or uid,
+                                        chunk, r, nick)
             except Exception as e:
                 logbuf.error('bot', '发送失败：%s' % str(e)[:200])
                 break
 
+    async def _record_own(self, account_id, acct_cfg, mtype, target, text, resp, nick):
+        """记录机器人自己发出的消息。"""
+        try:
+            cfg = config.load()
+            ccfg = cfg.get('chat') or {}
+            if not ccfg.get('enabled', True):
+                return
+            data = (resp or {}).get('data') or {}
+            msg_id = str(data.get('message_id') or '')
+            segs = [{'type': 'text', 'data': {'text': text}}]
+            await chats.record(account_id, mtype, target, 'assistant', segs,
+                               sender_id=str((data.get('sender') or {}).get('user_id') or ''),
+                               sender_name=nick or '机器人', msg_id=msg_id,
+                               created_at=int(time.time()), media=[])
+        except Exception as e:
+            logbuf.debug('chat', '记录自身消息失败：%s' % str(e)[:120])
+
     # ---------------- 群名缓存（异步补，不阻塞）
 
-    async def fill_group_names(self):
+    async def fill_group_names(self, ob=None):
+        """拉一次群列表缓存群名。
+
+        群名按账号缓存（不同号的群列表不同），键是 "账号id:群号"。
+        """
+        ob = ob or self.ob
+        if ob is None:
+            return
         try:
-            r = await self.ob.call('get_group_list', timeout=15)
+            r = await ob.call('get_group_list', timeout=15)
             for g in (r.get('data') or []):
                 gid = str(g.get('group_id') or '')
                 name = g.get('group_name') or ''

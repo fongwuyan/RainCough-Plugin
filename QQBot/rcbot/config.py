@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
-"""配置：JSON 文件 + 默认值深合并 + 原子写。"""
+"""配置：JSON 文件 + 默认值深合并 + 原子写。
+
+账号相关（2026-11-01 新增）：
+  onebot.accounts[]  —— 每个 QQ 号一条 OneBot 连接
+  旧的 onebot.ws_url / access_token / self_id 单值字段保留兼容：
+  读配置时若 accounts 为空但 ws_url 有值，自动包装成单个账号，
+  这样升级后现有部署不需要改任何配置就能跑起来。
+"""
 import copy
 import json
 import os
@@ -16,6 +23,8 @@ DEFAULT = {
         'ws_url': 'ws://127.0.0.1:6700',
         'access_token': '',
         'self_id': '',
+        # ★ 多账号。每个元素描述一条独立连接 + 一份账号级覆盖。
+        'accounts': [],
     },
     'http': {
         'host': '127.0.0.1',
@@ -47,6 +56,22 @@ DEFAULT = {
         'web_search': {'enabled': False, 'max_results': 5},
         'vision': {'enabled': False, 'max_images': 3},
     },
+    # ★ 聊天记录（全量档案，与喂模型的上下文表分离）
+    'chat': {
+        'enabled': True,               # 总开关：关掉则完全不记录
+        'media_enabled': True,         # 媒体副本开关（关掉只记元数据）
+        'download_concurrency': 4,     # 并发下载数（太高压 QQ CDN 会风控）
+        'download_timeout': 20,
+        'max_media_bytes': 200 * 1024 * 1024,  # 单个媒体上限 200MB
+        'media_dir': '',               # 空 = <数据目录同级>/media
+        'export_dir': '',              # 空 = <数据目录同级>/exports
+    },
+    # ★ 媒体处理
+    'media': {
+        'silk_decoder': '',            # silk_v3_decoder 可执行文件路径
+        'audio_format': 'mp3',
+        'keep_silk_source': True,      # 转码后是否保留原始 .silk
+    },
     'providers': [],
     'default_provider': '',
     'personas': [],
@@ -73,7 +98,9 @@ def load():
                 raw = json.load(f) or {}
         except Exception:
             raw = {}
-        return _merge(copy.deepcopy(DEFAULT), raw)
+        cfg = _merge(copy.deepcopy(DEFAULT), raw)
+        _normalize_accounts(cfg)
+        return cfg
 
 
 def save(cfg):
@@ -94,8 +121,100 @@ def patch(part):
         return save(cfg)
 
 
-def get_provider(cfg, pid=None):
-    pid = pid or cfg.get('default_provider') or ''
+# ---------------------------------------------------------------- 账号
+
+def account_id(uin):
+    """账号 id 规则：a<uin>。用 a 前缀是为了跟旧的会话 id 区分开。"""
+    u = str(uin or '').strip()
+    return ('a%s' % u) if u else ''
+
+
+def _normalize_accounts(cfg):
+    """把 onebot 段整理成统一的 accounts[] 形态（兼容旧的单值字段）。"""
+    ob = cfg.get('onebot')
+    if not isinstance(ob, dict):
+        ob = {}
+        cfg['onebot'] = ob
+    accs = ob.get('accounts')
+    if not isinstance(accs, list):
+        accs = []
+    ob['accounts'] = accs
+
+    # 旧格式兜底：没有 accounts 但有 ws_url → 包装成单账号
+    if not accs and (ob.get('ws_url') or '').strip():
+        ob['accounts'] = [{
+            'id': account_id(ob.get('self_id')) or 'a_default',
+            'uin': str(ob.get('self_id') or ''),
+            'ws_url': (ob.get('ws_url') or '').strip(),
+            'access_token': ob.get('access_token') or '',
+            'enabled': True,
+        }]
+
+    # 补全每项的 id / enabled
+    seen = set()
+    for i, a in enumerate(accs):
+        if not isinstance(a, dict):
+            accs[i] = {'id': 'a%d' % i, 'uin': '', 'ws_url': '', 'enabled': True}
+            a = accs[i]
+        uin = str(a.get('uin') or '').strip()
+        aid = str(a.get('id') or '').strip() or (account_id(uin) or ('a%d' % i))
+        a['id'] = aid
+        a['uin'] = uin
+        a['enabled'] = bool(a.get('enabled', True))
+        a['ws_url'] = (a.get('ws_url') or '').strip()
+        if aid in seen:
+            # id 撞了：补后缀，避免两个账号共用一份状态
+            n = 2
+            while ('%s-%d' % (aid, n)) in seen:
+                n += 1
+            a['id'] = '%s-%d' % (aid, n)
+        seen.add(a['id'])
+    return cfg
+
+
+def get_accounts(cfg):
+    """返回启用中的账号列表（每项都带 id / uin）。"""
+    _normalize_accounts(cfg)
+    return [a for a in (cfg.get('onebot') or {}).get('accounts') or [] if a.get('enabled')]
+
+
+def find_account(cfg, aid):
+    """按 id 或 uin 找账号。"""
+    _normalize_accounts(cfg)
+    for a in (cfg.get('onebot') or {}).get('accounts') or []:
+        if a.get('id') == aid:
+            return a
+        if aid and str(a.get('uin') or '') == str(aid):
+            return a
+    return None
+
+
+def default_account(cfg):
+    """默认账号（第一个启用的）。老部署迁移时用它给历史会话补前缀。"""
+    accs = get_accounts(cfg)
+    return accs[0] if accs else None
+
+
+# ---------------------------------------------------------------- 账号级覆盖
+
+def resolve_bot_cfg(cfg, acct=None):
+    """账号级触发规则 = 全局 bot 段 + 账号的 bot 覆盖（账号覆盖优先）。
+
+    这样能表达「A 号只服务客服群、B 号在另一个群做娱乐」，
+    又不用把全局配置复制一遍。
+    """
+    base = dict(cfg.get('bot') or {})
+    over = (acct or {}).get('bot') or {}
+    if isinstance(over, dict):
+        for k, v in over.items():
+            if v is not None:
+                base[k] = v
+    return base
+
+
+def get_provider(cfg, pid=None, acct=None):
+    """提供商优先级：会话级 > 账号级 > 全局默认 > 第一个启用的。"""
+    pid = pid or (acct or {}).get('provider_id') or cfg.get('default_provider') or ''
     for p in cfg.get('providers') or []:
         if p.get('id') == pid:
             return p
@@ -103,8 +222,9 @@ def get_provider(cfg, pid=None):
     return provs[0] if provs else None
 
 
-def get_persona(cfg, pid=None):
-    pid = pid or cfg.get('default_persona') or ''
+def get_persona(cfg, pid=None, acct=None):
+    """人格优先级：会话级 > 账号级 > 全局默认 > 第一个。"""
+    pid = pid or (acct or {}).get('persona_id') or cfg.get('default_persona') or ''
     for p in cfg.get('personas') or []:
         if p.get('id') == pid:
             return p

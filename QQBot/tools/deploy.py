@@ -54,6 +54,9 @@ RCBOT_SRC_FILES = ['rcbot.py'] + [
 ]
 PLUGIN_FILES += RCBOT_SRC_FILES
 
+# 多实例管理脚本（面板调它增删 NapCat 实例）
+PLUGIN_FILES += ['tools/napcat_inst.py', 'tools/smoke_chat.py']
+
 RCBOT_REMOTE = '/opt/rcbot'
 
 
