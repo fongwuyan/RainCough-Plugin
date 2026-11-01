@@ -101,8 +101,24 @@ def make_app(mgr, bot):
             if not uin:
                 return bad('缺少 uin')
             new_id = config.account_id(uin)
-            if any(a.get('id') == new_id for a in accs):
-                return bad('这个 QQ 号已经在列表里了')
+            # 已存在就更新（幂等）—— 实例修复/重建时会重复调这里，
+            # 直接报错会导致账号配置同步不上
+            exist = None
+            for i, a in enumerate(accs):
+                if a.get('id') == new_id or str(a.get('uin') or '') == uin:
+                    exist = i
+                    break
+            if exist is not None:
+                accs[exist].update({
+                    'ws_url': (b.get('ws_url') or accs[exist].get('ws_url') or '').strip(),
+                    'webui': b.get('webui') or accs[exist].get('webui') or '',
+                    'unit': b.get('unit') or accs[exist].get('unit') or '',
+                    'instance_dir': b.get('instance_dir') or accs[exist].get('instance_dir') or '',
+                    'enabled': True,
+                })
+                config.save(cfg)
+                await store.upsert_account(new_id, uin=uin)
+                return ok({'id': new_id, 'updated': True})
             acc = {
                 'id': new_id,
                 'uin': uin,

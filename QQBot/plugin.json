@@ -341,7 +341,7 @@
         "label": "编译 silk_v3_decoder（QQ 语音 SILK → mp3，浏览器才能播放）",
         "check": "silk",
         "needs": "root",
-        "timeout": "900",
+        "timeout": 900,
         "run": "set -e\n# QQ 语音是 SILK，浏览器放不了；ffmpeg 没有 silk 解码器（实测 5.1.9），apt 也没有。\n# 这里编译一份 silk_v3_decoder，rcbot 用它把语音转成 mp3。\nmkdir -p /opt/rcbot/bin\nif [ -x /opt/rcbot/bin/silk_v3_decoder ]; then echo already; exit 0; fi\ncommand -v git >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq git build-essential cmake; }\ncommand -v cmake >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq build-essential cmake; }\ntmp=$(mktemp -d)\ncd \"$tmp\"\ngit clone --depth 1 https://github.com/foyoux/pilk.git 2>/dev/null || {\n  git clone --depth 1 https://github.com/xiangyuecn/Silk.git . 2>/dev/null || {\n    echo '拉不到 silk_v3_decoder 源码'; exit 1; }\n}\nif [ -d silk ]; then cd silk; fi\nif [ -f CMakeLists.txt ]; then\n  cmake -B build -DCMAKE_BUILD_TYPE=Release >/dev/null\n  cmake --build build -j2 >/dev/null\n  find . -name 'silk_v3_decoder' -type f -perm -u+x | head -1 | xargs -r -I{} cp {} /opt/rcbot/bin/silk_v3_decoder\nelif [ -f Makefile ]; then\n  make -s >/dev/null\n  cp silk_v3_decoder /opt/rcbot/bin/silk_v3_decoder 2>/dev/null || true\nfi\nchmod +x /opt/rcbot/bin/silk_v3_decoder\n[ -x /opt/rcbot/bin/silk_v3_decoder ] || { echo '编译没出可执行文件'; exit 1; }\necho ok"
       }
     ]

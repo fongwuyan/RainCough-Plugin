@@ -4,7 +4,8 @@
 
 一个 QQ 号 = 一个 NapCat 实例 = 一套 systemd 单元：
     napcat@<uin>.service   QQ 主进程
-    xvfb@<n>.service       该实例专属的虚拟显示
+    xvfb-rcbot-<n>.service 该实例专属的虚拟显示（不用 xvfb@ 模板：
+                                     %i 是 QQ 号不是显示号，会生成坏单元）
 
 ★ 为什么能这样隔离（实测 napcat.mjs:30463-30472 的路径解析链）：
     process.env.NAPCAT_WORKDIR ? r = WORKDIR
@@ -47,7 +48,7 @@ WEBUI_BASE = 6099
 ONEBOT_BASE = 6700
 
 XVFB_UNIT = '''[Unit]
-Description=Xvfb display :%i (for napcat@%i)
+Description=Xvfb display :%i (for 雨咯Bot 实例)
 After=network.target
 
 [Service]
@@ -62,25 +63,26 @@ WantedBy=multi-user.target
 
 NAPCAT_UNIT = '''[Unit]
 Description=NapCat instance %i (QQ %i)
-After=network-online.target xvfb@%i.service
+# ★ 不能 Requires=xvfb@%i.service —— %i 是 QQ 号不是显示号,
+#   systemd 会生成 xvfb@<QQ号>.service,Xvfb 报 "Bad display name" 无限重启。
+After=network-online.target
 Wants=network-online.target
-Requires=xvfb@%i.service
 
 [Service]
 Type=simple
 User=root
 Environment=HOME=/opt/napcat/instances/%i/home
 Environment=NAPCAT_WORKDIR=/opt/napcat/instances/%i/work
-Environment=NAPCAT_QUICK_ACCOUNT=%i
-Environment=DISPLAY=:%i
-EnvironmentFile=-/opt/napcat/instances/%i/env
+# 不设 NAPCAT_QUICK_ACCOUNT: 对没登录过的号设了它,NapCat 会快登失败→
+#   "登录态已失效" → 退出 → systemd 拉起 → 死循环。
+EnvironmentFile=/opt/napcat/instances/%i/env
 WorkingDirectory=/opt/napcat/napcat
 ExecStart=/opt/napcat/QQ/qq --no-sandbox
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
-TimeoutStopSec=30
-KillMode=mixed
+TimeoutStopSec=15
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target
@@ -229,7 +231,9 @@ def cmd_add(args):
             json.dump({'host': '0.0.0.0', 'port': webui,
                        'token': 'rcnapcat', 'loginRate': 100}, f, ensure_ascii=False)
 
-    write_unit('xvfb@.service', XVFB_UNIT)
+    xv = os.path.join(UNIT_DIR, 'xvfb-rcbot-%d.service' % disp)
+    with open(xv, 'w', encoding='utf-8') as f:
+        f.write(XVFB_UNIT.replace('%i', str(disp)))
     write_unit('napcat@.service', NAPCAT_UNIT)
     sh('systemctl daemon-reload')
 
@@ -255,7 +259,7 @@ def cmd_remove(args):
         print('实例不存在：%s' % uin)
         return 1
     sh('systemctl disable --now napcat@%s 2>/dev/null' % uin)
-    sh('systemctl stop xvfb@%s 2>/dev/null' % _disp_of(p))
+    sh('systemctl stop xvfb-rcbot-%s 2>/dev/null' % _disp_of(p))
     if args.keep_data:
         print('已停服务，保留目录：%s' % p['dir'])
     else:
@@ -359,7 +363,9 @@ def cmd_migrate(args):
         f.write('DISPLAY=:%d\n' % disp)
         f.write('INDEX=%d\n' % idx)
 
-    write_unit('xvfb@.service', XVFB_UNIT)
+    xv = os.path.join(UNIT_DIR, 'xvfb-rcbot-%d.service' % disp)
+    with open(xv, 'w', encoding='utf-8') as f:
+        f.write(XVFB_UNIT.replace('%i', str(disp)))
     write_unit('napcat@.service', NAPCAT_UNIT)
     sh('systemctl daemon-reload')
 
@@ -379,7 +385,7 @@ def cmd_status(args):
     units = []
     _, out = sh("systemctl list-units --type=service --all --no-legend 2>/dev/null")
     for line in out.splitlines():
-        if 'napcat@' in line or 'xvfb@' in line:
+        if 'napcat@' in line or 'xvfb-rcbot' in line:
             units.append(line.strip())
     if not units:
         print('（没有 napcat/xvfb 实例单元）')
