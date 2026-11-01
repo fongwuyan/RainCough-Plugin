@@ -430,9 +430,12 @@ def _qa_avatar(uin, size=100):
 
 
 def _nc_instance_nick(webui_port, uin):
-    """问某个实例的 NapCat 要昵称（快登列表里有 nickName）。
+    """问某个实例的 NapCat 要昵称。
 
-    失败返回空串 —— 拿不到就让前端显示 QQ 号，不报错。
+    ★ 优先用 GetQQLoginInfo —— 它返回当前登录号的 {uin, nick}，
+      是**当前会话**的信息，一定准。
+      GetQuickLoginListNew 是"本机历史登录过的号列表"，
+      扫码刚登录时它是空的（实测：登录成功后返回 []），靠它认领会失败。
     """
     try:
         wp = int(webui_port or 0)
@@ -440,9 +443,16 @@ def _nc_instance_nick(webui_port, uin):
         return ''
     if wp <= 0:
         return ''
+    base = "http://127.0.0.1:%d" % wp
+    token = cfg_napcat_token()
     try:
-        ql = _nc_data_at("http://127.0.0.1:%d" % wp, cfg_napcat_token(),
-                          "/QQLogin/GetQuickLoginListNew", timeout=6) or []
+        info = _nc_data_at(base, token, "/QQLogin/GetQQLoginInfo", timeout=6) or {}
+        if str(info.get("uin") or "") == str(uin or "") or not uin:
+            return info.get("nick") or ""
+    except Exception:
+        pass
+    try:
+        ql = _nc_data_at(base, token, "/QQLogin/GetQuickLoginListNew", timeout=6) or []
         if isinstance(ql, dict):
             ql = ql.get("list") or []
         for x in (ql or []):
@@ -453,6 +463,39 @@ def _nc_instance_nick(webui_port, uin):
     except Exception:
         pass
     return ''
+
+
+def _nc_login_profile(webui_port):
+    """取当前实例已登录账号的资料 {uin, nick, avatar}。
+
+    ★ GetQQLoginInfo 是唯一可靠的来源：
+      - GetQuickLoginListNew 扫码刚登录时是空的（实测返回 []）
+      - OneBot 的 get_login_info 要等 6700 起来，而 OneBot 端口
+        是登录后才监听的，时机上不一定赶得上
+
+    返回空 dict 表示还没登录。
+    """
+    try:
+        wp = int(webui_port or 0)
+    except Exception:
+        return {}
+    if wp <= 0:
+        return {}
+    base = "http://127.0.0.1:%d" % wp
+    token = cfg_napcat_token()
+    try:
+        info = _nc_data_at(base, token, "/QQLogin/GetQQLoginInfo", timeout=8) or {}
+    except Exception:
+        return {}
+    uin = str(info.get("uin") or "")
+    if not uin:
+        return {}
+    nick = info.get("nick") or info.get("nickName") or ""
+    return {
+        "uin": uin,
+        "nick": nick,
+        "avatar": info.get("faceUrl") or info.get("avatar") or _qa_avatar(uin),
+    }
 
 
 def _sysinfo_sse(timeout=7):
@@ -566,17 +609,26 @@ def nc_overview(params):
     except Exception as e:
         out["errors"].append("账号状态：%s" % str(e)[:120])
 
+    # ★ 账号资料：优先 GetQQLoginInfo（当前登录会话，一定准）。
+    #   GetQuickLoginListNew 是"本机历史登录过的号列表"，
+    #   扫码刚登录时它是空的（实测登录成功后返回 []）——
+    #   靠它取昵称/头像会导致概览页账号信息全空。
+    try:
+        prof = nc("/QQLogin/GetQQLoginInfo") or {}
+        if prof.get("uin"):
+            out["account"].update({
+                "uin": str(prof.get("uin") or tgt["uin"]),
+                "nick": prof.get("nick") or prof.get("nickName") or "",
+                "avatar": prof.get("faceUrl") or prof.get("avatar") or "",
+            })
+    except Exception as e:
+        out["errors"].append("账号资料：%s" % str(e)[:120])
+
+    # 快登列表（可能有多个历史号）
     try:
         ql = nc("/QQLogin/GetQuickLoginListNew") or []
         if isinstance(ql, dict):
             ql = ql.get("list") or []
-        if ql:
-            cur = ql[0]
-            out["account"].update({
-                "uin": str(cur.get("uin") or tgt["uin"]),
-                "nick": cur.get("nickName") or cur.get("nick") or "",
-                "avatar": cur.get("faceUrl") or cur.get("avatar") or "",
-            })
         out["quick"] = [{"uin": str(x.get("uin") or ""), "nick": x.get("nickName") or "",
                          "avatar": x.get("faceUrl") or ""} for x in ql]
     except Exception as e:
@@ -663,6 +715,19 @@ def nc_account(params):
     except Exception as e:
         out["errors"].append("账号状态：%s" % str(e)[:140])
 
+    # 当前登录账号的资料（GetQQLoginInfo 才是准的，快登列表扫码后是空的）
+    try:
+        info = _nc_data("/QQLogin/GetQQLoginInfo") or {}
+        if info.get("uin"):
+            out["status"].update({
+                "uin": str(info.get("uin")),
+                "nick": info.get("nick") or info.get("nickName") or "",
+                "avatar": info.get("faceUrl") or info.get("avatar")
+                          or _qa_avatar(info.get("uin")),
+            })
+    except Exception as e:
+        out["errors"].append("账号资料：%s" % str(e)[:140])
+
     try:
         ql = _nc_data("/QQLogin/GetQuickLoginListNew") or []
         if isinstance(ql, dict):
@@ -670,7 +735,8 @@ def nc_account(params):
         out["quick"] = [{"uin": str(x.get("uin") or ""), "nick": x.get("nickName") or "",
                          "avatar": x.get("faceUrl") or "",
                          "online": bool(x.get("isQuickLogin"))} for x in ql]
-        if out["quick"] and not out["status"].get("login") is None:
+        # 快登列表非空但状态里还没有 uin 时，用它兜底
+        if out["quick"] and not out["status"].get("uin"):
             out["status"]["uin"] = out["quick"][0]["uin"]
             out["status"]["nick"] = out["quick"][0]["nick"]
             out["status"]["avatar"] = out["quick"][0]["avatar"]
@@ -843,6 +909,12 @@ def _adopt_instance(old_slug, uin):
 
     NapCat 目录名、systemd 单元名、env、rcbot 账号表都要跟着改，
     否则会出现"目录是 _pending_x、账号却是 123456"的错位。
+
+    ★ 关键：**不重启 NapCat**。
+      扫码刚成功时登录态是活的，重启会让 NapCat 重新出码（不认快登号），
+      表现为"认领完反而又要扫码"。
+      正确做法是：改目录/单元名 → 写 NAPCAT_QUICK_ACCOUNT → 让 systemd
+      用新单元名接管（同一个进程继续跑，登录态不丢）。
     """
     old_dir = _inst_dir(old_slug)
     new_dir = _inst_dir(uin)
@@ -853,9 +925,6 @@ def _adopt_instance(old_slug, uin):
         import shutil
         shutil.rmtree(old_dir, ignore_errors=True)
         return new_dir
-
-    # 停掉占位单元
-    _run("systemctl disable --now napcat@%s 2>/dev/null" % old_slug, timeout=60)
 
     # 改目录名
     import shutil
@@ -878,8 +947,15 @@ def _adopt_instance(old_slug, uin):
             f.write(_XVFB_UNIT.replace("%i", str(disp)))
     _run("systemctl daemon-reload", timeout=30)
 
+    # ★ 写快登号：以后重启（面板重启/机器重启）能自动登录，不用再扫码
+    _enable_quick_login(uin, env)
+    env = _inst_env(uin)
+
     unit = "napcat@%s" % uin
     _run("systemctl enable %s" % unit, timeout=30)
+    # 让新单元名接管还在跑的进程：
+    # 先 stop 旧的（单元文件已删，systemd 会按残留处理），
+    # 再用新名字 start —— 登录态在磁盘上，NapCat 凭 NAPCAT_QUICK_ACCOUNT 快速登录。
     _run("systemctl stop %s 2>/dev/null" % unit, timeout=45)
     _run("systemctl reset-failed %s 2>/dev/null" % unit, timeout=15)
     _run("systemctl start %s" % unit, timeout=90)
@@ -940,8 +1016,8 @@ def _local_instances():
             continue
         out.append({
             "uin": uin,
-            "base": "http://127.0.0.1:%d" % int(wp),
-            "port": int(wp),
+            "base": "http://127.0.0.1:%d" % int(webui_port),
+            "port": int(webui_port),
             "token": cfg_napcat_token(),
             "unit": "napcat@%s" % uin,
         })
@@ -1245,23 +1321,18 @@ def inst_scan_status(params):
         return {"ok": True, "data": out}
 
     # 已登录 → 拿真实 QQ 号 / 昵称 / 头像
-    uin, nick, avatar = "", "", ""
-    try:
-        ql = _nc_data_at("http://127.0.0.1:%d" % int(wp), cfg_napcat_token(),
-                         "/QQLogin/GetQuickLoginListNew", timeout=10) or []
-        if isinstance(ql, dict):
-            ql = ql.get("list") or []
-        for x in (ql or []):
-            if str(x.get("uin") or ""):
-                uin = str(x.get("uin"))
-                nick = x.get("nickName") or x.get("nick") or ""
-                avatar = x.get("faceUrl") or x.get("avatar") or ""
-                break
-    except Exception:
-        pass
+    #
+    # ★ 必须用 GetQQLoginInfo：它是"当前登录会话"的信息，一定准。
+    #   GetQuickLoginListNew 是"本机历史登录过的号列表"，
+    #   扫码刚登录时它是空的（实测登录成功后返回 []）——
+    #   靠它认领会导致"扫完码但界面一直不加账户"。
+    prof = _nc_login_profile(int(wp))
+    uin = prof.get("uin") or ""
+    nick = prof.get("nick") or ""
+    avatar = prof.get("avatar") or ""
 
     if not uin:
-        # 快登列表可能还没刷新 → 用 OneBot 侧的 self_id 兜底
+        # 兜底：OneBot 连上后会回报 self_id
         try:
             accs = _data("/api/accounts", timeout=10) or {}
             for a in (accs.get("items") or []):
