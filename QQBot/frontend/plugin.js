@@ -814,7 +814,7 @@ const Accounts = {
             style="font-size:11.5px;margin:0 0 10px;padding:8px 10px">
             这是升级前的旧式单实例（systemd 单元 <code class="rcq-mono">{{ x.unit }}</code>），
             不是多实例模板管理的，没有二维码可扫。
-            要用新实例的话，点右上角「添加 QQ 号」建一个。
+            要用新实例的话，点右上角「添加 QQ 账户」建一个。
           </div>
 
           <div class="rcq-iacts">
