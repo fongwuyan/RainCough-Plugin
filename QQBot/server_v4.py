@@ -156,7 +156,12 @@ def _nc(path, body=None, method="POST", timeout=15, retry=True):
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
+            out = json.loads(r.read().decode("utf-8", "replace"))
+        # 同 _nc_at：HTTP 200 + body Unauthorized 也要重登重试
+        if retry and _is_unauthorized(out):
+            _nc_login(force=True)
+            return _nc(path, body, method, timeout, retry=False)
+        return out
     except urllib.error.HTTPError as e:
         if retry and e.code in (401, 403):
             _nc_login(force=True)
@@ -214,6 +219,27 @@ def _nc_login_at(base, token, force=False):
         return cred
 
 
+def _is_unauthorized(r):
+    """判断 NapCat 响应是不是「凭据失效」。
+
+    ★ NapCat 的 Unauthorized 有两种形态，必须都认：
+      ① HTTP 401/403（urlopen 抛 HTTPError）
+      ② **HTTP 200 + body 里 {"code":-1,"message":"Unauthorized"}**
+         —— 实测新版 NapCat 走的是这种：HTTP 层是成功的，
+         只是 body 说没登录。只处理 ① 的话，重登逻辑永远不触发，
+         插件会一直拿 50 分钟前缓存的旧 credential 去请求，
+         报 "NapCat /QQLogin/CheckLoginStatus 失败：Unauthorized"，
+         而实际只要重新登录一次 WebUI 就能好。
+    """
+    if not isinstance(r, dict):
+        return False
+    code = r.get("code")
+    msg = str(r.get("message") or r.get("msg") or "")
+    if code == -1 and "unauthorized" in msg.lower():
+        return True
+    return False
+
+
 def _nc_at(base, token, path, body=None, method="POST", timeout=15, retry=True):
     url = base.rstrip("/") + "/api" + path
     data = json.dumps(body if body is not None else {}).encode("utf-8") if method == "POST" else None
@@ -222,7 +248,12 @@ def _nc_at(base, token, path, body=None, method="POST", timeout=15, retry=True):
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
+            out = json.loads(r.read().decode("utf-8", "replace"))
+        # ② HTTP 200 但 body 是 Unauthorized → 重新登录后重试一次
+        if retry and _is_unauthorized(out):
+            _nc_login_at(base, token, force=True)
+            return _nc_at(base, token, path, body, method, timeout, retry=False)
+        return out
     except urllib.error.HTTPError as e:
         if retry and e.code in (401, 403):
             _nc_login_at(base, token, force=True)
