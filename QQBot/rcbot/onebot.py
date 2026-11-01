@@ -16,6 +16,9 @@ class OneBot:
     def __init__(self, cfg_getter, on_event, account_id=''):
         self.cfg_getter = cfg_getter
         self.on_event = on_event          # async def (event) -> None
+        # 连上后的回调（async def () -> None）——
+        # 用来在连接就绪时拉群名/好友名缓存（那两个接口要登录后才有数据）
+        self.on_ready = None
         self.account_id = account_id
         self.ws = None
         self.connected = False
@@ -24,6 +27,7 @@ class OneBot:
         self._n = 0
         self._backoff = 1.0
         self._stop = False
+        self._ready_fired = False
 
     def stop(self):
         """请求停止重连循环（账号被移除时用）。"""
@@ -97,9 +101,20 @@ class OneBot:
                     self.self_id = str(sid)
                     logbuf.info('onebot', '账号 %s 已就绪（uin=%s）'
                                 % (self.account_id or '?', sid))
+                # 连接就绪 → 通知上层去拉群名/好友名缓存（只触发一次）
+                if not self._ready_fired and self.on_ready:
+                    self._ready_fired = True
+                    asyncio.create_task(self._safe_ready())
             return
         if self.on_event:
             asyncio.create_task(self._safe_event(data))
+
+    async def _safe_ready(self):
+        try:
+            if self.on_ready:
+                await self.on_ready()
+        except Exception as e:
+            logbuf.debug('onebot', 'on_ready 回调出错：%s' % str(e)[:120])
 
     async def _safe_event(self, data):
         try:

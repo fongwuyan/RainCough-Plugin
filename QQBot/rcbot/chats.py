@@ -14,7 +14,7 @@ import json
 import os
 import time
 
-from . import logbuf, store
+from . import logbuf, profile, store
 
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'media')
 
@@ -72,21 +72,26 @@ def _json(v, default=''):
 # ---------------------------------------------------------------- 写入
 
 async def record(account_id, kind, target_id, role, segs, sender_id='', sender_name='',
-                  msg_id='', created_at=0, session_id=None, media=None):
+                  msg_id='', created_at=0, session_id=None, media=None,
+                  sender_avatar=''):
     """写一条聊天档案。返回新行 id。
 
     segs  —— OneBot 原始消息段数组（list[dict]）
     media —— 媒体副本清单（list[dict]），由 media.py 填好后传进来
+    sender_avatar —— 发言者头像 URL（按 QQ 号从 qlogo 取）
     """
     if session_id is None:
         session_id = store.session_key(kind, target_id, 'public', account_id)
     text = seg_text(segs)
+    if not sender_avatar:
+        sender_avatar = profile.avatar_url(sender_id)
     cur = await store._db.execute(
         'INSERT INTO chat_logs(account_id,session_id,kind,target_id,msg_id,sender_id,sender_name,'
-        'role,segs,text,media,recalled,recalled_by,recalled_at,created_at)'
-        ' VALUES(?,?,?,?,?,?,?,?,?,?,?,0,\'\',0,?)',
+        'sender_avatar,role,segs,text,media,recalled,recalled_by,recalled_at,created_at)'
+        ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,\'\',0,?)',
         (account_id or '', session_id, kind or '', str(target_id or ''), str(msg_id or ''),
-         str(sender_id or ''), str(sender_name or ''), role or 'user',
+         str(sender_id or ''), str(sender_name or ''), str(sender_avatar or ''),
+         role or 'user',
          _json(segs, '[]'), text, _json(media or [], '[]'),
          int(created_at or _now())))
     await store._db.commit()
@@ -156,10 +161,10 @@ async def _tombstone(account_id, msg_id, by, kind):
     try:
         await store._db.execute(
             'INSERT INTO chat_logs(account_id,session_id,kind,target_id,msg_id,sender_id,'
-            'sender_name,role,segs,text,media,recalled,recalled_by,recalled_at,created_at)'
-            ' VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)',
+            'sender_name,sender_avatar,role,segs,text,media,recalled,recalled_by,recalled_at,created_at)'
+            ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)',
             (account_id or '', sid, kind or '', '', str(msg_id or ''), '', '',
-             'system', '[]', '[一条消息被撤回]', '[]', str(by or ''), _now(), _now()))
+             '', 'system', '[]', '[一条消息被撤回]', '[]', str(by or ''), _now(), _now()))
         await store._db.commit()
     except Exception as e:
         logbuf.debug('chat', '墓碑写入失败：%s' % str(e)[:120])
@@ -294,7 +299,12 @@ async def export(account_id='', session_id='', date_from=0, date_to=0):
             order.append(sid)
         sess[sid]['messages'].append({
             'msg_id': r.get('msg_id') or '',
-            'sender': {'id': r.get('sender_id') or '', 'name': r.get('sender_name') or ''},
+            'sender': {'id': r.get('sender_id') or '',
+                       'name': r.get('sender_name') or '',
+                       # 头像：库里存的是入库时按 QQ 号取到的 URL；
+                       # 旧数据没有这一列 → 现算一个（QQ 号在就一定有头像）
+                       'avatar': (r.get('sender_avatar') or ''
+                                  or profile.avatar_url(r.get('sender_id') or ''))},
             'role': r.get('role') or 'user',
             'created_at': r.get('created_at') or 0,
             'text': r.get('text') or '',

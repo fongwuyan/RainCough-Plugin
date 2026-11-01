@@ -20,10 +20,12 @@ CFG_FILE = os.path.join(ROOT, 'data', 'config.json')
 
 DEFAULT = {
     'onebot': {
-        'ws_url': 'ws://127.0.0.1:6700',
-        'access_token': '',
-        'self_id': '',
-        # ★ 多账号。每个元素描述一条独立连接 + 一份账号级覆盖。
+        # ★ 默认值里**不放** ws_url/access_token/self_id 这三个旧单值字段。
+        #   它们只是兼容老配置的读取入口，一旦有值，
+        #   _normalize_accounts 就会在 accounts[] 为空时自动包装出一个
+        #   id=a_default 的空账号 —— 界面上多一个没有 QQ 号的条目，
+        #   还持续去连 6700 刷"连接失败"警告。
+        #   新装机器一律通过 accounts[] 配置；老配置读的时候仍兼容。
         'accounts': [],
     },
     'http': {

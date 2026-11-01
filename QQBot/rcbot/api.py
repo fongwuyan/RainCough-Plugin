@@ -463,11 +463,21 @@ def make_app(mgr, bot):
             kind=q.get('kind') or '',
             keyword=q.get('kw') or '',
             limit=int(q.get('limit') or 200))
-        # 会话标题：群名/对方昵称
-        gnames = getattr(bot, '_group_names', {}) or {}
+        # 会话标题：群名/对方昵称 + 头像
+        #
+        # ★ 之前这里只读 bot._group_names，而那个缓存**从来没有被填过**
+        #   （fill_group_names 没有调用点）→ 群名一直是裸群号。
+        #   现在名字由 Bot.group_display / friend_display 提供，
+        #   拿不到时退回 QQ 号，头像按 QQ 号从 qlogo 取。
         for r in rows:
-            r['display'] = gnames.get(str(r.get('target_id')), '') or (
-                str(r.get('target_id') or ''))
+            kind = str(r.get('kind') or '')
+            tid = str(r.get('target_id') or '')
+            if kind == 'group':
+                name, av = bot.group_display(tid)
+            else:
+                name, av = bot.friend_display(tid)
+            r['display'] = name or tid
+            r['avatar'] = av
         return ok({'items': rows})
 
     async def chat_messages(request):

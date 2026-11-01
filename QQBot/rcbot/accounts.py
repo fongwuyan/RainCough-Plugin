@@ -14,7 +14,7 @@
 """
 import asyncio
 
-from . import config, logbuf, onebot
+from . import config, logbuf, onebot, profile
 
 
 class Account:
@@ -26,6 +26,7 @@ class Account:
         self.cfg = cfg
         self.ob = onebot.OneBot(self._cfg_getter, None, self.id)
         self.ob.on_event = self._on_event
+        self.ob.on_ready = self._on_ready
         self.task = None
         self._manager = None
         self.last_error = ''
@@ -37,6 +38,11 @@ class Account:
     async def _on_event(self, ev):
         if self._manager:
             await self._manager.dispatch(self, ev)
+
+    async def _on_ready(self):
+        """OneBot 连上了 → 让 Bot 去拉群名/好友名缓存。"""
+        if self._manager:
+            await self._manager.on_connected(self)
 
     def start(self, manager):
         self._manager = manager
@@ -64,8 +70,20 @@ class Account:
         st = await self.ob.status()
         st['id'] = self.id
         st['uin'] = self.uin
-        st['nick'] = self.cfg.get('nick') or ''
-        st['avatar'] = self.cfg.get('avatar') or ''
+        # 昵称/头像：优先用配置里存的值；没有就从 OneBot 的
+        # get_login_info 现场取（它返回 {user_id, nickname}）。
+        # 头像按 QQ 号从 qlogo 取 —— QQ 没给头像直链，但号有了就能显示。
+        nick = self.cfg.get('nick') or ''
+        avatar = self.cfg.get('avatar') or ''
+        login = st.get('login') or {}
+        if not nick:
+            nick = login.get('nickname') or ''
+        if not self.uin and login.get('user_id'):
+            self.uin = str(login.get('user_id'))
+        if not avatar:
+            avatar = profile.avatar_url(self.uin)
+        st['nick'] = nick
+        st['avatar'] = avatar
         st['persona_id'] = self.cfg.get('persona_id') or ''
         st['provider_id'] = self.cfg.get('provider_id') or ''
         st['enabled'] = bool(self.cfg.get('enabled', True))
@@ -92,6 +110,8 @@ class AccountManager:
     def __init__(self, cfg_getter, on_event):
         self.cfg_getter = cfg_getter
         self.on_event = on_event          # async def (account, event) -> None
+        # Bot 实例（用来在连接就绪时拉群名/好友名缓存）
+        self.bot = None
         self.accounts = {}                # id -> Account
         self._task = None
         self._stop = False
@@ -147,6 +167,21 @@ class AccountManager:
         """按账号分发事件。"""
         if self.on_event:
             await self.on_event(account, ev)
+
+    async def on_connected(self, account):
+        """某账号的 OneBot 连上了。
+
+        名字（群名/好友昵称）只能从 OneBot 拉，而那些接口要登录后才有数据，
+        所以在连接就绪这一刻拉一次最合适 —— 之前没人调 fill_group_names，
+        群名缓存永远是空的，聊天记录里群名显示成裸群号。
+        """
+        bot = self.bot
+        if bot is None:
+            return
+        try:
+            await bot.on_connected(account.ob, account.id)
+        except Exception as e:
+            logbuf.debug('acc', '拉名字缓存失败：%s' % str(e)[:120])
 
     def get(self, aid):
         return self.accounts.get(aid)

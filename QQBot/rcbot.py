@@ -34,10 +34,17 @@ async def main():
     mgr = accmod.AccountManager(config.load, None)
     b = botmod.Bot()
     mgr.on_event = b.on_account_event
+    # 把 Bot 给 Manager：OneBot 连上时用它拉群名/好友名缓存
+    mgr.bot = b
     mgr.start()
 
     async def warm():
-        """连上后补一次群名，失败就算了。"""
+        """连上后补一次群名（事件驱动的补充手段）。
+
+        ★ 主力是 AccountManager.on_connected —— 每次连上都会拉一次。
+          这里只兜底：万一连接就绪的回调没赶上（比如热更后立刻连上），
+          这里再拉一次。失败就算了。
+        """
         for _ in range(60):
             await asyncio.sleep(2)
             for acc in list(mgr.accounts.values()):

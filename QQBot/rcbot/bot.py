@@ -18,7 +18,7 @@ import time
 
 import aiohttp
 
-from . import chats, compress, config, llm, logbuf, media, store
+from . import chats, compress, config, llm, logbuf, media, profile, store
 
 MAX_REPLY_CHARS = 3000
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
@@ -239,6 +239,11 @@ class Bot:
         self.ob = ob
         self.rl = RateLimiter()
         self._group_names = {}
+        # 好友昵称 + 群头像。群名/好友名要调 OneBot 接口才能拿到，
+        # 但那些接口要 QQ 已登录才有数据，所以在线程外异步拉，
+        # 拉不到就退回"裸 QQ 号"显示（见 profile.display_name）。
+        self._friend_names = {}
+        self._group_avatars = {}
         self.last_error = ''
 
     # ---------------- 引用消息：reply 段只给 id，得再查一次
@@ -322,7 +327,8 @@ class Bot:
 
             segs = ev.get('message')
             sender = ev.get('sender') or {}
-            nick = sender.get('card') or sender.get('nickname') or uid
+            # 名字：群名片 > 昵称 > QQ 号；头像按 QQ 号从 qlogo 取
+            uid, nick, avatar = profile.sender_profile(sender)
             target = gid if mtype == 'group' else uid
             ts = int(ev.get('time') or time.time())
             msg_id = str(ev.get('message_id') or '')
@@ -341,7 +347,8 @@ class Bot:
 
             await chats.record(account_id, mtype, target, 'user', segs,
                                sender_id=uid, sender_name=nick, msg_id=msg_id,
-                               created_at=ts, media=media_list)
+                               created_at=ts, media=media_list,
+                               sender_avatar=avatar)
         except Exception as e:
             logbuf.warn('chat', '记录消息失败（不影响应答）：%s' % str(e)[:200])
 
@@ -364,6 +371,17 @@ class Bot:
 
         # 路径 B：应答（原有逻辑）
         await self._maybe_reply(ev, account_id, acct_cfg)
+
+    async def on_connected(self, ob=None, account_id=''):
+        """OneBot 连上后回调：拉一次群列表/好友列表缓存名字。
+
+        ★ 没有这一步，聊天记录里的群名/私聊名就一直是裸 QQ 号 ——
+          因为名字只能从 OneBot 接口拿，而这些接口要登录后才有数据。
+        """
+        try:
+            await self.fill_group_names(ob)
+        except Exception as e:
+            logbuf.debug('bot', '拉名字缓存失败：%s' % str(e)[:120])
 
     async def _maybe_reply(self, ev, account_id, acct_cfg):
         cfg = config.load()
@@ -523,10 +541,14 @@ class Bot:
         except Exception as e:
             logbuf.debug('chat', '记录自身消息失败：%s' % str(e)[:120])
 
-    # ---------------- 群名缓存（异步补，不阻塞）
+    # ---------------- 群名/好友名缓存（异步补，不阻塞）
 
     async def fill_group_names(self, ob=None):
-        """拉一次群列表缓存群名。
+        """拉一次群列表与好友列表，缓存群名/群头像/好友昵称。
+
+        ★ 这个方法以前**从来没被调用过** —— 群名缓存永远是空的，
+          于是聊天记录左侧列表里群名显示成裸群号。
+          现在在 OneBot 连接就绪时自动调用。
 
         群名按账号缓存（不同号的群列表不同），键是 "账号id:群号"。
         """
@@ -544,3 +566,32 @@ class Bot:
                 logbuf.info('bot', '群列表已缓存 %d 个' % len(self._group_names))
         except Exception as e:
             logbuf.debug('bot', '拉群列表失败：%s' % str(e)[:120])
+
+        # 好友昵称：私聊会话显示名字靠它
+        try:
+            r = await ob.call('get_friend_list', timeout=15)
+            for f in (r.get('data') or []):
+                fid = str(f.get('user_id') or '')
+                name = f.get('remark') or f.get('nickname') or ''
+                if fid and name:
+                    self._friend_names[fid] = name
+            if self._friend_names:
+                logbuf.info('bot', '好友列表已缓存 %d 个' % len(self._friend_names))
+        except Exception as e:
+            logbuf.debug('bot', '拉好友列表失败：%s' % str(e)[:120])
+
+    def group_display(self, gid):
+        """群会话的显示名 + 头像。
+
+        群头像 QQ 没有公开直链（不像个人头像是 qlogo），
+        所以头像用"群号当 QQ 号"去 qlogo 取 —— 取不到时前端显示占位圆。
+        """
+        gid = str(gid or '')
+        name = self._group_names.get(gid, '')
+        return name or gid, profile.avatar_url(gid)
+
+    def friend_display(self, uid):
+        """私聊会话的显示名 + 头像。"""
+        uid = str(uid or '')
+        name = self._friend_names.get(uid, '')
+        return name or uid, profile.avatar_url(uid)

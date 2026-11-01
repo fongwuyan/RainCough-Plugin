@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS chat_logs (
   msg_id       TEXT    DEFAULT '',
   sender_id    TEXT    DEFAULT '',
   sender_name  TEXT    DEFAULT '',
+  sender_avatar TEXT   DEFAULT '',
   role         TEXT    NOT NULL,
   segs         TEXT    NOT NULL,
   text         TEXT    DEFAULT '',
@@ -383,6 +384,9 @@ async def ensure_columns():
     """给已存在的旧库补列（ALTER TABLE ADD COLUMN 是幂等的，但要判存在）。"""
     for tbl, col, ddl in (
         ('sessions', 'account_id', "ALTER TABLE sessions ADD COLUMN account_id TEXT DEFAULT ''"),
+        # 发言者头像。QQ 头像是按 QQ 号从 qlogo 服务取的，
+        # 存下来是为了聊天记录页能直接显示，不用前端再拼。
+        ('chat_logs', 'sender_avatar', "ALTER TABLE chat_logs ADD COLUMN sender_avatar TEXT DEFAULT ''"),
     ):
         cur = await _db.execute('PRAGMA table_info(%s)' % tbl)
         cols = [r['name'] for r in await cur.fetchall()]

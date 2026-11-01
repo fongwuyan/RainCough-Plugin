@@ -391,6 +391,13 @@ const Overview = {
       }
     },
     dash(pct) { return 264 - (264 * pct) / 100 },
+    // 头像：后端已按 QQ 号兜底拼好，这里再兜一层（后端没给但有号时）
+    accAvatar(a) {
+      if (a.avatar) return a.avatar
+      const uin = String((a && a.uin) || '')
+      if (!/^\d{5,12}$/.test(uin)) return ''
+      return 'https://q1.qlogo.cn/g?b=qq&nk=' + uin + '&s=100'
+    },
   },
   template: `
   <div>
@@ -400,7 +407,7 @@ const Overview = {
       <div>
         <div class="rcq-pnl flat">
           <div class="rcq-acct">
-            <img class="rcq-ava" :src="acc.avatar" alt="" v-if="acc.avatar" />
+            <img class="rcq-ava" :src="accAvatar(acc)" alt="" v-if="accAvatar(acc)" />
             <div class="rcq-ava" v-else></div>
             <div style="min-width:0">
               <div class="rcq-nick">
@@ -504,6 +511,8 @@ const Accounts = {
     return {
       S, items: [], busy: '', err: '', qrUin: '', qr: '', qrErr: '', qrBusy: false,
       addOpen: false, addForm: { uin: '' }, adding: false,
+      // 扫码式新增：addQr 是二维码图片，scanSlug 是占位实例标识
+      addQr: '', addMsg: '', scanSlug: '',
     }
   },
   computed: {
@@ -541,6 +550,13 @@ const Accounts = {
       if (x.online) return 'ok'
       if (x.state === 'failed') return 'off'
       return ''
+    },
+    // 实例头像：后端给了就用，没给但有 QQ 号就按号拼一个
+    instAvatar(x) {
+      if (x.avatar) return x.avatar
+      const uin = String((x && x.uin) || '')
+      if (!/^\d{5,12}$/.test(uin)) return ''
+      return 'https://q1.qlogo.cn/g?b=qq&nk=' + uin + '&s=100'
     },
     async act(x, action) {
       this.busy = action + x.uin
@@ -582,6 +598,86 @@ const Accounts = {
         this.qrBusy = false
       }
     },
+    // 点「添加 QQ 账户」：直接出二维码，不用先填 QQ 号。
+    //
+    // ★ NapCat 本来就是扫码登录的 —— 扫码之前根本不知道会登录到哪个号
+    //   （新注册的号更是如此），让人先填号等于让人猜。
+    //   所以流程是：建实例 → 出码 → 扫 → NapCat 报出真实 QQ 号 → 自动认领。
+    async addAccount() {
+      this.adding = true
+      this.addOpen = true
+      this.addQr = ''
+      this.addMsg = ''
+      this.scanSlug = ''
+      try {
+        const d = await callData('qqbot.inst.scan', {})
+        if (!d) { this.addMsg = '创建实例失败'; return }
+        this.scanSlug = d.slug || ''
+        this.addQr = d.qrcode ? makeQr(d.qrcode) : ''
+        this.addMsg = d.qrcode ? '' : (d.hint || '二维码还在生成…')
+        if (!this.addQr) {
+          // 二维码可能还没生成出来，轮询一下
+          this.pollScanCode(0)
+        } else {
+          this.pollScanDone(0)
+        }
+      } catch (e) {
+        this.addMsg = errText(e)
+      } finally {
+        this.adding = false
+      }
+    },
+
+    // 二维码还没出来时，轮询 NapCat 的状态接口补一张
+    async pollScanCode(n) {
+      if (n > 20 || !this.scanSlug) return
+      setTimeout(async () => {
+        if (!this.addOpen || !this.scanSlug) return
+        try {
+          const d = await callData('qqbot.inst.action', {
+            uin: this.scanSlug, action: 'qrcode',
+          })
+          if (d && d.qrcode) {
+            this.addQr = makeQr(d.qrcode)
+            this.addMsg = ''
+            this.pollScanDone(0)
+            return
+          }
+        } catch (e) { /* 还没起来，继续等 */ }
+        this.pollScanCode(n + 1)
+      }, 3000)
+    },
+
+    // 等扫码完成：NapCat 登录后会报出真实 QQ 号
+    async pollScanDone(n) {
+      if (n > 80 || !this.scanSlug) return
+      setTimeout(async () => {
+        if (!this.addOpen || !this.scanSlug) return
+        try {
+          const d = await callData('qqbot.inst.scan_status', { slug: this.scanSlug })
+          if (d && d.done) {
+            this.addMsg = '登录成功：' + (d.nick || ('QQ ' + d.uin)) + '（' + d.uin + '）'
+            this.scanSlug = ''
+            toast('已添加 QQ 账户 ' + d.uin, 'ok')
+            await this.load(true)
+            setTimeout(() => this.closeAdd(), 1200)
+            return
+          }
+          if (d && d.error) this.addMsg = d.error
+        } catch (e) {
+          this.addMsg = errText(e)
+        }
+        this.pollScanDone(n + 1)
+      }, 3000)
+    },
+
+    closeAdd() {
+      this.addOpen = false
+      this.addQr = ''
+      this.addMsg = ''
+      this.scanSlug = ''
+    },
+
     async addInstance() {
       const uin = String(this.addForm.uin || '').trim()
       if (!uin) { toast('填 QQ 号', 'err'); return }
@@ -653,37 +749,46 @@ const Accounts = {
         <b>QQ 实例</b>
         <span class="rcq-hint">共 {{ items.length }} 个 · 在线 {{ onlineCount }} 个</span>
         <span class="sp"></span>
-        <button class="btn btn-sm btn-primary" :disabled="adding" @click="addOpen = !addOpen">
-          {{ addOpen ? '取消' : '+ 添加 QQ 号' }}
+        <button class="btn btn-sm btn-primary" :disabled="adding" @click="addAccount()">
+          {{ adding ? '准备中…' : '+ 添加 QQ 账户' }}
         </button>
         <button class="btn btn-sm" :disabled="!!busy" @click="load()">刷新</button>
       </div>
 
       <div v-if="addOpen" class="rcq-form" style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--bd)">
-        <label class="rcq-fi">
-          <span>QQ 号</span>
-          <input class="input" v-model="addForm.uin" placeholder="例如 1132096843"
-            @keyup.enter="addInstance" />
-        </label>
-        <div class="rcq-fi" style="justify-content:flex-end">
-          <span>&nbsp;</span>
-          <button class="btn btn-primary btn-sm" :disabled="adding" @click="addInstance">
-            {{ adding ? '创建中…' : '创建并启动' }}
-          </button>
-        </div>
-        <div class="rcq-note" style="grid-column:1/-1">
-          每个号是一个独立的 NapCat 实例（独立配置、登录态、显示、端口）。
-          新号第一次必须扫一次码 —— 这是 QQ 客户端的规矩，躲不掉。
-          端口会自动分配（WebUI 6099 起、OneBot 6700 起，避开 rcbot 用的 6710）。
+        <div class="rcq-fi" style="align-items:flex-start;gap:16px">
+          <div>
+            <div style="font-size:12px;color:var(--fg2);margin-bottom:6px">
+              请用手机 QQ 扫描下面的二维码授权登录
+            </div>
+            <img v-if="addQr" :src="addQr" alt="QQ 登录二维码"
+              style="width:180px;height:180px;border-radius:8px;background:#fff;display:block" />
+            <div v-else class="rcq-empty"
+              style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;border-radius:8px">
+              {{ adding ? '正在生成二维码…' : '二维码还没出来' }}
+            </div>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div class="rcq-note" style="display:block">
+              扫完就会自动识别出这是哪个 QQ 号，不用手填。<br />
+              每个号是一个独立的 NapCat 实例（独立配置、登录态、显示、端口）。<br />
+              端口会自动分配（WebUI 6099 起、OneBot 6700 起，避开 rcbot 用的 6710）。
+            </div>
+            <div v-if="addMsg" style="margin-top:10px;font-size:12px">{{ addMsg }}</div>
+            <div style="margin-top:12px;display:flex;gap:8px">
+              <button class="btn btn-sm" :disabled="adding" @click="addAccount()">重新出码</button>
+              <button class="btn btn-sm" @click="closeAdd()">关闭</button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div v-if="!items.length" class="rcq-empty"><b>◇</b>还没有实例，点右上角「添加 QQ 号」</div>
+      <div v-if="!items.length" class="rcq-empty"><b>◇</b>还没有实例，点右上角「添加 QQ 账户」</div>
 
       <div class="rcq-inst" v-else>
         <div class="rcq-icard" v-for="x in items" :key="x.unit || x.uin" :class="{ on: x.online }">
           <div class="rcq-itop">
-            <img class="rcq-ava" :src="x.avatar" alt="" v-if="x.avatar" />
+            <img class="rcq-ava" :src="instAvatar(x)" alt="" v-if="instAvatar(x)" />
             <div class="rcq-ava" v-else style="width:38px;height:38px"></div>
             <div class="nm">
               <b>{{ x.nick || ('QQ ' + x.uin) }}</b>
@@ -909,6 +1014,15 @@ const Chats = {
     },
     segsOf(m) { return m.segs || [] },
     mediaOf(m) { return m.media || [] },
+    // 发言者头像：库里存的优先；旧数据没存就按 QQ 号现拼一个
+    // （QQ 头像是独立服务，知道号就能取，不必等登录）
+    senderAvatar(m) {
+      const s = m.sender || {}
+      if (s.avatar) return s.avatar
+      const uin = String(s.id || m.sender_id || '')
+      if (!/^\d{5,12}$/.test(uin)) return ''
+      return 'https://q1.qlogo.cn/g?b=qq&nk=' + uin + '&s=100'
+    },
     textOf(m) {
       if (m.text) return m.text
       return ''
@@ -1000,14 +1114,20 @@ const Chats = {
             <div v-if="groups.group.length" class="rcq-cgrp">群聊</div>
             <div class="rcq-csess" v-for="s in groups.group" :key="s.session_id"
               :class="{ on: curSess === s.session_id }" @click="pickSess(s.session_id)">
-              <div class="t">{{ s.display || s.target_id }}
+              <div class="t">
+                <img v-if="s.avatar" :src="s.avatar" alt=""
+                  style="width:20px;height:20px;border-radius:50%;object-fit:cover;flex:none" />
+                {{ s.display || s.target_id }}
                 <span>{{ fmtTime(s.last_at) }}</span></div>
               <div class="d">{{ s.msg_count }} 条{{ s.recalled_count ? ' · 撤回 ' + s.recalled_count : '' }}</div>
             </div>
             <div v-if="groups.private.length" class="rcq-cgrp">私信</div>
             <div class="rcq-csess" v-for="s in groups.private" :key="s.session_id"
               :class="{ on: curSess === s.session_id }" @click="pickSess(s.session_id)">
-              <div class="t">{{ s.display || s.target_id }}
+              <div class="t">
+                <img v-if="s.avatar" :src="s.avatar" alt=""
+                  style="width:20px;height:20px;border-radius:50%;object-fit:cover;flex:none" />
+                {{ s.display || s.target_id }}
                 <span>{{ fmtTime(s.last_at) }}</span></div>
               <div class="d">{{ s.msg_count }} 条{{ s.recalled_count ? ' · 撤回 ' + s.recalled_count : '' }}</div>
             </div>
@@ -1037,7 +1157,11 @@ const Chats = {
               <div class="rcq-day" v-if="isNewDay(i)">{{ dayOf(m.created_at) }}</div>
               <div class="rcq-bub" :class="{ me: m.role === 'assistant' }">
                 <div class="ava" v-if="m.role !== 'assistant'">
-                  {{ (m.sender_name || m.sender_id || '?').slice(0, 1) }}
+                  <img v-if="senderAvatar(m)" :src="senderAvatar(m)"
+                    style="width:100%;height:100%;border-radius:50%;object-fit:cover;display:block" />
+                  <template v-else>
+                    {{ (m.sender_name || m.sender_id || '?').slice(0, 1) }}
+                  </template>
                 </div>
                 <div class="col">
                   <div class="who" v-if="m.role !== 'assistant'">

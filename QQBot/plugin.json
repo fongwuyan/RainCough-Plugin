@@ -204,6 +204,18 @@
       "description": "新增 NapCat 实例（建目录/写 systemd/启动）"
     },
     {
+      "id": "qqbot.inst.scan",
+      "visibility": "main",
+      "version": "1",
+      "description": "扫码式新增实例：不用先填 QQ 号，直接出二维码"
+    },
+    {
+      "id": "qqbot.inst.scan_status",
+      "visibility": "main",
+      "version": "1",
+      "description": "查扫码进度；登录成功后自动认领真实 QQ 号"
+    },
+    {
       "id": "qqbot.inst.action",
       "visibility": "main",
       "version": "1",
