@@ -24,10 +24,12 @@
         0.0.0.0:3910  ->  机内 3910   （开发面板，局域网可访问）
         127.0.0.1:2223 -> 机内 22     （SSH，只给本机）
         127.0.0.1:6711 -> 机内 6710   （rcbot HTTP）
-    · 宿主再补一条 iptables DNAT：
-        192.168.2.200:3910 -> 127.0.0.1:3910
-      原因：qemu 的 hostfwd 只在"访问宿主本机地址"时生效，
-      局域网其它机器用 192.168.2.200 访问要靠这条 DNAT 兜住。
+    · 不需要任何 iptables DNAT：
+      hostfwd 绑的是 0.0.0.0:3910，外部机器访问 192.168.2.200:3910
+      时目标就是宿主自己的地址，走 INPUT 链直接命中 qemu 监听。
+      （★ 多加一条 DNAT 到 127.0.0.1 反而会让外部连不上：
+        外部来源的包目标被改成 loopback，route_localnet=0 时内核丢弃。
+        宿主本机走 OUTPUT 链不受影响，所以本机测是 200、别人测超时。）
 
   外部访问：
     开发面板 http://192.168.2.200:3910
@@ -203,24 +205,28 @@ WantedBy=multi-user.target
     return path
 
 
-def write_dnat():
-    """宿主 DNAT：192.168.2.200:3910 -> 127.0.0.1:3910（qemu hostfwd）。
+def clear_dnat():
+    """清掉可能残留的 3910/2223/6711 的 DNAT 规则。
 
-    qemu 的 hostfwd 只在"访问宿主本机地址"时生效；
-    局域网其它机器用 192.168.2.200:3910 访问要靠这条。
+    ★ 为什么不需要 DNAT（踩过这个坑）：
+      qemu 的 hostfwd 监听在 **0.0.0.0:3910**，外部机器访问
+      192.168.2.200:3910 时，目标 IP 就是宿主自己的地址，
+      包走 INPUT 链直接命中 qemu 的监听 —— 本来就能通。
+
+      之前我多写了一条 DNAT：
+          -d 192.168.2.200/32 --dport 3910 -j DNAT --to-destination 127.0.0.1:3910
+      结果外部来源的包目标被改成 loopback，而内核
+      net.ipv4.conf.all.route_localnet=0 → 拒绝路由 → 包被丢弃 →
+      外部连不上（宿主本机走 OUTPUT 链不受影响，所以本机测是 200，
+      看起来"一切正常"，实际别人都打不开）。
+
+      所以这里只做"清理"，不做"添加"。
     """
-    cmds = []
     for host, guest, bind in PORT_FWD:
         for chain in ('PREROUTING', 'OUTPUT'):
-            cmds.append('iptables -t nat -D %s -d %s/32 -p tcp --dport %d '
-                        '-j DNAT --to-destination 127.0.0.1:%d 2>/dev/null'
-                        % (chain, HOST_IP, host, host))
-        cmds.append('iptables -t nat -A PREROUTING -d %s/32 -p tcp --dport %d '
-                    '-j DNAT --to-destination 127.0.0.1:%d' % (HOST_IP, host, host))
-        cmds.append('iptables -t nat -A OUTPUT -d %s/32 -p tcp --dport %d '
-                    '-j DNAT --to-destination 127.0.0.1:%d' % (HOST_IP, host, host))
-    for c in cmds:
-        sh(c, check=False)
+            sh('iptables -t nat -D %s -d %s/32 -p tcp --dport %d '
+               '-j DNAT --to-destination 127.0.0.1:%d 2>/dev/null'
+               % (chain, HOST_IP, host, host), check=False)
     sh('netfilter-persistent save >/dev/null 2>&1', check=False)
 
 
@@ -263,13 +269,12 @@ def main():
     time.sleep(4)
     print('虚拟机: %s' % sh('systemctl is-active %s 2>&1' % VM_NAME).strip())
 
-    # 5) 端口转发
-    write_dnat()
+    # 5) 清理可能残留的 DNAT 规则（见 clear_dnat 的注释）
+    clear_dnat()
     print()
-    print('端口转发:')
+    print('端口转发（qemu hostfwd，不需要额外 DNAT）:')
     for a, h, g in PORT_FWD:
         print('   %s:%d  ->  %s:%d' % (a, h, GUEST_IP, g))
-    print('   宿主 DNAT: %s:3910 -> 127.0.0.1:3910' % HOST_IP)
     print()
     print('外部访问开发面板: http://%s:3910' % HOST_IP)
     print('外部访问生产面板: http://%s:3900' % HOST_IP)
