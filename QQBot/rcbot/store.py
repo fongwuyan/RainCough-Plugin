@@ -77,6 +77,33 @@ CREATE INDEX IF NOT EXISTS idx_chat_acct  ON chat_logs(account_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_msgid ON chat_logs(account_id, msg_id);
 CREATE INDEX IF NOT EXISTS idx_chat_time  ON chat_logs(created_at);
 
+-- ★ 媒体索引（媒体库用）
+-- 为什么要单独一张表：media 原本是 chat_logs 里的 JSON 字段，
+-- 列媒体库要"按类型/时间/大小/发送者"筛选，靠 JSON 扫很慢也不好加索引。
+-- 这里在媒体落盘时同步写一份扁平索引，媒体库直接查这张表。
+CREATE TABLE IF NOT EXISTS media_files (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id  TEXT    DEFAULT '',
+  session_id  TEXT    DEFAULT '',
+  msg_id      TEXT    DEFAULT '',
+  chat_id     INTEGER DEFAULT 0,      -- 对应 chat_logs.id
+  kind        TEXT    DEFAULT '',      -- image / video / record / face / file
+  rel         TEXT    DEFAULT '',      -- 相对媒体根目录的路径
+  bytes       INTEGER DEFAULT 0,
+  mime        TEXT    DEFAULT '',
+  name        TEXT    DEFAULT '',
+  sender_id   TEXT    DEFAULT '',
+  sender_name TEXT    DEFAULT '',
+  playable    INTEGER DEFAULT 1,      -- 浏览器能不能直接放
+  transcode   TEXT    DEFAULT '',      -- ''/pending/done/failed/skipped
+  created_at  INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_media_kind  ON media_files(kind, created_at);
+CREATE INDEX IF NOT EXISTS idx_media_sess  ON media_files(session_id);
+CREATE INDEX IF NOT EXISTS idx_media_msg   ON media_files(account_id, msg_id);
+CREATE INDEX IF NOT EXISTS idx_media_sender ON media_files(sender_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_media_rel ON media_files(rel);
+
 -- ★ 账号登记表
 CREATE TABLE IF NOT EXISTS accounts (
   id          TEXT PRIMARY KEY,

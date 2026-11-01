@@ -975,10 +975,54 @@ def account_action(params):
 
 @rc.interface("qqbot.account.logs")
 def account_logs(params):
-    """NapCat 运行日志（journalctl）。"""
-    n = max(50, min(2000, int((params or {}).get("lines") or 400)))
-    _, o = _run("journalctl -u %s --no-pager -n %d 2>/dev/null" % (single.UNIT, n), timeout=30)
-    return {"ok": True, "data": {"text": o or "", "unit": single.UNIT}}
+    """NapCat 运行日志。
+
+    mode=live    —— 走 NapCat WebUI 的 SSE 实时日志（_LOG_BUF）
+    mode=history —— 读 systemd journalctl
+
+    ★ 返回结构与前端「运行日志」页一致：{items, source, total, connected, hint}。
+      这里**不能**套 data —— 前端用 call() 直接取 result。
+    """
+    p = params or {}
+    n = max(50, min(2000, int(p.get("lines") or 400)))
+    mode = p.get("mode") or "live"
+    level = (p.get("level") or "").lower()
+    _log_ensure()
+
+    unit = single.UNIT
+    if mode == "history":
+        raw = _journal(unit, n)
+        source = "journal"
+        items = [{"level": _guess_level(x), "text": x, "ts": 0} for x in raw]
+        if not items:
+            with _LOG_LOCK:
+                items = list(_LOG_BUF)[-n:]
+            source = "webui"
+    else:
+        with _LOG_LOCK:
+            items = list(_LOG_BUF)[-n:]
+        source = "webui"
+
+    if level:
+        items = [x for x in items if x["level"] == level]
+
+    with _LOG_LOCK:
+        total = len(_LOG_BUF)
+    return {"ok": True, "items": items, "source": source, "total": total,
+            "connected": _LOG_STATE["connected"], "err": _LOG_STATE["err"],
+            "unit": unit,
+            "hint": "" if items else (
+                "还没有日志。NapCat 的实时日志走 SSE，连上后新产生的日志会出现在这里"
+                if source == "webui" else
+                "读不到 systemd 日志（可能不是 systemd 起的，或当前用户没权限）")}
+
+
+@rc.interface("qqbot.account.logs.clear")
+def account_logs_clear(params):
+    """清空实时日志缓冲。"""
+    with _LOG_LOCK:
+        _LOG_BUF.clear()
+    return {"ok": True}
 
 
 def cfg_napcat_token():
@@ -1181,6 +1225,124 @@ def chat_purge_media(params):
     }, timeout=300)}
 
 
+# ---------------------------------------------------------------- 查询
+
+@rc.interface("qqbot.chat.query")
+def chat_query(params):
+    """按条件查消息。
+
+    可叠加的条件（都是「与」关系）：
+      sender   —— QQ 号（精确）或昵称（模糊）
+      recalled —— '' 全部 / 'yes' 已撤回 / 'no' 未撤回
+      kind     —— '' 全部 / text 文本 / image 图片 / video 视频 / record 语音
+                  / face 表情 / file 文件
+      kw       —— 文本关键词
+      session_id / from / to —— 限定会话与日期范围
+    """
+    p = params or {}
+    q = {}
+    for k in ("sender", "recalled", "kind", "session_id", "account_id"):
+        if p.get(k) not in (None, ""):
+            q[k] = p[k]
+    if p.get("kw"):
+        q["kw"] = p["kw"]
+    if p.get("from"):
+        q["from"] = int(p["from"])
+    if p.get("to"):
+        q["to"] = int(p["to"])
+    q["limit"] = int(p.get("limit") or 50)
+    if p.get("before_id"):
+        q["before_id"] = int(p["before_id"])
+    qs = urllib.parse.urlencode(q)
+    return {"ok": True, "data": _data("/api/chat/query?" + qs, timeout=60)}
+
+
+@rc.interface("qqbot.chat.senders")
+def chat_senders(params):
+    """聊天里出现过的发送者（查询界面做自动补全）。"""
+    p = params or {}
+    qs = urllib.parse.urlencode({"kw": p.get("kw") or ""})
+    return {"ok": True, "data": _data("/api/chat/senders?" + qs, timeout=30)}
+
+
+# ---------------------------------------------------------------- 一键清空会话
+
+@rc.interface("qqbot.chat.clear_session")
+def chat_clear_session(params):
+    """一键清空会话。
+
+    with_media=True 时连媒体文件一起删（默认只删消息记录）。
+    """
+    p = params or {}
+    if p.get("confirm") is not True:
+        raise RuntimeError("需要 confirm=true")
+    sid = str(p.get("session_id") or "").strip()
+    if not sid:
+        raise RuntimeError("缺少 session_id")
+    return {"ok": True, "data": _data("/api/chat/session-clear", "POST", {
+        "session_id": sid,
+        "account_id": p.get("account_id") or "",
+        "with_media": bool(p.get("with_media")),
+        "confirm": True,
+    }, timeout=300)}
+
+
+# ---------------------------------------------------------------- 媒体库
+
+@rc.interface("qqbot.chat.media_list")
+def chat_media_list(params):
+    """媒体库列表 + 统计。"""
+    p = params or {}
+    q = {}
+    for k in ("kind", "sender", "session_id", "account_id"):
+        if p.get(k) not in (None, ""):
+            q[k] = p[k]
+    if p.get("kw"):
+        q["kw"] = p["kw"]
+    q["limit"] = int(p.get("limit") or 100)
+    q["offset"] = int(p.get("offset") or 0)
+    qs = urllib.parse.urlencode(q)
+    return {"ok": True, "data": _data("/api/chat/media?" + qs, timeout=60)}
+
+
+@rc.interface("qqbot.chat.media_delete")
+def chat_media_delete(params):
+    """删除媒体文件。"""
+    p = params or {}
+    if p.get("confirm") is not True:
+        raise RuntimeError("需要 confirm=true")
+    return {"ok": True, "data": _data("/api/chat/media/delete", "POST", {
+        "ids": p.get("ids") or [],
+        "rels": p.get("rels") or [],
+        "kind": p.get("kind") or "",
+        "session_id": p.get("session_id") or "",
+        "confirm": True,
+    }, timeout=300)}
+
+
+@rc.interface("qqbot.chat.media_transcode")
+def chat_media_transcode(params):
+    """把 HEVC 视频 / AMR 语音转成浏览器能播的格式。"""
+    p = params or {}
+    return {"ok": True, "data": _data("/api/chat/media/transcode", "POST", {
+        "ids": p.get("ids") or [],
+    }, timeout=1800)}
+
+
+@rc.interface("qqbot.chat.media_reindex")
+def chat_media_reindex(params):
+    """重建媒体索引（补齐历史数据）。"""
+    return {"ok": True, "data": _data("/api/chat/media/reindex", "POST", {},
+                                     timeout=300)}
+
+
+@rc.interface("qqbot.chat.media_repair")
+def chat_media_repair(params):
+    """修复媒体引用（转码后消息里还指向旧文件名 → 前端取不到文件）。"""
+    return {"ok": True, "data": _data("/api/chat/media/repair", "POST", {},
+                                      timeout=300)}
+
+
 @rc.interface("rcbot.accounts")
 def rcbot_accounts(params):
     """rcbot 侧的账号列表（连接状态）。"""
@@ -1312,8 +1474,14 @@ IFACES = [
     # 单账户（2026-11-02 从多账户回退）
     "qqbot.account.info", "qqbot.account.qrcode", "qqbot.account.refresh_qrcode",
     "qqbot.account.status", "qqbot.account.action", "qqbot.account.logs",
+    "qqbot.account.logs.clear",
     "qqbot.chat.sessions", "qqbot.chat.messages", "qqbot.chat.stats",
     "qqbot.chat.export", "qqbot.chat.purge_media",
+    # 查询 / 清空会话 / 媒体库
+    "qqbot.chat.query", "qqbot.chat.senders", "qqbot.chat.clear_session",
+    "qqbot.chat.media_list", "qqbot.chat.media_delete",
+    "qqbot.chat.media_transcode", "qqbot.chat.media_reindex",
+    "qqbot.chat.media_repair",
     "rcbot.status", "rcbot.accounts", "rcbot.account.save",
     "rcbot.config.get", "rcbot.config.save", "rcbot.tools.search",
     "rcbot.providers", "rcbot.provider.save", "rcbot.provider.delete",

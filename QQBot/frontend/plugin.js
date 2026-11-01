@@ -64,6 +64,24 @@ function fmtNum(n) {
 function splitList(s) {
   return String(s || '').split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean)
 }
+// 媒体文件 URL：走面板的文件预览通道（能读任意路径，且 http.ServeFile 支持 Range）
+//
+// ★ 优先用后端给的绝对路径（m.abs）：媒体根目录是配置项（config.chat.media_dir），
+//   在前端硬编码 /opt/rcbot/media 的话，改了配置就全找不到文件了。
+function mediaFileUrl(m) {
+  if (!m) return ''
+  const p = m.abs || (m.rel ? '/opt/rcbot/media/' + m.rel : '')
+  if (!p) return ''
+  return '/api/fm/preview?path=' + encodeURIComponent(p)
+}
+
+// 媒体文件在本机是否还可用（被删/被清过就是 false）。
+// false 就不该再去发请求 —— 发了就是一片 404。
+function mediaAlive(md) {
+  if (!md || !md.local) return false
+  return md.exists !== 0
+}
+
 function makeQr(text) {
   if (!text) return ''
   try {
@@ -305,6 +323,54 @@ const CSS = `
 .rcq-loadmore{padding:9px;text-align:center;font-size:11.5px;color:var(--m);cursor:pointer}
 .rcq-loadmore:hover{color:var(--ac)}
 .rcq-media{flex-wrap:wrap;gap:5px;margin-top:5px}
+
+/* ---- 媒体库 ---- */
+.rcq-mlib{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:10px}
+.rcq-mcard{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);
+ overflow:hidden;display:flex;flex-direction:column;position:relative}
+.rcq-mcard.on{border-color:var(--ac);box-shadow:0 0 0 1px var(--ac)}
+.rcq-mcard.gone{opacity:.55}
+.rcq-mcard .ck{position:absolute;top:6px;left:6px;z-index:2;background:rgba(0,0,0,.45);
+ border-radius:5px;padding:1px 5px;line-height:1.4}
+.rcq-mcard .th{height:118px;background:var(--sf3);display:flex;align-items:center;
+ justify-content:center;overflow:hidden;cursor:zoom-in;position:relative}
+.rcq-mcard .th img{width:100%;height:100%;object-fit:cover;display:block}
+.rcq-mcard .th video{width:100%;height:100%;object-fit:cover;display:block}
+.rcq-mcard .th .ph{font-size:30px;opacity:.6}
+.rcq-mcard .meta{padding:7px 9px;font-size:11px;color:var(--m);flex:1;min-width:0}
+.rcq-mcard .meta .n{font-size:11.5px;color:var(--t);font-weight:600}
+.rcq-mcard .meta .s,.rcq-mcard .meta .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rcq-mcard .dl{display:block;text-align:center;padding:5px;border-top:1px solid var(--bd);
+ font-size:11px;color:var(--ac);text-decoration:none}
+.rcq-mcard .dl:hover{background:var(--sf2)}
+.rcq-mcard .dl.gone{color:var(--m);cursor:default}
+.rcq-badge{display:inline-block;font-size:10px;line-height:1.7;padding:0 6px;border-radius:999px;
+ border:1px solid var(--bd);color:var(--m);margin-left:4px;vertical-align:middle}
+.rcq-badge.warn{border-color:var(--warn);color:var(--warn)}
+.rcq-badge.bad{border-color:var(--bad);color:var(--bad)}
+.rcq-badge.plain{border-style:dashed}
+
+/* ---- 查询 ---- */
+.rcq-qres{display:flex;flex-direction:column;gap:6px}
+.rcq-qrow{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);padding:8px 11px}
+.rcq-qrow.rec{opacity:.72}
+.rcq-qrow .hd{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11.5px;color:var(--m)}
+.rcq-qrow .hd .ava{width:18px;height:18px;border-radius:50%;object-fit:cover;flex:none}
+.rcq-qrow .hd b{font-size:12px;color:var(--t)}
+.rcq-qrow .hd .tt{margin-left:auto}
+.rcq-qrow .bd{margin-top:5px;font-size:12.5px;white-space:pre-wrap;word-break:break-word;line-height:1.55}
+.rcq-sugg{position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--sf);
+ border:1px solid var(--bd);border-radius:var(--r);box-shadow:var(--shadow);margin-top:2px;
+ max-height:230px;overflow:auto}
+.rcq-sugg-i{display:flex;align-items:center;gap:7px;padding:6px 9px;cursor:pointer;font-size:12px}
+.rcq-sugg-i:hover{background:var(--sf2)}
+.rcq-sugg-i img{width:20px;height:20px;border-radius:50%;object-fit:cover}
+.rcq-sugg-i b{font-weight:600}
+.rcq-sugg-i span{color:var(--m);font-size:11px}
+.rcq-sugg-i i{margin-left:auto;font-style:normal;color:var(--m);font-size:11px}
+.rcq-noplay{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--warn);
+ border:1px solid var(--warn);border-radius:7px;padding:4px 9px;margin-top:5px}
+.rcq-noplay a{color:var(--ac)}
 
 /* 大图查看 */
 .rcq-light{position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,.82);
@@ -752,6 +818,8 @@ const Chats = {
   },
   methods: {
     fmtTime, fmtFull, fmtNum,
+    // 模块级函数要挂进 methods，模板表达式才能访问到
+    mediaAlive,
     bytes(n) {
       n = Number(n) || 0
       if (n >= 1073741824) return (n / 1073741824).toFixed(2) + ' G'
@@ -802,6 +870,7 @@ const Chats = {
         else this.msgs = items.concat(this.msgs)
         this.more = items.length >= 50
         if (items.length) this.beforeId = items[0].id
+        this.schedulePendingRefresh()
       } catch (e) {
         toast(errText(e), 'err')
       } finally {
@@ -827,11 +896,65 @@ const Chats = {
         this.busy = ''
       }
     },
-    mediaUrl(m) {
-      if (!m || !m.rel) return ''
-      // 媒体副本落在 /opt/rcbot/media/<账号>/<日期>/…，
-      // 面板的文件预览通道能直接读任意路径（fmRoots 默认 /），零面板改动。
-      return '/api/fm/preview?path=' + encodeURIComponent('/opt/rcbot/media/' + m.rel)
+    mediaUrl(m) { return mediaFileUrl(m) },
+    // 媒体当前能不能直接播：
+    //   'play'    —— 浏览器能放（视频已转成 H.264、语音已转成 mp3）
+    //   'pending' —— 后台转码中
+    //   'failed'  —— 转码失败（格式浏览器不支持）
+    //   'gone'    —— 本地文件已不在
+    mediaState(md) {
+      if (!md || !md.local) return 'gone'
+      // 文件已经被删/被清 → 不再发请求（否则刷 404）
+      if (md.exists === 0) return 'gone'
+      if (md.playable === 0) {
+        return md.transcode === 'pending' ? 'pending' : 'failed'
+      }
+      return 'play'
+    },
+    // 这屏里有没有正在转码的媒体 → 有的话定时自动刷新
+    hasPendingMedia() {
+      for (const m of this.msgs) {
+        for (const md of (m.media || [])) {
+          if (md.transcode === 'pending') return true
+        }
+      }
+      return false
+    },
+    schedulePendingRefresh() {
+      if (this._pendTimer) { clearTimeout(this._pendTimer); this._pendTimer = null }
+      if (!this.hasPendingMedia()) return
+      this._pendTimer = setTimeout(async () => {
+        this._pendTimer = null
+        if (!this.curSess) return
+        await this.loadMore(true)
+        this.schedulePendingRefresh()
+      }, 6000)
+    },
+    // 一键清空会话
+    async clearSess() {
+      const s = this.sess.find((x) => x.session_id === this.curSess)
+      const name = s ? (s.display || s.target_id) : '这个会话'
+      if (!confirm('清空会话「' + name + '」的全部聊天记录？\n\n此操作不可撤销。')) return
+      let withMedia = false
+      if (confirm('要连图片/视频/语音这些媒体文件一起删掉吗？\n\n确定 = 一起删\n取消 = 只删文字记录（媒体保留）')) {
+        withMedia = true
+      }
+      this.busy = 'clear'
+      try {
+        const r = await callData('qqbot.chat.clear_session', {
+          session_id: this.curSess, with_media: withMedia, confirm: true,
+        })
+        toast('已清空 ' + (r.messages || 0) + ' 条消息'
+          + (withMedia ? '，删除 ' + (r.files || 0) + ' 个媒体文件' : ''), 'ok')
+        this.curSess = ''
+        this.msgs = []
+        await this.loadSessions()
+        await this.loadStats()
+      } catch (e) {
+        toast(errText(e), 'err')
+      } finally {
+        this.busy = ''
+      }
     },
     dayOf(ts) {
       const d = new Date((ts || 0) * 1000)
@@ -949,6 +1072,8 @@ const Chats = {
           <span class="rcq-hint" style="margin-left:auto">
             {{ curSess ? msgs.length + ' 条' : '左边选一个会话' }}
           </span>
+          <button v-if="curSess" class="btn btn-sm" :disabled="!!busy"
+            @click="clearSess">{{ busy === 'clear' ? '清空中…' : '清空会话' }}</button>
         </div>
         <div class="bd" ref="thread">
           <div v-if="!curSess" class="rcq-empty2">
@@ -982,16 +1107,21 @@ const Chats = {
                     <span v-else>{{ textOf(m) }}</span>
 
                     <template v-for="md in mediaOf(m)" :key="md.seg">
-                      <img v-if="md.kind === 'image' && md.local" :src="mediaUrl(md)"
+                      <img v-if="md.kind === 'image' && mediaAlive(md)" :src="mediaUrl(md)"
                         @click="openLight(md)" />
-                      <img v-else-if="md.kind === 'face' && md.local" :src="mediaUrl(md)"
+                      <img v-else-if="md.kind === 'face' && mediaAlive(md)" :src="mediaUrl(md)"
                         style="width:26px;height:26px" />
-                      <video v-else-if="md.kind === 'video' && md.local" controls
-                        :src="mediaUrl(md)"></video>
-                      <audio v-else-if="md.kind === 'record' && md.local" controls
-                        :src="mediaUrl(md)"></audio>
-                      <a v-else-if="md.local" class="rcq-file" :href="mediaUrl(md)" download>
+                      <video v-else-if="md.kind === 'video' && mediaState(md) === 'play'"
+                        controls preload="metadata" :src="mediaUrl(md)"></video>
+                      <audio v-else-if="md.kind === 'record' && mediaState(md) === 'play'"
+                        controls preload="metadata" :src="mediaUrl(md)"></audio>
+                      <span v-else-if="mediaState(md) === 'pending'" class="rcq-noplay">
+                        正在转码成可播放格式…<a :href="mediaUrl(md)" download>下载原件</a>
+                      </span>
+                      <a v-else-if="md.local && mediaState(md) !== 'gone'"
+                        class="rcq-file" :href="mediaUrl(md)" download>
                         {{ md.name || (md.kind + ' 文件') }}
+                        <span v-if="mediaState(md) === 'failed'">（浏览器放不了这个格式）</span>
                       </a>
                       <span v-else class="rcq-note">
                         [{{ md.kind }} 已失效]
@@ -1011,6 +1141,463 @@ const Chats = {
     <div v-if="light" class="rcq-light" @click="light = ''">
       <button class="x" @click.stop="light = ''">×</button>
       <img :src="light" alt="" />
+    </div>
+  </div>`,
+}
+
+// ------------------------------------------------------------------ 媒体库
+const MediaLib = {
+  data() {
+    return {
+      S, items: [], stats: null,
+      kind: '', sender: '', kw: '',
+      limit: 60, offset: 0, hasMore: false,
+      busy: '', err: '', light: '', lightKind: '',
+      picked: {},
+    }
+  },
+  computed: {
+    kindStats() {
+      const m = {}
+      for (const s of ((this.stats || {}).items || [])) m[s.kind] = s
+      return m
+    },
+    totalBytes() { return ((this.stats || {}).total_bytes) || 0 },
+    totalFiles() { return ((this.stats || {}).total_files) || 0 },
+    pickedIds() {
+      return Object.keys(this.picked).filter((k) => this.picked[k]).map((k) => Number(k))
+    },
+    pendingCount() {
+      return this.items.filter((x) => x.transcode === 'pending').length
+    },
+  },
+  async mounted() { await this.load() },
+  methods: {
+    fmtFull, fmtNum,
+    mediaAlive,
+    bytes(n) {
+      n = Number(n) || 0
+      if (n >= 1073741824) return (n / 1073741824).toFixed(2) + ' G'
+      if (n >= 1048576) return (n / 1048576).toFixed(1) + ' M'
+      if (n >= 1024) return (n / 1024).toFixed(0) + ' K'
+      return n + ' B'
+    },
+    mediaUrl(m) { return mediaFileUrl(m) },
+    kindLabel(k) {
+      return { image: '图片', video: '视频', record: '语音', face: '表情', file: '文件' }[k] || (k || '其它')
+    },
+    kindIcon(k) {
+      return { image: '🖼', video: '🎬', record: '🎤', face: '😀', file: '📎' }[k] || '📄'
+    },
+    async load(append) {
+      this.busy = 'load'
+      try {
+        const d = await callData('qqbot.chat.media_list', {
+          kind: this.kind, sender: this.sender, kw: this.kw,
+          limit: this.limit, offset: append ? this.offset : 0,
+        })
+        const items = (d && d.items) || []
+        this.items = append ? this.items.concat(items) : items
+        this.stats = (d && d.stats) || this.stats
+        this.offset = this.items.length
+        this.hasMore = items.length >= this.limit
+      } catch (e) {
+        this.err = errText(e)
+      } finally {
+        this.busy = ''
+      }
+    },
+    async reload() { this.offset = 0; this.picked = {}; await this.load(false) },
+    async loadMore() { await this.load(true) },
+    toggle(id) { this.picked[id] = !this.picked[id] },
+    pickAll() {
+      const all = this.items.every((x) => this.picked[x.id])
+      const next = {}
+      if (!all) for (const x of this.items) next[x.id] = true
+      this.picked = next
+    },
+    open(m) {
+      this.lightKind = m.kind
+      this.light = this.mediaUrl(m)
+    },
+    async transcode() {
+      const ids = this.pickedIds.length ? this.pickedIds : null
+      if (!ids && !confirm('把媒体库里所有「浏览器放不了」的视频/语音转成可播放格式？\n\n视频编码转换比较慢，请勿中断面板。')) return
+      this.busy = 'transcode'
+      try {
+        const r = await callData('qqbot.chat.media_transcode', ids ? { ids } : {})
+        toast('转码完成：成功 ' + (r.ok || 0) + '，失败 ' + (r.failed || 0), 'ok')
+        await this.reload()
+      } catch (e) {
+        toast(errText(e), 'err')
+      } finally {
+        this.busy = ''
+      }
+    },
+    async remove() {
+      const ids = this.pickedIds
+      if (!ids.length) { toast('先勾选要删除的媒体', 'err'); return }
+      if (!confirm('删除选中的 ' + ids.length + ' 个媒体文件？\n\n磁盘上的文件会真的删掉，聊天记录里的位置会变成「已失效」。')) return
+      this.busy = 'del'
+      try {
+        const r = await callData('qqbot.chat.media_delete', { ids, confirm: true })
+        toast('已删除 ' + (r.files || 0) + ' 个文件，释放 ' + this.bytes(r.bytes || 0), 'ok')
+        await this.reload()
+      } catch (e) {
+        toast(errText(e), 'err')
+      } finally {
+        this.busy = ''
+      }
+    },
+    async reindex() {
+      this.busy = 'reindex'
+      try {
+        const r = await callData('qqbot.chat.media_reindex', {})
+        toast('已重建索引：' + (r.indexed || 0) + ' 个媒体'
+          + (r.cleaned ? '，清理僵尸 ' + r.cleaned : ''), 'ok')
+        await this.reload()
+      } catch (e) {
+        toast(errText(e), 'err')
+      } finally {
+        this.busy = ''
+      }
+    },
+    // 修复引用：转码后文件改名了，消息里还指向旧名 → 前端取不到文件
+    async repair() {
+      this.busy = 'repair'
+      try {
+        const r = await callData('qqbot.chat.media_repair', {})
+        toast('已修复 ' + (r.fixed || 0) + ' 条消息的媒体引用', 'ok')
+        await this.reload()
+      } catch (e) {
+        toast(errText(e), 'err')
+      } finally {
+        this.busy = ''
+      }
+    },
+  },
+  template: `
+  <div>
+    <div v-if="err" class="rcq-pnl rcq-warn" style="font-size:12px">{{ err }}</div>
+
+    <div class="rcq-pnl">
+      <div class="rcq-flex">
+        <div class="rcq-fld"><span class="k">媒体总数</span>
+          <span class="v">{{ fmtNum(totalFiles) }} 个</span></div>
+        <div class="rcq-fld"><span class="k">占用空间</span>
+          <span class="v">{{ bytes(totalBytes) }}</span></div>
+        <div class="rcq-fld" v-for="s in (stats || {}).items || []" :key="s.kind">
+          <span class="k">{{ kindLabel(s.kind) }}</span>
+          <span class="v">{{ s.count }} 个 · {{ bytes(s.bytes) }}</span></div>
+        <span class="sp" style="margin-left:auto"></span>
+        <button class="btn btn-sm" :disabled="!!busy" @click="reindex">重建索引</button>
+        <button class="btn btn-sm" :disabled="!!busy" @click="repair">修复引用</button>
+        <button class="btn btn-sm" :disabled="!!busy" @click="transcode">
+          {{ busy === 'transcode' ? '转码中…' : '转成可播放格式' }}
+        </button>
+        <button class="btn btn-sm" :disabled="!!busy || !pickedIds.length" @click="remove">
+          删除选中{{ pickedIds.length ? '（' + pickedIds.length + '）' : '' }}
+        </button>
+      </div>
+      <div class="rcq-note">
+        媒体库里存的是聊天记录里的图片 / 视频 / 语音副本。
+        QQ 的视频多是 HEVC、语音是 AMR，浏览器放不了 ——
+        点「转成可播放格式」会自动转成 H.264 视频与 mp3 语音。
+      </div>
+    </div>
+
+    <div class="rcq-pnl">
+      <div class="rcq-flex">
+        <label class="rcq-fi" style="margin:0">
+          <span>类型</span>
+          <select class="input" v-model="kind" @change="reload()">
+            <option value="">全部</option>
+            <option value="image">图片</option>
+            <option value="video">视频</option>
+            <option value="record">语音</option>
+            <option value="face">表情</option>
+            <option value="file">文件</option>
+          </select>
+        </label>
+        <label class="rcq-fi" style="margin:0">
+          <span>发送者</span>
+          <input class="input" v-model="sender" placeholder="QQ 号或昵称"
+            @keyup.enter="reload()" />
+        </label>
+        <label class="rcq-fi" style="margin:0">
+          <span>关键词</span>
+          <input class="input" v-model="kw" placeholder="文件名" @keyup.enter="reload()" />
+        </label>
+        <button class="btn btn-sm btn-primary" :disabled="!!busy" @click="reload">筛选</button>
+        <button class="btn btn-sm" @click="pickAll()">
+          {{ pickedIds.length === items.length && items.length ? '取消全选' : '全选本页' }}
+        </button>
+      </div>
+    </div>
+
+    <div v-if="!items.length" class="rcq-empty2">还没有媒体文件</div>
+    <div v-else class="rcq-mlib">
+      <div v-for="m in items" :key="m.id" class="rcq-mcard"
+        :class="{ on: picked[m.id], gone: !m.exists }">
+        <label class="ck" @click.stop>
+          <input type="checkbox" :checked="!!picked[m.id]" @change="toggle(m.id)" />
+        </label>
+        <div class="th" @click="m.exists ? open(m) : null">
+          <img v-if="m.exists && (m.kind === 'image' || m.kind === 'face')" :src="mediaUrl(m)"
+            loading="lazy" alt="" />
+          <!-- preload="metadata"：只取 moov + 首帧，能显示缩略图又不会拉整个视频 -->
+          <video v-else-if="m.exists && m.kind === 'video'" :src="mediaUrl(m)" preload="metadata"
+            muted playsinline></video>
+          <div v-else class="ph">{{ kindIcon(m.kind) }}</div>
+          <span v-if="m.transcode === 'pending'" class="rcq-badge warn">转码中</span>
+          <span v-else-if="m.transcode === 'failed'" class="rcq-badge bad">格式不支持</span>
+          <span v-else-if="!m.exists" class="rcq-badge bad">已丢失</span>
+        </div>
+        <div class="meta">
+          <div class="n">{{ kindLabel(m.kind) }} · {{ bytes(m.bytes) }}</div>
+          <div class="s">{{ m.sender_name || m.sender_id || '未知' }}</div>
+          <div class="t">{{ fmtFull(m.created_at) }}</div>
+        </div>
+        <a class="dl" v-if="m.exists" :href="mediaUrl(m)" download>下载</a>
+        <span class="dl gone" v-else>文件已丢失</span>
+      </div>
+    </div>
+    <div v-if="hasMore" class="rcq-loadmore" @click="loadMore()">加载更多</div>
+
+    <div v-if="light" class="rcq-light" @click="light = ''">
+      <button class="x" @click.stop="light = ''">×</button>
+      <img v-if="lightKind === 'image' || lightKind === 'face'" :src="light" alt="" />
+      <video v-else-if="lightKind === 'video'" :src="light" controls autoplay
+        style="max-width:100%;max-height:100%"></video>
+      <audio v-else-if="lightKind === 'record'" :src="light" controls autoplay
+        style="width:min(520px,90vw)"></audio>
+      <a v-else :href="light" download style="color:#fff">下载文件</a>
+    </div>
+  </div>`,
+}
+
+// ------------------------------------------------------------------ 查询
+const Query = {
+  data() {
+    return {
+      S, items: [], senders: [], total: 0,
+      sender: '', recalled: '', kind: '', kw: '',
+      limit: 50, beforeId: 0, more: false,
+      busy: '', err: '', light: '', lightKind: '',
+      showSenders: false,
+    }
+  },
+  computed: {
+    filtersOn() {
+      return !!(this.sender || this.recalled || this.kind || this.kw)
+    },
+    // 撤回状态：'' 全部 / 'yes' 已撤回 / 'no' 未撤回
+    recalledOpts() {
+      return [
+        { v: '', t: '全部' },
+        { v: 'no', t: '未撤回' },
+        { v: 'yes', t: '已撤回' },
+      ]
+    },
+    kindOpts() {
+      return [
+        { v: '', t: '全部' },
+        { v: 'text', t: '文本' },
+        { v: 'image', t: '图片' },
+        { v: 'video', t: '视频' },
+        { v: 'record', t: '语音' },
+        { v: 'face', t: '表情' },
+        { v: 'file', t: '文件' },
+      ]
+    },
+    suggest() {
+      const s = String(this.sender || '').trim().toLowerCase()
+      if (!s) return []
+      return this.senders.filter((x) => {
+        const id = String(x.sender_id || '')
+        const nm = String(x.sender_name || '')
+        return id.indexOf(s) >= 0 || nm.toLowerCase().indexOf(s) >= 0
+      }).slice(0, 8)
+    },
+  },
+  async mounted() {
+    await this.loadSenders()
+    await this.search(false)
+  },
+  methods: {
+    fmtFull, fmtNum,
+    mediaAlive,
+    bytes(n) {
+      n = Number(n) || 0
+      if (n >= 1048576) return (n / 1048576).toFixed(1) + ' M'
+      if (n >= 1024) return (n / 1024).toFixed(0) + ' K'
+      return n + ' B'
+    },
+    mediaUrl(m) { return mediaFileUrl(m) },
+    kindLabel(k) {
+      return { image: '图片', video: '视频', record: '语音', face: '表情', file: '文件' }[k] || (k || '其它')
+    },
+    async loadSenders() {
+      try {
+        const d = await callData('qqbot.chat.senders', {})
+        this.senders = (d && d.items) || []
+      } catch (e) { /* 补全拿不到不影响查询 */ }
+    },
+    async search(append) {
+      this.busy = 'search'
+      try {
+        const d = await callData('qqbot.chat.query', {
+          sender: this.sender,
+          recalled: this.recalled,
+          kind: this.kind,
+          kw: this.kw,
+          limit: this.limit,
+          before_id: append ? this.beforeId : 0,
+        })
+        const items = (d && d.items) || []
+        this.items = append ? this.items.concat(items) : items
+        this.total = (d && d.total) || this.items.length
+        this.beforeId = items.length ? items[items.length - 1].id : 0
+        this.more = items.length >= this.limit
+      } catch (e) {
+        this.err = errText(e)
+      } finally {
+        this.busy = ''
+      }
+    },
+    async reload() { this.beforeId = 0; await this.search(false) },
+    async loadMore() { await this.search(true) },
+    pickSender(x) {
+      this.sender = x.sender_id || x.sender_name || ''
+      this.showSenders = false
+      this.reload()
+    },
+    clearFilters() {
+      this.sender = ''; this.recalled = ''; this.kind = ''; this.kw = ''
+      this.reload()
+    },
+    openMedia(m) {
+      this.lightKind = m.kind
+      this.light = this.mediaUrl(m)
+    },
+    // 这条消息里有哪些媒体类型（用于结果行上的标签）
+    kindsOf(m) {
+      const out = []
+      for (const md of (m.media || [])) {
+        const k = md.kind || ''
+        if (k && out.indexOf(k) < 0) out.push(k)
+      }
+      return out
+    },
+  },
+  template: `
+  <div>
+    <div v-if="err" class="rcq-pnl rcq-warn" style="font-size:12px">{{ err }}</div>
+
+    <div class="rcq-pnl">
+      <div class="rcq-flex" style="align-items:flex-end;flex-wrap:wrap;gap:8px">
+        <label class="rcq-fi" style="margin:0;position:relative">
+          <span>QQ 用户</span>
+          <input class="input" v-model="sender" placeholder="QQ 号或昵称"
+            @focus="showSenders = true" @keyup.enter="reload()" />
+          <div v-if="showSenders && suggest.length" class="rcq-sugg">
+            <div v-for="x in suggest" :key="x.sender_id" class="rcq-sugg-i"
+              @click="pickSender(x)">
+              <img v-if="x.avatar" :src="x.avatar" alt="" />
+              <b>{{ x.sender_name || x.sender_id }}</b>
+              <span>{{ x.sender_id }}</span>
+              <i>{{ x.c }} 条</i>
+            </div>
+          </div>
+        </label>
+
+        <label class="rcq-fi" style="margin:0">
+          <span>撤回状态</span>
+          <select class="input" v-model="recalled" @change="reload()">
+            <option v-for="o in recalledOpts" :key="o.v" :value="o.v">{{ o.t }}</option>
+          </select>
+        </label>
+
+        <label class="rcq-fi" style="margin:0">
+          <span>消息类型</span>
+          <select class="input" v-model="kind" @change="reload()">
+            <option v-for="o in kindOpts" :key="o.v" :value="o.v">{{ o.t }}</option>
+          </select>
+        </label>
+
+        <label class="rcq-fi" style="margin:0">
+          <span>关键词</span>
+          <input class="input" v-model="kw" placeholder="消息内容" @keyup.enter="reload()" />
+        </label>
+
+        <button class="btn btn-sm btn-primary" :disabled="!!busy" @click="reload">
+          {{ busy === 'search' ? '查询中…' : '查询' }}
+        </button>
+        <button class="btn btn-sm" v-if="filtersOn" @click="clearFilters">清空条件</button>
+      </div>
+      <div class="rcq-note">
+        各个条件可以叠加使用 —— 比如「查某个 QQ 号的、已撤回的视频」。
+        撤回状态、消息类型、QQ 用户、关键词是「与」的关系。
+      </div>
+    </div>
+
+    <div class="rcq-pnl" v-if="items.length">
+      <div class="rcq-flex">
+        <span class="rcq-hint">命中 {{ fmtNum(total) }} 条</span>
+      </div>
+    </div>
+
+    <div v-if="!items.length && !busy" class="rcq-empty2">
+      没有符合条件的消息
+    </div>
+
+    <div class="rcq-qres">
+      <div v-for="m in items" :key="m.id" class="rcq-qrow"
+        :class="{ rec: m.recalled }">
+        <div class="hd">
+          <img v-if="m.sender_avatar || m.sender_id" class="ava"
+            :src="m.sender_avatar || ('https://q1.qlogo.cn/g?b=qq&nk=' + m.sender_id + '&s=100')"
+            alt="" />
+          <b>{{ m.sender_name || m.sender_id }}</b>
+          <span class="tt">{{ fmtFull(m.created_at) }}</span>
+          <span class="rcq-badge" v-if="m.recalled">已撤回</span>
+          <span class="rcq-badge" v-for="k in kindsOf(m)" :key="k">{{ kindLabel(k) }}</span>
+          <span class="rcq-badge plain" v-if="m.kind === 'group'">群 {{ m.target_id }}</span>
+          <span class="rcq-badge plain" v-else>私聊 {{ m.target_id }}</span>
+        </div>
+        <div class="bd">
+          <span v-if="m.text && m.text !== '[一条消息被撤回]'">{{ m.text }}</span>
+          <span v-else-if="m.text" style="color:var(--f);font-style:italic">{{ m.text }}</span>
+          <div class="rcq-media">
+            <template v-for="md in (m.media || [])" :key="md.seg">
+              <img v-if="md.kind === 'image' && mediaAlive(md)" :src="mediaUrl(md)"
+                @click="openMedia(md)" style="max-width:150px;max-height:150px" />
+              <img v-else-if="md.kind === 'face' && mediaAlive(md)" :src="mediaUrl(md)"
+                style="width:26px;height:26px" />
+              <video v-else-if="md.kind === 'video' && mediaAlive(md)" controls preload="metadata"
+                :src="mediaUrl(md)" style="max-width:240px"></video>
+              <audio v-else-if="md.kind === 'record' && mediaAlive(md)" controls
+                :src="mediaUrl(md)" style="max-width:240px"></audio>
+              <a v-else-if="md.local && md.exists !== 0" class="rcq-file"
+                :href="mediaUrl(md)" download>
+                {{ md.name || (md.kind + ' 文件') }}
+              </a>
+              <span v-else class="rcq-note">[{{ md.kind }} 已失效]</span>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div v-if="more" class="rcq-loadmore" @click="loadMore()">加载更多</div>
+
+    <div v-if="light" class="rcq-light" @click="light = ''">
+      <button class="x" @click.stop="light = ''">×</button>
+      <img v-if="lightKind === 'image' || lightKind === 'face'" :src="light" alt="" />
+      <video v-else-if="lightKind === 'video'" :src="light" controls autoplay
+        style="max-width:100%;max-height:100%"></video>
+      <audio v-else-if="lightKind === 'record'" :src="light" controls autoplay
+        style="width:min(520px,90vw)"></audio>
+      <a v-else :href="light" download style="color:#fff">下载文件</a>
     </div>
   </div>`,
 }
@@ -1564,7 +2151,7 @@ const Logs = {
     async load(silent) {
       if (!silent) this.busy = true
       try {
-        const d = await call('qqbot.nc.logs', {
+        const d = await call('qqbot.account.logs', {
           mode: this.mode, level: this.level, lines: Number(this.lines) || 400,
         })
         const grow = d.items.length !== this.items.length
@@ -1596,7 +2183,7 @@ const Logs = {
     },
     async clear() {
       try {
-        await call('qqbot.nc.logs.clear')
+        await call('qqbot.account.logs.clear')
         this.items = []
         toast('缓冲已清空', 'ok')
       } catch (e) { toast(errText(e), 'err') }
@@ -1957,6 +2544,8 @@ const TABS = [
   { id: 'overview', label: '概览', comp: Overview },
   { id: 'account', label: 'QQ 账户', comp: Accounts },
   { id: 'chats', label: '聊天记录', comp: Chats },
+  { id: 'query', label: '查询', comp: Query },
+  { id: 'media', label: '媒体库', comp: MediaLib },
   { id: 'persona', label: '人格', comp: Persona },
   { id: 'sessions', label: '会话管理', comp: Sessions },
   { id: 'providers', label: '模型提供商', comp: Providers },

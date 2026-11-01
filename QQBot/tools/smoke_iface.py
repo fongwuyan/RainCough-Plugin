@@ -30,6 +30,11 @@ IFACES = [
     ('rcbot.config.get', {}),
     ('qqbot.chat.sessions', {}),
     ('qqbot.chat.stats', {}),
+    # 查询 / 媒体库 / 清空会话
+    ('qqbot.chat.query', {}),
+    ('qqbot.chat.senders', {}),
+    ('qqbot.chat.media_list', {}),
+    ('qqbot.chat.media_reindex', {}),
 ]
 
 

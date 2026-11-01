@@ -343,7 +343,8 @@ class Bot:
                     segs, self.ob, chats.media_root(cfg),
                     acct_cfg.get('uin') or account_id, msg_id, ts, dl=dl,
                     silk_bin=mcfg.get('silk_decoder') or '',
-                    keep_silk=bool(mcfg.get('keep_silk_source', True)))
+                    keep_silk=bool(mcfg.get('keep_silk_source', True)),
+                    account_id=account_id)
 
             await chats.record(account_id, mtype, target, 'user', segs,
                                sender_id=uid, sender_name=nick, msg_id=msg_id,

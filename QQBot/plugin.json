@@ -54,6 +54,54 @@
       "description": "NapCat 概览（账号/系统/网络计数）"
     },
     {
+      "id": "qqbot.chat.query",
+      "visibility": "main",
+      "version": "1",
+      "description": "按用户/撤回状态/消息类型查询消息（条件可叠加）"
+    },
+    {
+      "id": "qqbot.chat.senders",
+      "visibility": "main",
+      "version": "1",
+      "description": "聊天中出现过的发送者列表"
+    },
+    {
+      "id": "qqbot.chat.clear_session",
+      "visibility": "main",
+      "version": "1",
+      "description": "一键清空会话"
+    },
+    {
+      "id": "qqbot.chat.media_list",
+      "visibility": "main",
+      "version": "1",
+      "description": "媒体库列表与统计"
+    },
+    {
+      "id": "qqbot.chat.media_delete",
+      "visibility": "main",
+      "version": "1",
+      "description": "删除媒体文件"
+    },
+    {
+      "id": "qqbot.chat.media_transcode",
+      "visibility": "main",
+      "version": "1",
+      "description": "把视频/语音转成浏览器可播放格式"
+    },
+    {
+      "id": "qqbot.chat.media_reindex",
+      "visibility": "main",
+      "version": "1",
+      "description": "重建媒体索引"
+    },
+    {
+      "id": "qqbot.chat.media_repair",
+      "visibility": "main",
+      "version": "1",
+      "description": "修复媒体引用（转码后路径不一致）"
+    },
+    {
       "id": "rcbot.status",
       "visibility": "all",
       "version": "1",
@@ -202,6 +250,12 @@
       "visibility": "main",
       "version": "1",
       "description": "NapCat 运行日志"
+    },
+    {
+      "id": "qqbot.account.logs.clear",
+      "visibility": "main",
+      "version": "1",
+      "description": "清空实时日志缓冲"
     },
     {
       "id": "qqbot.chat.sessions",

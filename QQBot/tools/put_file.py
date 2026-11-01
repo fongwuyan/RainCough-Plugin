@@ -40,6 +40,12 @@ def main():
     if args.src:
         with open(args.src, 'r', encoding='utf-8', newline='') as f:
             content = f.read()
+        # ★ Windows 上传的文件是 CRLF，shell/python 脚本在 Linux 上会直接崩
+        #   （"set: -: 无效的选项"、"未预期的记号"、ImportError 之类）。
+        #   脚本类文件上传前统一转成 LF。
+        ext = os.path.splitext(args.src or '')[1].lower()
+        if ext in ('.sh', '.py', '.bash', '.zsh') or content.startswith('#!'):
+            content = content.replace('\r\n', '\n').replace('\r', '\n')
     res = api.post('/api/fm/save', {'path': args.dst, 'content': content})
     ok = res.get('status') is True
     print('save %s -> %s : %s' % (args.src or '(空文件)', args.dst, 'OK' if ok else res))

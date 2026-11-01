@@ -554,6 +554,94 @@ def make_app(mgr, bot):
     async def chat_media_check(request):
         return ok(await chats.check_media_consistency())
 
+    # ---------------- 查询（按用户 / 撤回状态 / 消息类型，可叠加）
+
+    async def chat_query(request):
+        q = request.query
+        rows, total = await chats.query_messages(
+            sender=q.get('sender') or '',
+            recalled=q.get('recalled') or '',
+            kind=q.get('kind') or '',
+            keyword=q.get('kw') or '',
+            session_id=q.get('session_id') or '',
+            account_id=q.get('account_id') or '',
+            date_from=int(q.get('from') or 0),
+            date_to=int(q.get('to') or 0),
+            limit=int(q.get('limit') or 50),
+            before_id=int(q.get('before_id') or 0))
+        return ok({'items': rows, 'count': len(rows), 'total': total})
+
+    async def chat_senders(request):
+        return ok({'items': await chats.query_senders(
+            keyword=request.query.get('kw') or '')})
+
+    # ---------------- 一键清空会话
+
+    async def chat_clear_session(request):
+        b = await _body(request)
+        if b.get('confirm') is not True:
+            return bad('需要 confirm=true')
+        sid = str(b.get('session_id') or '').strip()
+        if not sid:
+            return bad('缺少 session_id')
+        try:
+            r = await chats.clear_session(
+                sid,
+                with_media=bool(b.get('with_media')),
+                account_id=str(b.get('account_id') or ''))
+        except ValueError as e:
+            return bad(str(e))
+        return ok(r)
+
+    # ---------------- 媒体库
+
+    async def chat_media_list(request):
+        q = request.query
+        items = await chats.list_media(
+            kind=q.get('kind') or '',
+            sender=q.get('sender') or '',
+            keyword=q.get('kw') or '',
+            session_id=q.get('session_id') or '',
+            account_id=q.get('account_id') or '',
+            limit=int(q.get('limit') or 100),
+            offset=int(q.get('offset') or 0))
+        st = await chats.media_stats(q.get('account_id') or '')
+        return ok({'items': items, 'stats': st})
+
+    async def chat_media_stats(request):
+        return ok(await chats.media_stats(request.query.get('account_id') or ''))
+
+    async def chat_media_delete(request):
+        b = await _body(request)
+        if b.get('confirm') is not True:
+            return bad('需要 confirm=true')
+        ids = b.get('ids') or []
+        rels = b.get('rels') or []
+        r = await chats.delete_media(
+            ids=ids if isinstance(ids, list) else [],
+            rels=rels if isinstance(rels, list) else [],
+            kind=str(b.get('kind') or ''),
+            session_id=str(b.get('session_id') or ''))
+        return ok(r)
+
+    async def chat_media_transcode(request):
+        """把 HEVC / AMR 之类转成浏览器能播的格式。"""
+        b = await _body(request)
+        ids = b.get('ids') or []
+        if not isinstance(ids, list):
+            ids = []
+        if not ids:
+            ids = [x['id'] for x in await chats.media_need_transcode()]
+        r = await chats.transcode_media(ids)
+        return ok(r)
+
+    async def chat_media_reindex(request):
+        return ok(await chats.rebuild_media_index())
+
+    async def chat_media_repair(request):
+        """修复媒体引用（转码后消息里还指向旧文件名）。"""
+        return ok(await chats.repair_media_refs())
+
     app.router.add_get('/api/status', status)
     app.router.add_get('/api/config', get_config)
     app.router.add_post('/api/config', post_config)
@@ -583,6 +671,16 @@ def make_app(mgr, bot):
     app.router.add_get('/api/chat/export', chat_export)
     app.router.add_post('/api/chat/purge-media', chat_purge_media)
     app.router.add_get('/api/chat/media-check', chat_media_check)
+
+    app.router.add_get('/api/chat/query', chat_query)
+    app.router.add_get('/api/chat/senders', chat_senders)
+    app.router.add_post('/api/chat/session-clear', chat_clear_session)
+    app.router.add_get('/api/chat/media', chat_media_list)
+    app.router.add_get('/api/chat/media/stats', chat_media_stats)
+    app.router.add_post('/api/chat/media/delete', chat_media_delete)
+    app.router.add_post('/api/chat/media/transcode', chat_media_transcode)
+    app.router.add_post('/api/chat/media/reindex', chat_media_reindex)
+    app.router.add_post('/api/chat/media/repair', chat_media_repair)
 
     app.router.add_get('/api/logs', get_logs)
     app.router.add_get('/api/stats', get_stats)

@@ -70,9 +70,11 @@ DEFAULT = {
     },
     # ★ 媒体处理
     'media': {
-        'silk_decoder': '',            # silk_v3_decoder 可执行文件路径
+        'ffmpeg': '',                  # ffmpeg 路径（空 = 找系统 PATH 里的）
+        'silk_decoder': '',            # silk_v3_decoder 可执行文件路径（仅 silk 语音需要）
         'audio_format': 'mp3',
         'keep_silk_source': True,      # 转码后是否保留原始 .silk
+        'transcode_video': True,       # 视频转 H.264（HEVC 浏览器放不了）
     },
     'providers': [],
     'default_provider': '',

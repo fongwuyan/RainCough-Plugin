@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""媒体副本：下载、落盘、语音转码。
+"""媒体副本：下载、落盘、格式转码。
 
 为什么必须**同步**下载（不能等用户点开才取）：
   · NapCat 给的 url 是 QQ CDN 临时地址，会过期
@@ -9,10 +9,16 @@
 落盘路径：<media_dir>/<账号uin>/<日期>/<msg_id>_<段序号>.<ext>
   日期用**消息事件时间**而不是落盘时间，否则补录历史消息时目录会很怪。
 
-语音：QQ 语音是 SILK，浏览器放不了。
-  实测 ffmpeg 5.1.9 有，但**没有 silk 解码器**，apt 也没有 silk 包
-  → 需要外部的 silk_v3_decoder 转成 mp3（转码器路径在 config.media.silk_decoder）。
-  转码器不在就退化：保留原始 .silk，UI 显示下载按钮而不是播放器。
+★ 格式处理（浏览器兼容）—— 见 ffmpeg.py 的详细说明：
+  · 语音：QQ 给的是 AMR-NB，浏览器不支持 → 转 mp3
+  · 视频：QQ 短视频大量是 HEVC Main10，浏览器不支持 → 转 H.264+AAC+faststart
+    （转码是重活，走后台任务，不阻塞消息入库）
+  · 图片/视频后缀按**魔数与真实容器**判定，不信 NapCat 给的后缀
+
+清单项结构：
+  {kind, seg, rel, bytes, mime, local, name, playable, transcode}
+    playable  —— 1=浏览器能直接放；0=只存了原件（转码中/转码失败）
+    transcode —— ''| 'pending' | 'done' | 'failed' | 'skipped'
 """
 import asyncio
 import os
@@ -22,15 +28,15 @@ import time
 
 import aiohttp
 
-from . import logbuf
+from . import ffmpeg, logbuf
 
 MAX_BYTES = 200 * 1024 * 1024
 
-# OneBot 媒体段类型 → (落盘扩展名, 是否需要转码)
+# OneBot 媒体段类型 → (初始落盘扩展名, 是否需要处理)
 _MEDIA_TYPES = {
     'image': ('.jpg', False),
-    'record': ('.mp3', True),     # SILK → mp3
-    'video': ('.mp4', False),
+    'record': ('.amr', True),     # AMR/SILK → mp3
+    'video': ('.mp4', True),      # HEVC → H.264
     'face': ('.gif', False),
     'file': ('.bin', False),
 }
@@ -94,12 +100,18 @@ def _safe_name(s):
     return ''.join(keep)[:80] or 'x'
 
 
-async def save_media(segs, ob, root, account_uin, msg_id, ts, dl=None, silk_bin='', keep_silk=True):
+def _guess_mime(t):
+    return {'image': 'image/jpeg', 'record': 'audio/mpeg', 'video': 'video/mp4',
+            'face': 'image/gif', 'file': 'application/octet-stream'}.get(t, '')
+
+
+async def save_media(segs, ob, root, account_uin, msg_id, ts, dl=None,
+                     silk_bin='', keep_silk=True, account_id='',
+                     allow_transcode=True):
     """把消息里的媒体段下载落盘，返回媒体清单 list[dict]。
 
-    清单项：{kind, seg, rel, bytes, mime, local}
-      rel   —— 相对 root 的路径
-      local —— 1=文件在本机，0=只留了元数据（下载失败或被跳过）
+    segs  —— OneBot 原始消息段数组
+    msg_id —— 用于回填转码结果（转码是异步的，完成后要更新库里的记录）
     """
     out = []
     if not segs or isinstance(segs, str):
@@ -115,7 +127,7 @@ async def save_media(segs, ob, root, account_uin, msg_id, ts, dl=None, silk_bin=
         if t not in _MEDIA_TYPES:
             continue
         d = s.get('data') or {}
-        ext, need_conv = _MEDIA_TYPES[t]
+        ext, need_proc = _MEDIA_TYPES[t]
         url = d.get('url') or ''
         path = d.get('file') or ''
         name = d.get('name') or ''
@@ -141,8 +153,22 @@ async def save_media(segs, ob, root, account_uin, msg_id, ts, dl=None, silk_bin=
 
         if not data:
             out.append({'kind': t, 'seg': i, 'rel': '', 'bytes': 0,
-                        'mime': '', 'local': 0, 'name': name})
+                        'mime': '', 'local': 0, 'playable': 0,
+                        'transcode': '', 'name': name})
             continue
+
+        # ---- 按真实内容定后缀（不信 NapCat 给的）----
+        mime = ''
+        if t == 'image':
+            e2, m2 = ffmpeg.sniff_image(data)
+            if e2:
+                ext, mime = e2, m2
+        elif t == 'record':
+            e2, m2 = ffmpeg.sniff_audio(data)
+            if e2:
+                ext, mime = e2, m2
+        if not mime:
+            mime = _guess_mime(t)
 
         fname = '%s_%d%s' % (_safe_name(msg_id or str(int(ts))), i, ext)
         rel = os.path.join(str(account_uin or 'unknown'), day, fname)
@@ -154,38 +180,128 @@ async def save_media(segs, ob, root, account_uin, msg_id, ts, dl=None, silk_bin=
         except Exception as e:
             logbuf.warn('media', '落盘失败 %s：%s' % (rel, str(e)[:120]))
             out.append({'kind': t, 'seg': i, 'rel': '', 'bytes': len(data),
-                        'mime': '', 'local': 0, 'name': name})
+                        'mime': '', 'local': 0, 'playable': 0,
+                        'transcode': '', 'name': name})
             continue
 
         size = len(data)
-        mime = _guess_mime(t)
+        entry = {'kind': t, 'seg': i, 'rel': rel, 'bytes': size,
+                 'mime': mime, 'local': 1, 'playable': 1,
+                 'transcode': '', 'name': name}
 
-        # 语音转码：silk → mp3
-        if need_conv and silk_bin and os.path.isfile(silk_bin):
-            ok = await _silk_to_mp3(full, silk_bin, root, rel)
-            if ok:
-                mp3_rel = rel[:-len(ext)] + '.mp3'
-                mp3_full = os.path.join(root, mp3_rel)
-                try:
-                    size = os.path.getsize(mp3_full)
-                except Exception:
-                    size = 0
-                mime = 'audio/mpeg'
-                rel = mp3_rel
-                if not keep_silk:
-                    try:
-                        os.remove(full)
-                    except Exception:
-                        pass
-            else:
-                # 转码失败：保留原始 silk，标出来让 UI 走下载
-                mime = 'audio/silk'
-        elif need_conv:
-            mime = 'audio/silk'
-
-        out.append({'kind': t, 'seg': i, 'rel': rel, 'bytes': size,
-                    'mime': mime, 'local': 1, 'name': name})
+        if need_proc:
+            await _process(t, full, rel, entry, root, account_id, msg_id,
+                           keep_silk, allow_transcode)
+        out.append(entry)
     return out
+
+
+async def _process(t, full, rel, entry, root, account_id, msg_id,
+                    keep_silk, allow_transcode):
+    """处理媒体格式：语音转 mp3、视频转 H.264。
+
+    语音是小的（几秒音频），同步转。
+    视频是重的（可能几十秒），**起后台任务**，不阻塞消息入库。
+    """
+    if t == 'record':
+        await _transcode_audio(full, rel, entry, root, keep_silk)
+        return
+
+    if t == 'video':
+        if not allow_transcode or not ffmpeg.available():
+            entry['playable'] = 1   # 交给前端提示"可能无法播放"
+            entry['transcode'] = 'skipped'
+            return
+        try:
+            info = await ffmpeg.probe(full)
+        except Exception:
+            info = {}
+        need = ffmpeg.needs_transcode(info)
+        if not need and info.get('ok') and not info.get('has_faststart'):
+            # 编码没问题但 moov 在文件尾 → 只需重封装（很快）
+            need = 'remux'
+        elif not need:
+            entry['playable'] = 1
+            return
+        # 后台转码
+        entry['playable'] = 0
+        entry['transcode'] = 'pending'
+        asyncio.create_task(_transcode_video_bg(full, rel, entry, root,
+                                                account_id, msg_id, need))
+        return
+
+
+async def _transcode_audio(full, rel, entry, root, keep_silk):
+    """语音 → mp3。
+
+    没有 ffmpeg / 解不了（silk）就保留原文件并标成不可播放，
+    前端会显示下载按钮而不是播放器。
+    """
+    # ★ 原子转码：先写临时文件，成功才替换。
+    #   历史语音文件后缀是 .mp3 但内容是 AMR —— 直接输出到同名文件会被
+    #   ffmpeg 拒绝（输入输出同路径），失败清理还会把原件删掉。
+    mp3_full, mime = await ffmpeg.convert_atomic(full, 'audio', timeout=180)
+    if mp3_full:
+        try:
+            size = os.path.getsize(mp3_full)
+        except Exception:
+            size = 0
+        mp3_rel = os.path.relpath(mp3_full, root).replace(os.sep, '/')
+        entry['rel'] = mp3_rel
+        entry['bytes'] = size
+        entry['mime'] = mime or 'audio/mpeg'
+        entry['playable'] = 1
+        entry['transcode'] = 'done'
+        if not keep_silk:
+            try:
+                os.remove(full)
+            except Exception:
+                pass
+    else:
+        entry['mime'] = entry.get('mime') or 'audio/amr'
+        entry['playable'] = 0
+        entry['transcode'] = 'failed'
+
+
+async def _transcode_video_bg(full, rel, entry, root, account_id, msg_id, mode):
+    """后台视频转码。完成后回填数据库里的媒体记录。"""
+    dst, mime = await ffmpeg.convert_atomic(full, 'video', timeout=1800)
+    if not dst:
+        entry['transcode'] = 'failed'
+        entry['playable'] = 0
+        await _save_media_update(account_id, msg_id, entry)
+        return
+
+    try:
+        size = os.path.getsize(dst)
+    except Exception:
+        size = 0
+    dst_rel = os.path.relpath(dst, root).replace(os.sep, '/')
+    # 原文件转完就没用了（省磁盘）
+    try:
+        if os.path.abspath(dst) != os.path.abspath(full):
+            os.remove(full)
+    except Exception:
+        pass
+    entry['rel'] = dst_rel
+    entry['bytes'] = size
+    entry['mime'] = mime or 'video/mp4'
+    entry['playable'] = 1
+    entry['transcode'] = 'done'
+    await _save_media_update(account_id, msg_id, entry)
+    logbuf.info('media', '视频已转 H.264：%s（%.1f MB）'
+                % (os.path.basename(dst_rel), size / 1048576.0))
+
+
+async def _save_media_update(account_id, msg_id, entry):
+    """把转码结果回填到 chat_logs.media。"""
+    if not account_id or not msg_id:
+        return
+    try:
+        from . import chats
+        await chats.update_media_entry(account_id, msg_id, entry)
+    except Exception as e:
+        logbuf.debug('media', '回填转码结果失败：%s' % str(e)[:120])
 
 
 async def _via_onebot(ob, t, path):
@@ -202,39 +318,6 @@ async def _via_onebot(ob, t, path):
     except Exception as e:
         logbuf.debug('media', 'OneBot 取媒体失败：%s' % str(e)[:100])
     return None
-
-
-def _guess_mime(t):
-    return {'image': 'image/jpeg', 'record': 'audio/mpeg', 'video': 'video/mp4',
-            'face': 'image/gif', 'file': 'application/octet-stream'}.get(t, '')
-
-
-async def _silk_to_mp3(silk_path, silk_bin, root, rel):
-    """silk → mp3。失败返回 False（调用方保留原文件）。"""
-    base = silk_path[:-len('.mp3')] if silk_path.endswith('.mp3') else os.path.splitext(silk_path)[0]
-    wav = base + '.wav'
-    mp3 = base + '.mp3'
-    try:
-        p = subprocess.run([silk_bin, silk_path, wav],
-                           capture_output=True, timeout=30)
-        if p.returncode != 0 or not os.path.exists(wav):
-            return False
-        p2 = subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', wav,
-                             '-b:a', '64k', mp3],
-                            capture_output=True, timeout=60)
-        if p2.returncode != 0 or not os.path.exists(mp3):
-            return False
-        try:
-            os.remove(wav)
-        except Exception:
-            pass
-        return True
-    except FileNotFoundError:
-        logbuf.warn('media', 'ffmpeg 不存在，语音无法转码')
-        return False
-    except Exception as e:
-        logbuf.warn('media', '语音转码失败：%s' % str(e)[:150])
-        return False
 
 
 def dir_usage(root):

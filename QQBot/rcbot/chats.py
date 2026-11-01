@@ -95,7 +95,205 @@ async def record(account_id, kind, target_id, role, segs, sender_id='', sender_n
          _json(segs, '[]'), text, _json(media or [], '[]'),
          int(created_at or _now())))
     await store._db.commit()
-    return cur.lastrowid
+    row_id = cur.lastrowid
+    # 媒体索引同步落一份，媒体库直接查它
+    try:
+        await _index_media(row_id, account_id, session_id, msg_id, media or [],
+                           sender_id, sender_name, int(created_at or _now()))
+    except Exception as e:
+        logbuf.debug('chat', '媒体索引写入失败：%s' % str(e)[:120])
+    return row_id
+
+
+async def _index_media(chat_id, account_id, session_id, msg_id, media,
+                       sender_id='', sender_name='', created_at=0):
+    """把媒体清单写进 media_files 索引表。"""
+    for m in media:
+        if not isinstance(m, dict):
+            continue
+        rel = m.get('rel') or ''
+        if not rel:
+            continue
+        try:
+            await store._db.execute(
+                'INSERT OR REPLACE INTO media_files(account_id,session_id,msg_id,chat_id,'
+                'kind,rel,bytes,mime,name,sender_id,sender_name,playable,transcode,created_at)'
+                ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (account_id or '', session_id or '', str(msg_id or ''), int(chat_id or 0),
+                 m.get('kind') or '', rel, int(m.get('bytes') or 0),
+                 m.get('mime') or '', m.get('name') or '',
+                 str(sender_id or ''), str(sender_name or ''),
+                 1 if m.get('playable', 1) else 0, m.get('transcode') or '',
+                 int(created_at or 0)))
+        except Exception as e:
+            logbuf.debug('chat', '索引单条媒体失败：%s' % str(e)[:100])
+
+
+async def update_media_entry(account_id, msg_id, entry):
+    """回填转码结果（媒体转码是后台任务，完成后要更新库）。
+
+    同时更新 chat_logs.media 里的那条记录和 media_files 索引。
+    """
+    if not msg_id or not entry:
+        return 0
+    seg = int(entry.get('seg') or 0)
+    cur = await store._db.execute(
+        'SELECT id, media FROM chat_logs WHERE account_id=? AND msg_id=?'
+        ' ORDER BY id DESC LIMIT 1', (account_id or '', str(msg_id)))
+    row = await cur.fetchone()
+    if not row:
+        return 0
+    media = _loads(row['media'], [])
+    changed = False
+    old_rel = ''
+    for m in media:
+        if isinstance(m, dict) and int(m.get('seg') or 0) == seg:
+            old_rel = m.get('rel') or ''
+            m['rel'] = entry.get('rel') or m.get('rel')
+            m['bytes'] = entry.get('bytes') or m.get('bytes')
+            m['mime'] = entry.get('mime') or m.get('mime')
+            m['playable'] = 1 if entry.get('playable') else 0
+            m['transcode'] = entry.get('transcode') or ''
+            changed = True
+            break
+    if changed:
+        await store._db.execute('UPDATE chat_logs SET media=? WHERE id=?',
+                                (_json(media, '[]'), row['id']))
+    try:
+        # ★ 必须按**旧 rel** 定位那一条 ——
+        #   一个消息可能有多段媒体，只有一段转码了；
+        #   如果按 msg_id 批量更新，会把其它段也改成同一个 rel。
+        await store._db.execute(
+            'UPDATE media_files SET rel=?, bytes=?, mime=?, playable=?, transcode=?'
+            ' WHERE account_id=? AND msg_id=? AND rel=?',
+            (entry.get('rel') or '', int(entry.get('bytes') or 0),
+             entry.get('mime') or '', 1 if entry.get('playable') else 0,
+             entry.get('transcode') or '', account_id or '', str(msg_id),
+             old_rel or ''))
+    except Exception as e:
+        logbuf.debug('chat', '更新媒体索引失败：%s' % str(e)[:100])
+    await store._db.commit()
+    return 1 if changed else 0
+
+
+async def _all_media_rels():
+    """所有消息里引用到的媒体 rel 集合。
+
+    ★ 为什么用 Python 解析而不是 SQL LIKE：
+      json.dumps 的输出是 `"rel": "x.mp4"`（冒号后**有空格**），
+      任何按 `'"rel":"x"'` 做的字符串匹配都对不上 ——
+      我在这上面栽过：转码后索引更新静默失效、重建索引把索引全清空。
+      JSON 结构一变，字符串匹配就全废。统一走解析。
+    """
+    cur = await store._db.execute('SELECT media FROM chat_logs')
+    rels = set()
+    for r in await cur.fetchall():
+        for m in _loads(r['media'], []):
+            if isinstance(m, dict) and m.get('rel'):
+                rels.add(m['rel'])
+    return rels
+
+
+async def _rewrite_media(chat_id, mutate):
+    """按 id 取出一行的 media，交给 mutate 改，再整体写回。
+
+    mutate(media_list) -> bool（返回 True 表示有改动）
+    这样改 JSON 不用在 SQL 里做字符串替换。
+    """
+    cur = await store._db.execute('SELECT media FROM chat_logs WHERE id=?', (chat_id,))
+    row = await cur.fetchone()
+    if not row:
+        return False
+    media = _loads(row['media'], [])
+    if not mutate(media):
+        return False
+    await store._db.execute('UPDATE chat_logs SET media=? WHERE id=?',
+                            (_json(media, '[]'), chat_id))
+    return True
+
+
+async def repair_media_refs():
+    """修复媒体引用。
+
+    场景：视频转码后文件名从 x.mp4 变成 x.h264.mp4，磁盘上只剩新的，
+    但消息里还指向旧的 x.mp4 → 前端取不到文件 → 表现为"视频播不出来"。
+
+    这里把指向已不存在文件的引用，改到同名的转码产物上。
+    返回 {fixed, files}。
+    """
+    root = media_root()
+    fixed = 0
+    nfile = 0
+    cur = await store._db.execute('SELECT id, media FROM chat_logs')
+    for r in await cur.fetchall():
+        media = _loads(r['media'], [])
+        if not media:
+            continue
+        hit = False
+        for m in media:
+            if not isinstance(m, dict):
+                continue
+            rel = m.get('rel') or ''
+            if not rel or not m.get('local'):
+                continue
+            if os.path.isfile(os.path.join(root, rel)):
+                continue
+            base, _ = os.path.splitext(rel)
+            for cand, mime in ((base + '.h264.mp4', 'video/mp4'),
+                               (base + '.mp3', 'audio/mpeg')):
+                if os.path.isfile(os.path.join(root, cand)):
+                    m['rel'] = cand
+                    m['mime'] = mime
+                    m['playable'] = 1
+                    m['transcode'] = 'done'
+                    try:
+                        m['bytes'] = os.path.getsize(os.path.join(root, cand))
+                    except Exception:
+                        pass
+                    hit = True
+                    nfile += 1
+                    break
+        if hit:
+            await store._db.execute('UPDATE chat_logs SET media=? WHERE id=?',
+                                    (_json(media, '[]'), r['id']))
+            fixed += 1
+    # 索引同步
+    await rebuild_media_index()
+    await store._db.commit()
+    logbuf.info('chat', '修复媒体引用：%d 条消息，%d 个文件' % (fixed, nfile))
+    return {'fixed': fixed, 'files': nfile}
+
+
+async def rebuild_media_index():
+    """从 chat_logs.media 重建媒体索引（补齐历史数据 + 清僵尸行）。
+
+    历史消息入库时还没有 media_files 表，索引是空的。
+    转码后文件名会变，旧 rel 的索引行就成了"文件不存在"的僵尸 ——
+    重建时按 chat_logs 里还在引用的 rel 清理掉。
+    """
+    cur = await store._db.execute(
+        'SELECT id, account_id, session_id, msg_id, sender_id, sender_name,'
+        ' media, created_at FROM chat_logs')
+    rows = await cur.fetchall()
+    n = 0
+    for r in rows:
+        media = _loads(r['media'], [])
+        if not media:
+            continue
+        await _index_media(r['id'], r['account_id'], r['session_id'], r['msg_id'],
+                           media, r['sender_id'], r['sender_name'], r['created_at'])
+        n += len([m for m in media if isinstance(m, dict) and m.get('rel')])
+
+    # 清理僵尸：rel 已经不被任何消息引用了
+    refs = await _all_media_rels()
+    cur = await store._db.execute('SELECT id, rel FROM media_files')
+    zom = [r['id'] for r in await cur.fetchall()
+           if (r['rel'] or '') not in refs]
+    for zid in zom:
+        await store._db.execute('DELETE FROM media_files WHERE id=?', (zid,))
+    await store._db.commit()
+    logbuf.info('chat', '重建媒体索引：%d 条，清理僵尸 %d 条' % (n, len(zom)))
+    return {'indexed': n, 'messages': len(rows), 'cleaned': len(zom)}
 
 
 def seg_text(segs):
@@ -229,6 +427,7 @@ async def list_messages(session_id, before_id=0, limit=50, keyword=''):
     for r in rows:
         r['segs'] = _loads(r.get('segs'), [])
         r['media'] = _loads(r.get('media'), [])
+        _abs_media(r['media'])
     return list(reversed(rows))
 
 
@@ -331,6 +530,463 @@ async def export(account_id='', session_id='', date_from=0, date_to=0):
     }
     name = 'chat-export-%s.json' % time.strftime('%Y%m%d-%H%M%S')
     return doc, name
+
+
+# ---------------------------------------------------------------- 清空会话
+
+async def clear_session(session_id, with_media=False, account_id=''):
+    """一键清空某个会话的全部消息。
+
+    默认只删消息记录（聊天档案），媒体文件保留。
+    with_media=True 时连媒体文件一起删 —— 索引行也会同步清掉。
+
+    返回 {messages, files, bytes}。
+    """
+    if not session_id:
+        raise ValueError('缺少 session_id')
+
+    # 先收集要删的媒体（要先拿到 rel 才能删文件）
+    files, nbytes = [], 0
+    if with_media:
+        cur = await store._db.execute(
+            'SELECT rel, bytes FROM media_files WHERE session_id=?'
+            + (' AND account_id=?' if account_id else ''),
+            ([session_id, account_id] if account_id else [session_id]))
+        for r in await cur.fetchall():
+            if r['rel']:
+                files.append(r['rel'])
+                nbytes += int(r['bytes'] or 0)
+
+    cur = await store._db.execute(
+        'DELETE FROM chat_logs WHERE session_id=?'
+        + (' AND account_id=?' if account_id else ''),
+        ([session_id, account_id] if account_id else [session_id]))
+    nmsg = cur.rowcount or 0
+
+    await store._db.execute(
+        'DELETE FROM media_files WHERE session_id=?'
+        + (' AND account_id=?' if account_id else ''),
+        ([session_id, account_id] if account_id else [session_id]))
+    await store._db.commit()
+
+    nfile = 0
+    if with_media:
+        root = media_root()
+        for rel in files:
+            try:
+                p = os.path.join(root, rel)
+                if os.path.isfile(p):
+                    os.remove(p)
+                    nfile += 1
+            except Exception as e:
+                logbuf.debug('chat', '删媒体文件失败 %s：%s' % (rel, str(e)[:80]))
+        _rm_empty_dirs(root)
+
+    logbuf.info('chat', '清空会话 %s：%d 条消息，%d 个媒体文件'
+                % (session_id, nmsg, nfile))
+    return {'messages': nmsg, 'files': nfile, 'bytes': nbytes}
+
+
+def _rm_empty_dirs(root):
+    """删完文件后把空目录清掉（媒体目录会越堆越多空壳）。"""
+    if not root or not os.path.isdir(root):
+        return
+    for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+        if dirpath == root:
+            continue
+        try:
+            if not os.listdir(dirpath):
+                os.rmdir(dirpath)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------- 查询
+
+# 消息类型 → 判定条件
+#   text   —— 纯文本（不含图片/语音/视频占位）
+#   image / video / record / face / file —— 含对应类型的媒体段
+_KIND_TEXT = 'text'
+
+
+async def query_messages(sender='', recalled='', kind='', keyword='',
+                         session_id='', account_id='', date_from=0, date_to=0,
+                         limit=50, before_id=0):
+    """按条件查消息。
+
+    sender  —— QQ 号（数字，精确匹配 sender_id）或昵称（模糊匹配 sender_name）
+    recalled—— '' 全部 / 'yes' 已撤回 / 'no' 未撤回
+    kind    —— '' 全部 / text 文本 / image 图片 / video 视频 / record 语音
+               / face 表情 / file 文件
+    keyword —— 文本关键词（模糊）
+    条件之间是「与」关系，可以叠加使用。
+    """
+    sql = 'SELECT * FROM chat_logs WHERE 1=1'
+    args = []
+
+    if account_id:
+        sql += ' AND account_id=?'
+        args.append(account_id)
+    if session_id:
+        sql += ' AND session_id=?'
+        args.append(session_id)
+    if sender:
+        s = str(sender).strip()
+        if s.isdigit():
+            sql += ' AND sender_id=?'
+            args.append(s)
+        else:
+            sql += ' AND sender_name LIKE ?'
+            args.append('%' + s + '%')
+    if recalled == 'yes':
+        sql += ' AND recalled=1'
+    elif recalled == 'no':
+        sql += ' AND recalled=0'
+    if date_from:
+        sql += ' AND created_at>=?'
+        args.append(int(date_from))
+    if date_to:
+        sql += ' AND created_at<=?'
+        args.append(int(date_to))
+    if keyword:
+        sql += ' AND LOWER(text) LIKE ?'
+        args.append('%' + str(keyword).lower() + '%')
+
+    if kind and kind != 'all':
+        if kind == _KIND_TEXT:
+            # 纯文本：不含任何媒体占位符，也不含撤回墓碑
+            sql += (" AND text!=''"
+                    " AND text NOT LIKE '%[图片]%'"
+                    " AND text NOT LIKE '%[语音]%'"
+                    " AND text NOT LIKE '%[视频]%'"
+                    " AND text NOT LIKE '%[表情]%'"
+                    " AND text NOT LIKE '%[文件:%'"
+                    " AND text NOT LIKE '%[卡片]%'"
+                    " AND text NOT LIKE '%一条消息被撤回%'")
+        else:
+            # 含该类型媒体：用 media JSON 里的 kind 判定
+            # ★ 这里不能用 '%s' 格式化 —— 模式串里的 % 会被当成格式符。
+            #   模式串本身是参数，% 在 LIKE 里是通配符，安全。
+            sql += ' AND media LIKE ?'
+            # ★ 模式串前后都要 % —— 少了末尾的 % 就变成"必须匹配到结尾"，
+            #   而 JSON 里 "kind": "video" 后面还有别的字段，永远匹配不上。
+            args.append('%"kind": "' + str(kind) + '"%')
+
+    if before_id:
+        sql += ' AND id<?'
+        args.append(int(before_id))
+
+    sql += ' ORDER BY id DESC LIMIT ?'
+    args.append(int(limit))
+
+    cur = await store._db.execute(sql, args)
+    rows = [dict(r) for r in await cur.fetchall()]
+    for r in rows:
+        r['segs'] = _loads(r.get('segs'), [])
+        r['media'] = _loads(r.get('media'), [])
+        _abs_media(r['media'])
+
+    # 类型筛选做一次 Python 精确复核（SQL 的 LIKE 只是粗筛，
+    # 万一 JSON 格式变了也不会漏掉/错判）
+    if kind and kind != 'all' and kind != _KIND_TEXT:
+        rows = [r for r in rows
+                if any(isinstance(m, dict) and (m.get('kind') or '') == kind
+                       for m in r['media'])]
+
+    total = len(rows)
+    return list(reversed(rows)), total
+
+
+def _abs_media(media):
+    """给媒体清单补绝对路径与存在性标记。
+
+    前端要拿它拼面板的文件预览 URL（/api/fm/preview?path=…），
+    媒体根目录是配置项，不能在前端硬编码。
+    exists=0 表示文件已经不在了（被删/被清）—— 前端据此显示"已失效"，
+    不该再去发请求（会刷一串 404）。
+    """
+    root = media_root()
+    for m in media:
+        if isinstance(m, dict) and m.get('rel'):
+            p = os.path.join(root, m['rel'])
+            m['abs'] = p
+            try:
+                m['exists'] = 1 if os.path.isfile(p) else 0
+            except Exception:
+                m['exists'] = 0
+    return media
+
+
+async def query_senders(keyword='', limit=200):
+    """列出聊天里出现过的发送者（给查询界面做自动补全）。"""
+    sql = ('SELECT sender_id, sender_name, COUNT(*) AS c, MAX(created_at) AS last_at'
+           ' FROM chat_logs WHERE sender_id!=\'\' GROUP BY sender_id, sender_name'
+           ' ORDER BY c DESC LIMIT ?')
+    args = [int(limit)]
+    if keyword:
+        sql = ('SELECT sender_id, sender_name, COUNT(*) AS c, MAX(created_at) AS last_at'
+               ' FROM chat_logs WHERE (sender_id LIKE ? OR sender_name LIKE ?)'
+               ' AND sender_id!=\'\' GROUP BY sender_id, sender_name'
+               ' ORDER BY c DESC LIMIT ?')
+        args = ['%' + keyword + '%', '%' + keyword + '%', int(limit)]
+    cur = await store._db.execute(sql, args)
+    rows = [dict(r) for r in await cur.fetchall()]
+    for r in rows:
+        r['avatar'] = profile.avatar_url(r.get('sender_id') or '')
+    return rows
+
+
+# ---------------------------------------------------------------- 媒体库
+
+async def list_media(kind='', sender='', keyword='', session_id='',
+                     account_id='', limit=100, offset=0):
+    """媒体库列表。"""
+    sql = 'SELECT * FROM media_files WHERE 1=1'
+    args = []
+    if account_id:
+        sql += ' AND account_id=?'
+        args.append(account_id)
+    if kind and kind != 'all':
+        sql += ' AND kind=?'
+        args.append(kind)
+    if session_id:
+        sql += ' AND session_id=?'
+        args.append(session_id)
+    if sender:
+        s = str(sender).strip()
+        if s.isdigit():
+            sql += ' AND sender_id=?'
+            args.append(s)
+        else:
+            sql += ' AND sender_name LIKE ?'
+            args.append('%' + s + '%')
+    if keyword:
+        sql += ' AND (LOWER(name) LIKE ? OR LOWER(rel) LIKE ?)'
+        args.append('%' + str(keyword).lower() + '%')
+        args.append('%' + str(keyword).lower() + '%')
+
+    cur = await store._db.execute(sql + ' ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?',
+                                  args + [int(limit), int(offset)])
+    rows = [dict(r) for r in await cur.fetchall()]
+    root = media_root()
+    for r in rows:
+        r['avatar'] = profile.avatar_url(r.get('sender_id') or '')
+        r['abs'] = os.path.join(root, r.get('rel') or '') if r.get('rel') else ''
+        r['exists'] = 1
+        try:
+            r['exists'] = 1 if os.path.isfile(r['abs']) else 0
+        except Exception:
+            r['exists'] = 0
+    return rows
+
+
+async def media_stats(account_id=''):
+    """媒体库统计：按类型分组的数量与占用。"""
+    sql = ('SELECT kind, COUNT(*) AS c, SUM(bytes) AS b FROM media_files WHERE 1=1')
+    args = []
+    if account_id:
+        sql += ' AND account_id=?'
+        args.append(account_id)
+    sql += ' GROUP BY kind'
+    cur = await store._db.execute(sql, args)
+    rows = await cur.fetchall()
+    per = []
+    total = 0
+    files = 0
+    for r in rows:
+        b = int(r['b'] or 0)
+        c = int(r['c'] or 0)
+        total += b
+        files += c
+        per.append({'kind': r['kind'] or '', 'count': c, 'bytes': b})
+    return {'items': per, 'total_bytes': total, 'total_files': files}
+
+
+async def delete_media(ids=None, rels=None, kind='', session_id=''):
+    """删除媒体文件（连磁盘文件一起删，并更新 chat_logs 里的引用）。
+
+    ids  —— media_files.id 列表
+    rels —— 相对路径列表（精确删）
+    """
+    root = media_root()
+    targets = []
+    if ids:
+        q = ','.join('?' * len(ids))
+        cur = await store._db.execute(
+            'SELECT id, rel, bytes FROM media_files WHERE id IN (%s)' % q, list(ids))
+        targets = await cur.fetchall()
+    elif rels:
+        for rel in rels:
+            targets.append({'id': 0, 'rel': rel, 'bytes': 0})
+    elif kind or session_id:
+        sql = 'SELECT id, rel, bytes FROM media_files WHERE 1=1'
+        args = []
+        if kind and kind != 'all':
+            sql += ' AND kind=?'
+            args.append(kind)
+        if session_id:
+            sql += ' AND session_id=?'
+            args.append(session_id)
+        cur = await store._db.execute(sql, args)
+        targets = await cur.fetchall()
+
+    nfile = 0
+    freed = 0
+    for t in targets:
+        rel = t['rel'] if isinstance(t, dict) else t[1]
+        try:
+            p = os.path.join(root, rel)
+            if os.path.isfile(p):
+                freed += os.path.getsize(p)
+                os.remove(p)
+                nfile += 1
+        except Exception as e:
+            logbuf.debug('chat', '删媒体失败 %s：%s' % (rel, str(e)[:80]))
+
+    # 清理索引与 chat_logs 引用
+    relset = set(t['rel'] if isinstance(t, dict) else t[1] for t in targets)
+    for t in targets:
+        rel = t['rel'] if isinstance(t, dict) else t[1]
+        tid = t['id'] if isinstance(t, dict) else 0
+        try:
+            if tid:
+                await store._db.execute('DELETE FROM media_files WHERE id=?', (tid,))
+            else:
+                await store._db.execute('DELETE FROM media_files WHERE rel=?', (rel,))
+        except Exception as e:
+            logbuf.debug('chat', '清理媒体索引失败：%s' % str(e)[:100])
+
+    # 消息里的引用要改成空（用 Python 改 JSON，不用 SQL 字符串替换 ——
+    #   json.dumps 的输出带空格，字符串匹配会静默失效）
+    if relset:
+        cur = await store._db.execute('SELECT id, media FROM chat_logs')
+        for r in await cur.fetchall():
+            media = _loads(r['media'], [])
+            if not media:
+                continue
+            hit = False
+            for m in media:
+                if isinstance(m, dict) and (m.get('rel') or '') in relset:
+                    m['rel'] = ''
+                    m['local'] = 0
+                    m['playable'] = 0
+                    hit = True
+            if hit:
+                await store._db.execute('UPDATE chat_logs SET media=? WHERE id=?',
+                                        (_json(media, '[]'), r['id']))
+    await store._db.commit()
+    _rm_empty_dirs(root)
+    logbuf.info('chat', '删除媒体：%d 个文件，释放 %.1f MB'
+                % (nfile, freed / 1048576.0))
+    return {'files': nfile, 'bytes': freed, 'entries': len(targets)}
+
+
+async def media_need_transcode():
+    """待转码的媒体（历史遗留的 HEVC / AMR 等）。
+
+    用于媒体库里的「一键转成可播放格式」。
+    """
+    root = media_root()
+    out = []
+    cur = await store._db.execute(
+        "SELECT id, kind, rel, bytes FROM media_files WHERE transcode IN ('','failed')")
+    for r in await cur.fetchall():
+        if r['kind'] not in ('video', 'record'):
+            continue
+        p = os.path.join(root, r['rel'] or '')
+        if not os.path.isfile(p):
+            continue
+        out.append({'id': r['id'], 'kind': r['kind'], 'rel': r['rel'],
+                    'bytes': r['bytes'] or 0})
+    return out
+
+
+async def transcode_media(ids):
+    """把指定媒体转成浏览器可播放的格式。
+
+    返回 {ok, failed, items}。
+    """
+    from . import ffmpeg
+    root = media_root()
+    done = 0
+    failed = 0
+    items = []
+    if not ids:
+        return {'ok': 0, 'failed': 0, 'items': []}
+    q = ','.join('?' * len(ids))
+    cur = await store._db.execute(
+        'SELECT id, kind, rel, bytes, mime, msg_id FROM media_files WHERE id IN (%s)' % q,
+        list(ids))
+    rows = await cur.fetchall()
+    for r in rows:
+        rel = r['rel'] or ''
+        p = os.path.join(root, rel)
+        if not os.path.isfile(p):
+            failed += 1
+            continue
+        # ★ 用原子转码：先写临时文件，成功了才替换。
+        #   历史语音文件后缀是 .mp3 但内容是 AMR，直接输出到同名文件会被
+        #   ffmpeg 拒绝（输入输出同路径），失败清理还会把原件删掉。
+        kind = 'audio' if r['kind'] == 'record' else 'video'
+        new_path, new_mime = await ffmpeg.convert_atomic(p, kind)
+        ok = bool(new_path)
+        if ok:
+            new_rel = os.path.relpath(new_path, root).replace(os.sep, '/')
+            try:
+                new_bytes = os.path.getsize(new_path)
+            except Exception:
+                new_bytes = 0
+            # 转码成功后清掉原件（路径变了才删）
+            try:
+                if os.path.abspath(new_path) != os.path.abspath(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        else:
+            new_rel = rel
+            new_mime = r['mime']
+            new_bytes = r['bytes']
+
+        if ok:
+            await store._db.execute(
+                'UPDATE media_files SET rel=?, bytes=?, mime=?, playable=1, transcode=?'
+                ' WHERE id=?', (new_rel, new_bytes, new_mime, 'done', r['id']))
+            # ★ 删掉旧 rel 的索引行：转码后文件名变了，旧行会变成"文件不存在"的僵尸条目。
+            if new_rel != rel:
+                await store._db.execute(
+                    'DELETE FROM media_files WHERE rel=? AND id!=?', (rel, r['id']))
+
+            # 消息里的引用同步更新（用 Python 改 JSON —— json.dumps 的输出带空格，
+            #   按字符串匹配会静默失效）
+            def _mut(media, rel=rel, new_rel=new_rel, new_mime=new_mime,
+                     new_bytes=new_bytes):
+                hit = False
+                for m in media:
+                    if isinstance(m, dict) and (m.get('rel') or '') == rel:
+                        m['rel'] = new_rel
+                        m['mime'] = new_mime
+                        m['bytes'] = new_bytes
+                        m['playable'] = 1
+                        m['transcode'] = 'done'
+                        hit = True
+                return hit
+
+            cur = await store._db.execute(
+                'SELECT id, media FROM chat_logs WHERE msg_id=?', (str(r['msg_id'] or ''),))
+            for row in await cur.fetchall():
+                media = _loads(row['media'], [])
+                if _mut(media):
+                    await store._db.execute('UPDATE chat_logs SET media=? WHERE id=?',
+                                            (_json(media, '[]'), row['id']))
+            done += 1
+            items.append({'id': r['id'], 'rel': new_rel, 'kind': r['kind'], 'ok': True})
+        else:
+            await store._db.execute(
+                'UPDATE media_files SET transcode=? WHERE id=?', ('failed', r['id']))
+            failed += 1
+            items.append({'id': r['id'], 'rel': rel, 'kind': r['kind'], 'ok': False})
+    await store._db.commit()
+    return {'ok': done, 'failed': failed, 'items': items}
 
 
 # ---------------------------------------------------------------- 清理
