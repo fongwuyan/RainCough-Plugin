@@ -430,26 +430,78 @@ def nc_overview(params):
     out = {"ok": True, "account": {}, "versions": {}, "sys": None,
            "counters": {}, "proc": None, "errors": []}
 
+    # ★ 只查本机托管的实例。
+    #   以前直接用 cfg["napcat"]["base"] —— 那个地址可能指向另一台机器
+    #   （开发实例迁到虚拟机后，配置里还指着宿主的 192.168.2.200:6099），
+    #   结果概览显示的是生产的账号，用户完全看不懂。
+    insts = _local_instances()
+    # ★ 旧式单实例(napcat.service)也要算进去 —— 生产的 1132096843 就是这种,
+    #   不在 instances/ 目录下。漏了它概览会空掉(用户看不到自己的号)。
+    legacy = _legacy_instance()
+    if legacy:
+        insts.append({
+            "uin": legacy.get("uin") or "",
+            "base": legacy.get("webui") or "http://127.0.0.1:%d" % (legacy.get("webui_port") or 6099),
+            "port": legacy.get("webui_port") or 6099,
+            "token": cfg_napcat_token(),
+            "unit": legacy.get("unit") or "napcat",
+        })
+    out["instances"] = [{"uin": i["uin"], "webui": i["base"], "unit": i["unit"]}
+                        for i in insts]
+    if not insts:
+        out["errors"].append("本机还没有 NapCat 实例，先在「QQ 账户」里添加一个")
+        out["bot"] = None
+        try:
+            out["bot"] = _data("/api/status", timeout=8)
+        except Exception:
+            pass
+        return out
+
+    # 目标实例的选择顺序:
+    #   1) 已登录的 —— 概览要显示的是"当前这个号是谁", 没登录的实例查不出账号
+    #   2) 有 uin 的 —— legacy 的 uin 是空的
+    #   3) 第一个
+    # 之前只看 uin, 结果概览选了个没登录的实例 → 账号信息全空。
+    tgt = None
+    for i in insts:
+        try:
+            st = _nc_at(i["base"], i["token"], "/QQLogin/CheckLoginStatus", timeout=8)
+            if (st.get("data") or {}).get("isLogin"):
+                tgt = i
+                break
+        except Exception:
+            continue
+    if tgt is None:
+        tgt = next((i for i in insts if i.get("uin")), insts[0])
+    base, token = tgt["base"], tgt["token"]
+
+    def nc(path, body=None, method="POST", timeout=15):
+        r = _nc_at(base, token, path, body, method, timeout)
+        if r.get("code") not in (0, None):
+            raise RuntimeError("NapCat %s 失败：%s" % (path, r.get("message") or r.get("code")))
+        return r.get("data")
+
     # 账号
     try:
-        st = _nc_data("/QQLogin/CheckLoginStatus") or {}
+        st = nc("/QQLogin/CheckLoginStatus") or {}
         out["account"].update({
             "login": bool(st.get("isLogin")),
             "offline": bool(st.get("isOffline")),
             "phase": st.get("loginPhase") or "",
             "qrcode": st.get("qrcodeurl") or "",
+            "uin": tgt["uin"],
         })
     except Exception as e:
         out["errors"].append("账号状态：%s" % str(e)[:120])
 
     try:
-        ql = _nc_data("/QQLogin/GetQuickLoginListNew") or []
+        ql = nc("/QQLogin/GetQuickLoginListNew") or []
         if isinstance(ql, dict):
             ql = ql.get("list") or []
         if ql:
             cur = ql[0]
             out["account"].update({
-                "uin": str(cur.get("uin") or ""),
+                "uin": str(cur.get("uin") or tgt["uin"]),
                 "nick": cur.get("nickName") or "",
                 "avatar": cur.get("faceUrl") or "",
             })
@@ -460,12 +512,12 @@ def nc_overview(params):
 
     # 版本
     try:
-        v = _nc_data("/base/GetNapCatVersion", method="GET")
+        v = nc("/base/GetNapCatVersion", method="GET")
         out["versions"]["napcat"] = (v or {}).get("version") if isinstance(v, dict) else str(v)
     except Exception as e:
         out["errors"].append("NapCat 版本：%s" % str(e)[:120])
     try:
-        qv = _nc_data("/base/QQVersion", method="GET")
+        qv = nc("/base/QQVersion", method="GET")
         out["versions"]["qq"] = qv if isinstance(qv, str) else (qv or {}).get("version")
     except Exception as e:
         out["errors"].append("QQ 版本：%s" % str(e)[:120])
@@ -477,7 +529,7 @@ def nc_overview(params):
 
     # 网络计数
     try:
-        ob = _nc_data("/OB11Config/GetConfig") or {}
+        ob = nc("/OB11Config/GetConfig") or {}
         net = ob.get("network") or {}
         out["counters"] = {
             "configs": len([1 for k in ("httpServers", "httpClients", "websocketServers",
@@ -645,6 +697,29 @@ def _inst_env(uin):
     return out
 
 
+def _local_instances():
+    """本机托管的实例列表（带 WebUI 地址与 token）。
+
+    ★ 只取本机的实例目录 —— 不能拿 napcat.base 兜底：
+      那个地址可能指向另一台机器（比如开发实例指向宿主的生产 NapCat），
+      结果概览显示的是别人的账号，用户完全看不懂。
+    """
+    out = []
+    for uin in _inst_list():
+        env = _inst_env(uin)
+        wp = env.get("WEBUI_PORT") or ""
+        if not wp.isdigit():
+            continue
+        out.append({
+            "uin": uin,
+            "base": "http://127.0.0.1:%d" % int(wp),
+            "port": int(wp),
+            "token": cfg_napcat_token(),
+            "unit": "napcat@%s" % uin,
+        })
+    return out
+
+
 def _inst_list():
     """列出所有实例目录。"""
     base = (_inst_cfg().get("base_dir") or "/opt/napcat/instances").rstrip("/")
@@ -678,18 +753,29 @@ def _legacy_instance():
     unit = (_cfg().get("napcat") or {}).get("unit") or "napcat"
     if not unit or unit.startswith("napcat@"):
         return None
+    # ★ 单元必须真的存在才算 legacy 实例。
+    #   systemctl is-active 对**不存在的单元**也返回 "inactive",
+    #   用它判断会把"这台机器上压根没有 napcat.service"误判成
+    #   "有个旧实例但没跑" → 列表里凭空多一个点不开的卡片。
+    rc_, o = _run("systemctl show %s -p LoadState --value 2>/dev/null" % unit, timeout=15)
+    load_state = (o or "").strip()
+    if load_state != "loaded":
+        return None
     state = _unit_state(unit)
     if state in ("unknown", "not-found", ""):
         return None
-    base = (_cfg().get("napcat") or {}).get("base") or "http://127.0.0.1:6099"
-    port = 0
+    # ★ 地址用本机的 —— 不能直接抄 cfg["napcat"]["base"]:
+    #   那个地址可能指向另一台机器(开发实例迁到虚拟机后还指着宿主的
+    #   192.168.2.200:6099), 显示别人的端口毫无意义。
+    port = 6099
     try:
-        port = int(base.rsplit(":", 1)[-1])
+        port = int((_inst_cfg().get("webui_base") or 6099))
     except Exception:
         pass
     return {"uin": "", "unit": unit, "xvfb_unit": "", "state": state,
             "enabled": _unit_enabled(unit), "webui_port": port,
-            "onebot_port": 0, "display": "", "dir": "", "webui": base,
+            "onebot_port": 0, "display": "", "dir": "",
+            "webui": "http://127.0.0.1:%d" % port,
             "legacy": True}
 
 
@@ -783,6 +869,7 @@ def inst_add(params):
     _write_ob11_config(d, uin, op, wp)
 
     # systemd：模板 + 该实例专属的 xvfb 单元
+    unit = "napcat@%s" % uin          # ★ 这个变量必须有 —— 下面 start/stop 都要用
     _write_units()
     xvfb_path = os.path.join("/etc/systemd/system", "xvfb-rcbot-%d.service" % disp)
     with open(xvfb_path, "w", encoding="utf-8") as f:
@@ -797,9 +884,12 @@ def inst_add(params):
     _run("systemctl reset-failed %s 2>/dev/null" % unit, timeout=15)
     _run("systemctl start %s" % unit, timeout=90)
 
-    # 等 WebUI 真正监听 —— 之前没等就返回，前端立刻取二维码只会拿到
-    # "connection refused"（用户第一次反馈的就是这个）
-    ready, st = _wait_ready(unit, wp)
+    # ★ 这里**不要**同步等 WebUI 起来。
+    #   面板的插件 RPC 默认超时只有 15 秒（internal/pluginx/conn.go）,
+    #   等 20~45 秒必然超时 → 前端弹"插件请求超时", 用户以为失败,
+    #   其实实例已经建好了、正在启动。
+    #   创建是异步的: 建目录+单元+启动就返回, 前端自己轮询状态。
+    ready, st = False, "starting"
 
     err = ""
     try:
@@ -815,10 +905,9 @@ def inst_add(params):
 
     out = {"uin": uin, "webui_port": wp, "onebot_port": op,
            "display": ":%d" % disp, "dir": d, "unit": "napcat@%s" % uin,
-           "ready": ready}
-    if not ready:
-        out["hint"] = ("实例已创建但 WebUI 没监听 %d。看日志："
-                       "journalctl -u napcat@%s -n 50" % (wp, uin))
+           "ready": ready, "starting": True}
+    out["hint"] = ("实例已创建，正在启动（WebUI %d）。"
+                   "启动后点「扫码登录」出二维码。" % wp)
     if err:
         out["error"] = err
     return {"ok": True, "data": out}
@@ -1048,21 +1137,21 @@ def _sync_instance_ports(uin, env):
         _write_ob11_config(d, uin, int(op), int(wp))
 
 
-def _wait_ready(unit, webui_port, tries=45):
-    """等实例真正可用。
+def _wait_ready(unit, webui_port, tries=20):
+    """等实例的 WebUI 真正可用。
 
-    ★ 不能只看"端口在监听" —— 进程可能正在反复重启
-      (NapCat 快登失败 → 退出 → systemd 拉起 → 每 3 秒一轮)。
-      所以要同时确认: 端口在监听 且 单元是 active(不是 activating/auto-restart)。
+    ★ 判断标准只要"端口在监听"：
+      NapCat 刚起来、还没登录时,QQ 进程可能处在 restarting 循环
+      (没登录态 → 退出 → systemd 拉起 → 每 3 秒一轮),
+      但 WebUI 那一瞬间是能连上的 —— 二维码就是在这时候取的。
+      要求单元必须 active 会让"等待扫码"这个状态永远判定为失败。
+
+    所以: 端口监听到就算 ready, 单元状态只作为参考返回。
     """
     for _ in range(tries):
         _, o = _run("ss -ltn 2>/dev/null | grep -c ':%s '" % webui_port, timeout=10)
-        listening = "1" in (o or "")
-        st = _unit_state(unit)
-        if listening and st == "active":
-            return True, st
-        if st in ("failed", "inactive"):
-            return False, st
+        if "1" in (o or ""):
+            return True, _unit_state(unit)
         time.sleep(1)
     return False, _unit_state(unit)
 
@@ -1262,13 +1351,36 @@ def inst_action(params):
         if os.geteuid() != 0:
             raise RuntimeError("删除实例需要 root 权限")
         _run("systemctl disable --now %s" % unit, timeout=60)
-        if xvfb:
-            _run("systemctl disable --now %s" % xvfb, timeout=30)
+        # 删单元文件 —— 光 disable 的话单元还留在 list-units 里(failed),
+        # 用户在面板上会看到一个"删不掉"的残留实例
         try:
-            _data("/api/accounts", "POST", {"action": "remove", "id": "a%s" % uin},
-                  timeout=25)
+            os.remove("/etc/systemd/system/%s.service" % unit)
         except Exception:
             pass
+        if xvfb:
+            _run("systemctl disable --now %s" % xvfb, timeout=30)
+            try:
+                os.remove("/etc/systemd/system/%s.service" % xvfb)
+            except Exception:
+                pass
+        _run("systemctl daemon-reload", timeout=30)
+        _run("systemctl reset-failed %s 2>/dev/null" % unit, timeout=15)
+        # 同步删掉 rcbot 侧的账号。
+        # ★ "没有这个账号" 不算失败 —— add 是异步的, 可能 remove 比 add
+        #   先到(rcbot 里还没这个号)。这时候 add 之后还会把它加回来,
+        #   变成删不掉的孤儿账号。所以这里改成"删两次":
+        #   先删, 稍后再删一次(等 add 的尾巴过去)。
+        def _rm_account():
+            try:
+                _data("/api/accounts", "POST",
+                      {"action": "remove", "id": "a%s" % uin}, timeout=15)
+                return True
+            except Exception as e:
+                return "没有这个账号" in str(e) or "not found" in str(e).lower()
+
+        _rm_account()
+        # 延迟再删一次, 兜住 add 的竞态
+        threading.Timer(8.0, _rm_account).start()
         import shutil
         d = _inst_dir(uin)
         if os.path.isdir(d) and not p.get("keep_data"):

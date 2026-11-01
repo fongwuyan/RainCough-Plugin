@@ -502,7 +502,7 @@ const Overview = {
 const Accounts = {
   data() {
     return {
-      S, items: [], busy: '', err: '', qrUin: '', qr: '', qrBusy: false,
+      S, items: [], busy: '', err: '', qrUin: '', qr: '', qrErr: '', qrBusy: false,
       addOpen: false, addForm: { uin: '' }, adding: false,
     }
   },
@@ -564,6 +564,7 @@ const Accounts = {
       this.qrBusy = true
       this.qrUin = x.uin
       this.qr = ''
+      this.qrErr = ''
       try {
         const d = await callData('qqbot.inst.action', { uin: x.uin, action: 'qrcode' })
         if (d && d.qrcode) {
@@ -573,8 +574,10 @@ const Accounts = {
           this.qrUin = ''
         }
       } catch (e) {
-        toast(errText(e), 'err')
-        this.qrUin = ''
+        // ★ 保留二维码区块并显示原因 —— 之前直接 qrUin='' 清空,
+        //   区块还开着就永远停在"二维码加载中…",用户不知道出了什么事
+        this.qrErr = errText(e)
+        toast(this.qrErr, 'err')
       } finally {
         this.qrBusy = false
       }
@@ -585,17 +588,42 @@ const Accounts = {
       if (!/^\d{5,12}$/.test(uin)) { toast('QQ 号格式不对', 'err'); return }
       this.adding = true
       try {
-        await call('qqbot.inst.add', { uin })
-        toast('实例已创建，正在启动…', 'ok')
+        // 后端是异步创建：建目录+单元+启动就返回，不等 WebUI
+        // （面板的插件 RPC 超时只有 15 秒，同步等必然超时）
+        const r = await call('qqbot.inst.add', { uin })
+        toast((r && r.hint) || '实例已创建，正在启动…', 'ok')
         this.addOpen = false
         this.addForm.uin = ''
         await this.load(true)
-        setTimeout(() => this.load(true), 4000)
+        // 轮询到实例就绪（WebUI 起来 / 变成 active）
+        this.pollUntilReady(uin, 0)
       } catch (e) {
         toast(errText(e), 'err')
       } finally {
         this.adding = false
       }
+    },
+
+    // 轮询实例状态直到就绪（最多 40 秒）
+    pollUntilReady(uin, n) {
+      if (n > 8) return
+      setTimeout(async () => {
+        let items = []
+        try {
+          const d = await callData('qqbot.inst.list')
+          items = (d && d.items) || []
+        } catch (e) { return }
+        const it = items.find((x) => x.uin === uin)
+        if (!it) { this.pollUntilReady(uin, n + 1); return }
+        // 起来了就提示一次，别反复刷
+        if (it.state === 'active' || it.online) {
+          await this.load(true)
+          toast('实例 ' + uin + ' 已就绪，点「扫码登录」出二维码', 'ok')
+          return
+        }
+        await this.load(true)
+        this.pollUntilReady(uin, n + 1)
+      }, 5000)
     },
     async remove(x) {
       if (!confirm('删除实例 ' + (x.nick || x.uin) + '？\n会停掉服务并删掉它的登录态和配置（聊天记录保留在数据库里）。')) return
@@ -653,7 +681,7 @@ const Accounts = {
       <div v-if="!items.length" class="rcq-empty"><b>◇</b>还没有实例，点右上角「添加 QQ 号」</div>
 
       <div class="rcq-inst" v-else>
-        <div class="rcq-icard" v-for="x in items" :key="x.uin" :class="{ on: x.online }">
+        <div class="rcq-icard" v-for="x in items" :key="x.unit || x.uin" :class="{ on: x.online }">
           <div class="rcq-itop">
             <img class="rcq-ava" :src="x.avatar" alt="" v-if="x.avatar" />
             <div class="rcq-ava" v-else style="width:38px;height:38px"></div>
@@ -677,10 +705,18 @@ const Accounts = {
             <div class="k">服务</div><div class="v">{{ x.unit }}</div>
           </div>
 
+          <div v-if="x.legacy" class="rcq-pnl"
+            style="font-size:11.5px;margin:0 0 10px;padding:8px 10px">
+            这是升级前的旧式单实例（systemd 单元 <code class="rcq-mono">{{ x.unit }}</code>），
+            不是多实例模板管理的，没有二维码可扫。
+            要用新实例的话，点右上角「添加 QQ 号」建一个。
+          </div>
+
           <div class="rcq-iacts">
-            <button class="btn btn-sm btn-primary" :disabled="!!busy" v-if="!x.online"
+            <button class="btn btn-sm btn-primary" :disabled="!!busy"
+              v-if="!x.online && !x.legacy"
               @click="showQr(x)">{{ qrUin === x.uin ? '加载中…' : '扫码登录' }}</button>
-            <button class="btn btn-sm" :disabled="!!busy" v-if="!x.online"
+            <button class="btn btn-sm" :disabled="!!busy" v-if="!x.online && !x.legacy"
               @click="act(x, 'quick_login')">快登</button>
             <button class="btn btn-sm" :disabled="!!busy" v-if="x.online"
               @click="act(x, 'restart')">重启</button>
@@ -697,6 +733,9 @@ const Accounts = {
           <div v-if="qrUin === x.uin" style="margin-top:12px;display:flex;gap:12px;align-items:flex-start">
             <div class="rcq-qr" style="width:150px;height:150px">
               <div v-html="qr" v-if="qr" style="width:100%;height:100%"></div>
+              <div class="ph" v-else-if="qrErr" style="padding:8px;font-size:11px;line-height:1.5">
+                {{ qrErr }}
+              </div>
               <div class="ph" v-else>二维码加载中…</div>
             </div>
             <div style="flex:1;min-width:0;font-size:11.5px;color:var(--m);line-height:1.6">
