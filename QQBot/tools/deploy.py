@@ -43,6 +43,17 @@ PLUGIN_FILES = [
     'assets/plugin.js', 'frontend/plugin.js', 'frontend/qrcode.mjs',
 ]
 
+# rcbot 运行时源码也打进插件包。
+#
+# 为什么要它: 插件包要能"自举" —— 环境准备步骤从插件目录里取源码装到 /opt/rcbot,
+# 否则用户装完插件还得另外找地方下载机器人本体, 市场安装就断链了。
+# 插件进程只跑 server_v4.py, 多带的 rcbot/ 只是磁盘上的文件, 不影响运行。
+RCBOT_SRC_FILES = ['rcbot.py'] + [
+    'rcbot/' + f for f in sorted(os.listdir(os.path.join(ROOT, 'rcbot')))
+    if f.endswith('.py')
+]
+PLUGIN_FILES += RCBOT_SRC_FILES
+
 RCBOT_REMOTE = '/opt/rcbot'
 
 
