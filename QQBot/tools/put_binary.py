@@ -21,7 +21,6 @@ import uuid
 
 PRESETS = {
     'prod': ('http://192.168.2.200:3900', '1'),
-    'dev': ('http://192.168.2.200:3910', 'qtyataa1313'),
 }
 
 

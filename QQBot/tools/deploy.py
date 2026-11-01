@@ -12,7 +12,6 @@
 
     MSYS_NO_PATHCONV=1 python tools/deploy.py plugin --target prod
     MSYS_NO_PATHCONV=1 python tools/deploy.py rcbot
-    MSYS_NO_PATHCONV=1 python tools/deploy.py all --target dev
     MSYS_NO_PATHCONV=1 python tools/deploy.py plugin --target prod --no-restart
 
 前置：改了前端源码要先构建产物
@@ -35,7 +34,8 @@ ROOT = os.path.dirname(HERE)          # RainCough-Plugin/QQBot
 
 PRESETS = {
     'prod': {'base': 'http://192.168.2.200:3900', 'dir': '/opt/raincough/plugins/QQBot'},
-    'dev': {'base': 'http://192.168.2.200:3910', 'dir': '/home/f/raincough-v6/plugins/QQBot'},
+    # ★ 开发机（rcbot-dev 虚拟机）已于 2026-11-02 删除，3910 已下线。
+    #   只保留生产机一个目标。
 }
 
 PLUGIN_FILES = [

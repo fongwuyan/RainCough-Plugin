@@ -5,7 +5,6 @@
 用法（Git Bash 必须带 MSYS_NO_PATHCONV=1，否则 /opt/... 会被改写成本机路径）:
 
     MSYS_NO_PATHCONV=1 python tools/prod_sh.py "uname -a" "ls /opt"
-    MSYS_NO_PATHCONV=1 python tools/prod_sh.py --target dev "systemctl status rcbot"
 """
 import argparse
 import os
