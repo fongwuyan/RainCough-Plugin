@@ -8,3 +8,4 @@
 # 前端构建产物是 JS, 也保持 LF
 *.js     text eol=lf
 *.css    text eol=lf
+*.mjs    text eol=lf
