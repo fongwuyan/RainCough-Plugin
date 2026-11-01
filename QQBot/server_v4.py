@@ -931,9 +931,12 @@ def _local_instances():
     """
     out = []
     for uin in _inst_list():
+        # 占位实例（扫码中）不出现在账号列表里 —— 它还没认领到真实 QQ 号
+        if uin.startswith("_pending_"):
+            continue
         env = _inst_env(uin)
-        wp = env.get("WEBUI_PORT") or ""
-        if not wp.isdigit():
+        webui_port = env.get("WEBUI_PORT") or ""
+        if not webui_port.isdigit():
             continue
         out.append({
             "uin": uin,
@@ -957,6 +960,66 @@ def _inst_list():
     except Exception:
         pass
     return out
+
+
+def _reap_pending_instances(max_age=1800):
+    """回收超时未认领的占位实例。
+
+    ★ 为什么需要：
+      扫码式新增会先建一个 "_pending_<时间戳>" 的占位实例，
+      扫完码才改名成真实 QQ 号。用户如果中途关掉页面/刷新/断网，
+      占位实例就永远留下来了 —— 界面上挂一个没号的死实例，
+      还白占着 WebUI/OneBot 端口和一份 QQ 进程。
+
+      前端关闭时会主动删，但那是"正常关闭"路径；
+      这里兜住所有非正常退出（关标签页、浏览器崩溃、面板重启）。
+
+    判据：占位名里的时间戳比现在早超过 max_age 秒。
+    """
+    import shutil
+    now = int(time.time())
+    reaped = []
+    for slug in _inst_list():
+        if not slug.startswith("_pending_"):
+            continue
+        ts = slug[len("_pending_"):]
+        if not ts.isdigit():
+            continue
+        try:
+            age = now - int(ts)
+        except Exception:
+            continue
+        if age < max_age:
+            continue
+        unit = "napcat@%s" % slug
+        _run("systemctl disable --now %s 2>/dev/null" % unit, timeout=45)
+        try:
+            os.remove("/etc/systemd/system/%s.service" % unit)
+        except Exception:
+            pass
+        d = _inst_dir(slug)
+        try:
+            if os.path.isdir(d):
+                shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
+        _run("systemctl daemon-reload", timeout=30)
+        _run("systemctl reset-failed %s 2>/dev/null" % unit, timeout=15)
+        reaped.append(slug)
+    if reaped:
+        logbuf_warn("回收了 %d 个未认领的占位实例：%s"
+                    % (len(reaped), ", ".join(reaped)))
+    return reaped
+
+
+def logbuf_warn(msg):
+    """本地日志（插件进程不共用 rcbot 的 logbuf）。"""
+    try:
+        import sys
+        sys.stderr.write("[QQBot] %s\n" % msg)
+        sys.stderr.flush()
+    except Exception:
+        pass
 
 
 def _unit_state(unit):
@@ -1010,11 +1073,20 @@ def inst_list(params):
     cfg = _cfg()
     icfg = _inst_cfg()
     base = (icfg.get("base_dir") or "/opt/napcat/instances").rstrip("/")
+    # 顺手回收超时未认领的占位实例（用户中途关页面留下的死实例）
+    try:
+        _reap_pending_instances()
+    except Exception:
+        pass
     items = []
     legacy = _legacy_instance()
     if legacy:
         items.append(legacy)
     for uin in _inst_list():
+        # 占位实例（扫码中）不进实例列表 —— 它还没认领到真实 QQ 号，
+        # 显示成 "_pending_1234" 对用户没有意义
+        if uin.startswith("_pending_"):
+            continue
         env = _inst_env(uin)
         webui_port = env.get("WEBUI_PORT") or ""
         ob_port = env.get("ONEBOT_PORT") or ""

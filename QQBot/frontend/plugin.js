@@ -604,6 +604,13 @@ const Accounts = {
     //   （新注册的号更是如此），让人先填号等于让人猜。
     //   所以流程是：建实例 → 出码 → 扫 → NapCat 报出真实 QQ 号 → 自动认领。
     async addAccount() {
+      // 重新出码时先把上一个占位实例删掉 ——
+      // 否则每次点「重新出码」都会多留一个 _pending_xxx，白占端口和内存。
+      if (this.scanSlug && this.scanSlug.indexOf('_pending_') === 0) {
+        const old = this.scanSlug
+        this.scanSlug = ''
+        try { await call('qqbot.inst.action', { uin: old, action: 'remove' }) } catch (e) {}
+      }
       this.adding = true
       this.addOpen = true
       this.addQr = ''
@@ -671,11 +678,21 @@ const Accounts = {
       }, 3000)
     },
 
-    closeAdd() {
+    async closeAdd() {
+      const slug = this.scanSlug
+      // ★ 关闭时把占位实例删掉 —— 否则界面上会留一个
+      //   "_pending_1234567" 的没用的实例（没登录、没号、占着端口）。
+      //   删之前先停掉轮询，免得它还在轮询一个已删的实例。
       this.addOpen = false
       this.addQr = ''
       this.addMsg = ''
       this.scanSlug = ''
+      if (slug && slug.indexOf('_pending_') === 0) {
+        try {
+          await call('qqbot.inst.action', { uin: slug, action: 'remove' })
+        } catch (e) { /* 删不掉就算了，后端会兜底 */ }
+        this.load(true)
+      }
     },
 
     async addInstance() {
@@ -757,17 +774,20 @@ const Accounts = {
 
       <div v-if="addOpen" class="rcq-form" style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--bd)">
         <div class="rcq-fi" style="align-items:flex-start;gap:16px">
-          <div>
-            <div style="font-size:12px;color:var(--fg2);margin-bottom:6px">
-              请用手机 QQ 扫描下面的二维码授权登录
+            <div>
+              <div style="font-size:12px;color:var(--fg2);margin-bottom:6px">
+                请用手机 QQ 扫描下面的二维码授权登录
+              </div>
+              <!-- ★ 必须用 v-html：makeQr 返回的是 SVG 字符串，
+                   塞进 <img src> 是渲染不出来的（img 的 src 要的是 URL）。
+                   复用现成的 .rcq-qr 样式（里面已有 svg{width:100%;height:100%}）。 -->
+              <div v-if="addQr" v-html="addQr" class="rcq-qr"
+                style="width:180px;height:180px"></div>
+              <div v-else class="rcq-empty"
+                style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;border-radius:8px">
+                {{ adding ? '正在生成二维码…' : '二维码还没出来' }}
+              </div>
             </div>
-            <img v-if="addQr" :src="addQr" alt="QQ 登录二维码"
-              style="width:180px;height:180px;border-radius:8px;background:#fff;display:block" />
-            <div v-else class="rcq-empty"
-              style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;border-radius:8px">
-              {{ adding ? '正在生成二维码…' : '二维码还没出来' }}
-            </div>
-          </div>
           <div style="flex:1;min-width:0">
             <div class="rcq-note" style="display:block">
               扫完就会自动识别出这是哪个 QQ 号，不用手填。<br />
