@@ -19,12 +19,16 @@ IFACES = [
     ('qqbot.health', {}),
     ('qqbot.conn.get', {}),
     ('qqbot.nc.overview', {}),
-    ('qqbot.nc.account', {}),
-    ('qqbot.inst.list', {}),
+    # 单账户
+    ('qqbot.account.info', {}),
+    ('qqbot.account.qrcode', {}),
+    ('qqbot.account.status', {}),
+    ('qqbot.account.logs', {}),
     ('rcbot.status', {}),
     ('rcbot.providers', {}),
     ('rcbot.personas', {}),
     ('rcbot.config.get', {}),
+    ('qqbot.chat.sessions', {}),
     ('qqbot.chat.stats', {}),
 ]
 

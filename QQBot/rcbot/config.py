@@ -175,9 +175,15 @@ def _normalize_accounts(cfg):
 
 
 def get_accounts(cfg):
-    """返回启用中的账号列表（每项都带 id / uin）。"""
+    """返回启用中的账号列表（每项都带 id / uin）。
+
+    ★ 单账户（2026-11-02 从多账户回退）：最多只返回一条。
+      配置里若有多条（多账户时代留下的），取第一条 ——
+      机器人只会连一个 QQ 号，多条会让事件归属和聊天记录都串掉。
+    """
     _normalize_accounts(cfg)
-    return [a for a in (cfg.get('onebot') or {}).get('accounts') or [] if a.get('enabled')]
+    accs = [a for a in (cfg.get('onebot') or {}).get('accounts') or [] if a.get('enabled')]
+    return accs[:1]
 
 
 def find_account(cfg, aid):

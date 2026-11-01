@@ -54,30 +54,6 @@
       "description": "NapCat 概览（账号/系统/网络计数）"
     },
     {
-      "id": "qqbot.nc.account",
-      "visibility": "all",
-      "version": "1",
-      "description": "QQ 账户状态与二维码"
-    },
-    {
-      "id": "qqbot.nc.action",
-      "visibility": "main",
-      "version": "1",
-      "description": "刷新二维码 / 快速登录 / 重启"
-    },
-    {
-      "id": "qqbot.nc.logs",
-      "visibility": "all",
-      "version": "1",
-      "description": "NapCat 运行日志（实时/历史）"
-    },
-    {
-      "id": "qqbot.nc.logs.clear",
-      "visibility": "main",
-      "version": "1",
-      "description": "清空日志缓冲"
-    },
-    {
       "id": "rcbot.status",
       "visibility": "all",
       "version": "1",
@@ -192,40 +168,40 @@
       "description": "试聊（不经过 QQ）"
     },
     {
-      "id": "qqbot.inst.list",
-      "visibility": "all",
-      "version": "1",
-      "description": "NapCat 实例列表（每个 QQ 号一个实例）"
-    },
-    {
-      "id": "qqbot.inst.add",
+      "id": "qqbot.account.info",
       "visibility": "main",
       "version": "1",
-      "description": "新增 NapCat 实例（建目录/写 systemd/启动）"
+      "description": "当前账户信息（昵称/头像/QQ号/登录状态）"
     },
     {
-      "id": "qqbot.inst.scan",
+      "id": "qqbot.account.qrcode",
       "visibility": "main",
       "version": "1",
-      "description": "扫码式新增实例：不用先填 QQ 号，直接出二维码"
+      "description": "取登录二维码（NapCat 扫码登录）"
     },
     {
-      "id": "qqbot.inst.scan_status",
+      "id": "qqbot.account.refresh_qrcode",
       "visibility": "main",
       "version": "1",
-      "description": "查扫码进度；登录成功后自动认领真实 QQ 号"
+      "description": "刷新登录二维码"
     },
     {
-      "id": "qqbot.inst.action",
+      "id": "qqbot.account.status",
       "visibility": "main",
       "version": "1",
-      "description": "实例操作：启停/重启/扫码/快登/删除"
+      "description": "查登录进度"
     },
     {
-      "id": "qqbot.inst.logs",
-      "visibility": "all",
+      "id": "qqbot.account.action",
+      "visibility": "main",
       "version": "1",
-      "description": "实例运行日志（journalctl）"
+      "description": "账户操作：启动/停止/重启/快登/换号"
+    },
+    {
+      "id": "qqbot.account.logs",
+      "visibility": "main",
+      "version": "1",
+      "description": "NapCat 运行日志"
     },
     {
       "id": "qqbot.chat.sessions",

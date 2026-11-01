@@ -131,6 +131,17 @@ def make_app(mgr, bot):
                 'unit': b.get('unit') or '',
                 'instance_dir': b.get('instance_dir') or '',
             }
+            # ★ 单账户（2026-11-02 从多账户回退）：只保留一条。
+            #   换号时新账号进来，旧的直接清掉 —— 否则机器人会同时挂着
+            #   两条 OneBot 连接，事件归属和聊天记录都会串。
+            if len(accs) > 0:
+                for old in list(accs):
+                    if old.get('id') != new_id:
+                        try:
+                            await store.upsert_account(old['id'], enabled=0)
+                        except Exception:
+                            pass
+                        accs.remove(old)
             accs.append(acc)
             await store.upsert_account(new_id, uin=uin, nick=acc['nick'])
             config.save(cfg)

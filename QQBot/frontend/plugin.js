@@ -247,7 +247,7 @@ const CSS = `
 .rcq-iacts{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 
 /* ---- 聊天记录三栏 ---- */
-.rcq-chats{display:grid;grid-template-columns:150px 250px minmax(0,1fr);gap:12px;align-items:start}
+.rcq-chats{display:grid;grid-template-columns:250px minmax(0,1fr);gap:12px;align-items:start}
 .rcq-chatcol{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);
  display:flex;flex-direction:column;overflow:hidden;max-height:min(74vh,720px)}
 .rcq-chatcol .hd{padding:10px 12px;border-bottom:1px solid var(--bd);flex:none;
@@ -509,241 +509,133 @@ const Overview = {
 const Accounts = {
   data() {
     return {
-      S, items: [], busy: '', err: '', qrUin: '', qr: '', qrErr: '', qrBusy: false,
-      addOpen: false, addForm: { uin: '' }, adding: false,
-      // 扫码式新增：addQr 是二维码图片，scanSlug 是占位实例标识
-      addQr: '', addMsg: '', scanSlug: '',
+      S,
+      // 单账户：只有一个 QQ 号
+      acc: null,
+      busy: '', err: '', qr: '', qrErr: '', qrBusy: false,
+      qrOpen: false, msg: '',
     }
   },
   computed: {
-    onlineCount() { return this.items.filter((x) => x.online).length },
+    login() { return !!(this.acc && this.acc.login) },
+    ready() { return !!(this.acc && this.acc.core_ready) },
+    online() { return !!(this.acc && (this.acc.online || this.acc.connected)) },
+    uin() { return (this.acc && this.acc.uin) || '' },
+    nick() { return (this.acc && this.acc.nick) || '' },
+    avatar() {
+      if (this.acc && this.acc.avatar) return this.acc.avatar
+      const u = this.uin
+      if (!/^\d{5,12}$/.test(u)) return ''
+      return 'https://q1.qlogo.cn/g?b=qq&nk=' + u + '&s=100'
+    },
+    statusText() {
+      if (!this.acc) return '未知'
+      if (this.online && this.ready) return '已登录'
+      if (this.acc.login) return '已登录（初始化中）'
+      if (this.acc.accepted) return '手机已确认，正在登录…'
+      if (this.acc.state === 'failed') return '启动失败'
+      if (this.acc.state === 'inactive') return '已停止'
+      if (this.acc.state === 'active') return '运行中（未登录）'
+      return this.acc.state || '未知'
+    },
+    statusCls() {
+      if (this.online && this.ready) return 'ok'
+      if (this.acc && this.acc.state === 'failed') return 'off'
+      return ''
+    },
   },
-  async mounted() { await this.load() },
+  async mounted() {
+    await this.load()
+    this.timer = setInterval(() => this.load(true), 5000)
+  },
+  beforeUnmount() { if (this.timer) clearInterval(this.timer) },
   methods: {
     async load(silent) {
       if (!silent) this.busy = 'load'
       try {
-        const d = await callData('qqbot.inst.list')
-        this.items = (d && d.items) || []
-        this.err = ''
+        this.acc = await callData('qqbot.account.info')
+        this.err = (this.acc && this.acc.error) || ''
+        // 登录中就自动刷新二维码区
+        if (this.qrOpen && this.acc && !this.acc.login) {
+          this.pollStatus(0)
+        }
       } catch (e) {
         this.err = errText(e)
       } finally {
         this.busy = ''
       }
     },
-    stateText(x) {
-      if (x.online) return '已登录'
-      if (x.state === 'active') return '运行中（未登录）'
-      if (x.state === 'failed') return '启动失败'
-      if (x.state === 'activating') return '启动中'
-      if (x.state === 'auto-restart') return '反复重启（点「修复」）'
-      if (x.state === 'inactive') return '已停止'
-      return x.state || '未知'
-    },
-    // 起不来的时候给出可操作的提示，而不是干巴巴一句 connection refused
-    broken(x) {
-      return x.state === 'failed' || x.state === 'auto-restart' ||
-             x.state === 'activating'
-    },
-    stateCls(x) {
-      if (x.online) return 'ok'
-      if (x.state === 'failed') return 'off'
-      return ''
-    },
-    // 实例头像：后端给了就用，没给但有 QQ 号就按号拼一个
-    instAvatar(x) {
-      if (x.avatar) return x.avatar
-      const uin = String((x && x.uin) || '')
-      if (!/^\d{5,12}$/.test(uin)) return ''
-      return 'https://q1.qlogo.cn/g?b=qq&nk=' + uin + '&s=100'
-    },
-    async act(x, action) {
-      this.busy = action + x.uin
-      try {
-        await call('qqbot.inst.action', { uin: x.uin, action })
-        const msg = {
-          start: '已启动', stop: '已停止', restart: '已重启',
-          quick_login: '已发起快登', remove: '已删除实例', repair: '已修复',
-        }[action] || '已执行'
-        toast(msg + '：' + (x.nick || x.uin), 'ok')
-        this.qrUin = ''
-        await this.load(true)
-        if (action === 'quick_login') setTimeout(() => this.load(true), 2500)
-      } catch (e) {
-        toast(errText(e), 'err')
-      } finally {
-        this.busy = ''
-      }
-    },
-    async showQr(x) {
+    // 出二维码 —— 后端直接问 NapCat 要（/QQLogin/GetQQLoginQrcode 等）
+    async showQr() {
       this.qrBusy = true
-      this.qrUin = x.uin
       this.qr = ''
       this.qrErr = ''
+      this.msg = ''
+      this.qrOpen = true
       try {
-        const d = await callData('qqbot.inst.action', { uin: x.uin, action: 'qrcode' })
-        if (d && d.qrcode) {
+        const d = await callData('qqbot.account.qrcode', {})
+        if (d && d.login) {
+          this.msg = '已经登录了：' + (d.nick || d.uin)
+          await this.load(true)
+        } else if (d && d.qrcode) {
           this.qr = makeQr(d.qrcode)
+          this.pollStatus(0)
         } else {
-          toast('这个实例已经登录了，不需要扫码', 'ok')
-          this.qrUin = ''
+          this.qrErr = '二维码还没出来，稍后再点一次'
         }
       } catch (e) {
-        // ★ 保留二维码区块并显示原因 —— 之前直接 qrUin='' 清空,
-        //   区块还开着就永远停在"二维码加载中…",用户不知道出了什么事
         this.qrErr = errText(e)
-        toast(this.qrErr, 'err')
       } finally {
         this.qrBusy = false
       }
     },
-    // 点「添加 QQ 账户」：直接出二维码，不用先填 QQ 号。
-    //
-    // ★ NapCat 本来就是扫码登录的 —— 扫码之前根本不知道会登录到哪个号
-    //   （新注册的号更是如此），让人先填号等于让人猜。
-    //   所以流程是：建实例 → 出码 → 扫 → NapCat 报出真实 QQ 号 → 自动认领。
-    async addAccount() {
-      // 重新出码时先把上一个占位实例删掉 ——
-      // 否则每次点「重新出码」都会多留一个 _pending_xxx，白占端口和内存。
-      if (this.scanSlug && this.scanSlug.indexOf('_pending_') === 0) {
-        const old = this.scanSlug
-        this.scanSlug = ''
-        try { await call('qqbot.inst.action', { uin: old, action: 'remove' }) } catch (e) {}
-      }
-      this.adding = true
-      this.addOpen = true
-      this.addQr = ''
-      this.addMsg = ''
-      this.scanSlug = ''
+    async refreshQr() {
       try {
-        const d = await callData('qqbot.inst.scan', {})
-        if (!d) { this.addMsg = '创建实例失败'; return }
-        this.scanSlug = d.slug || ''
-        this.addQr = d.qrcode ? makeQr(d.qrcode) : ''
-        this.addMsg = d.qrcode ? '' : (d.hint || '二维码还在生成…')
-        if (!this.addQr) {
-          // 二维码可能还没生成出来，轮询一下
-          this.pollScanCode(0)
-        } else {
-          this.pollScanDone(0)
-        }
+        const d = await callData('qqbot.account.refresh_qrcode', {})
+        if (d && d.qrcode) this.qr = makeQr(d.qrcode)
       } catch (e) {
-        this.addMsg = errText(e)
-      } finally {
-        this.adding = false
+        this.qrErr = errText(e)
       }
     },
-
-    // 二维码还没出来时，轮询 NapCat 的状态接口补一张
-    async pollScanCode(n) {
-      if (n > 20 || !this.scanSlug) return
+    // 轮询登录状态 —— 后端只读 NapCat 的 CheckLoginStatus
+    pollStatus(n) {
+      if (n > 100 || !this.qrOpen) return
       setTimeout(async () => {
-        if (!this.addOpen || !this.scanSlug) return
+        if (!this.qrOpen) return
         try {
-          const d = await callData('qqbot.inst.action', {
-            uin: this.scanSlug, action: 'qrcode',
-          })
-          if (d && d.qrcode) {
-            this.addQr = makeQr(d.qrcode)
-            this.addMsg = ''
-            this.pollScanDone(0)
-            return
-          }
-        } catch (e) { /* 还没起来，继续等 */ }
-        this.pollScanCode(n + 1)
-      }, 3000)
-    },
-
-    // 等扫码完成：NapCat 登录后会报出真实 QQ 号
-    async pollScanDone(n) {
-      if (n > 80 || !this.scanSlug) return
-      setTimeout(async () => {
-        if (!this.addOpen || !this.scanSlug) return
-        try {
-          const d = await callData('qqbot.inst.scan_status', { slug: this.scanSlug })
+          const d = await callData('qqbot.account.status', {})
           if (d && d.done) {
-            this.addMsg = '登录成功：' + (d.nick || ('QQ ' + d.uin)) + '（' + d.uin + '）'
-            this.scanSlug = ''
-            toast('已添加 QQ 账户 ' + d.uin, 'ok')
+            this.msg = '登录成功：' + (d.nick || d.uin) + '（' + d.uin + '）'
+            this.qr = ''
+            toast('已登录 ' + d.uin, 'ok')
             await this.load(true)
-            setTimeout(() => this.closeAdd(), 1200)
+            setTimeout(() => { this.qrOpen = false }, 1200)
             return
           }
-          if (d && d.error) this.addMsg = d.error
+          if (d && d.accepted && !d.logged) {
+            this.msg = '手机已确认，正在登录 QQ…'
+          } else if (d && d.logged && !d.core_ready) {
+            this.msg = 'QQ 已登录，正在初始化 NapCat…'
+          }
+          if (d && d.error) this.msg = d.error
         } catch (e) {
-          this.addMsg = errText(e)
+          this.msg = errText(e)
         }
-        this.pollScanDone(n + 1)
+        this.pollStatus(n + 1)
       }, 3000)
     },
-
-    async closeAdd() {
-      const slug = this.scanSlug
-      // ★ 关闭时把占位实例删掉 —— 否则界面上会留一个
-      //   "_pending_1234567" 的没用的实例（没登录、没号、占着端口）。
-      //   删之前先停掉轮询，免得它还在轮询一个已删的实例。
-      this.addOpen = false
-      this.addQr = ''
-      this.addMsg = ''
-      this.scanSlug = ''
-      if (slug && slug.indexOf('_pending_') === 0) {
-        try {
-          await call('qqbot.inst.action', { uin: slug, action: 'remove' })
-        } catch (e) { /* 删不掉就算了，后端会兜底 */ }
-        this.load(true)
-      }
-    },
-
-    async addInstance() {
-      const uin = String(this.addForm.uin || '').trim()
-      if (!uin) { toast('填 QQ 号', 'err'); return }
-      if (!/^\d{5,12}$/.test(uin)) { toast('QQ 号格式不对', 'err'); return }
-      this.adding = true
+    async act(action) {
+      this.busy = action
       try {
-        // 后端是异步创建：建目录+单元+启动就返回，不等 WebUI
-        // （面板的插件 RPC 超时只有 15 秒，同步等必然超时）
-        const r = await call('qqbot.inst.add', { uin })
-        toast((r && r.hint) || '实例已创建，正在启动…', 'ok')
-        this.addOpen = false
-        this.addForm.uin = ''
-        await this.load(true)
-        // 轮询到实例就绪（WebUI 起来 / 变成 active）
-        this.pollUntilReady(uin, 0)
-      } catch (e) {
-        toast(errText(e), 'err')
-      } finally {
-        this.adding = false
-      }
-    },
-
-    // 轮询实例状态直到就绪（最多 40 秒）
-    pollUntilReady(uin, n) {
-      if (n > 8) return
-      setTimeout(async () => {
-        let items = []
-        try {
-          const d = await callData('qqbot.inst.list')
-          items = (d && d.items) || []
-        } catch (e) { return }
-        const it = items.find((x) => x.uin === uin)
-        if (!it) { this.pollUntilReady(uin, n + 1); return }
-        // 起来了就提示一次，别反复刷
-        if (it.state === 'active' || it.online) {
-          await this.load(true)
-          toast('实例 ' + uin + ' 已就绪，点「扫码登录」出二维码', 'ok')
-          return
-        }
-        await this.load(true)
-        this.pollUntilReady(uin, n + 1)
-      }, 5000)
-    },
-    async remove(x) {
-      if (!confirm('删除实例 ' + (x.nick || x.uin) + '？\n会停掉服务并删掉它的登录态和配置（聊天记录保留在数据库里）。')) return
-      this.busy = 'rm' + x.uin
-      try {
-        await call('qqbot.inst.action', { uin: x.uin, action: 'remove' })
-        toast('已删除', 'ok')
+        const msg = {
+          start: '已启动', stop: '已停止', restart: '已重启',
+          quick_login: '已发起快登', logout: '已退出登录',
+        }[action] || '已执行'
+        if (action === 'logout' && !confirm('退出登录会清掉本机的登录态，下次要重新扫码。确定？')) return
+        await call('qqbot.account.action', { action })
+        toast(msg, 'ok')
+        this.qrOpen = false
+        this.qr = ''
         await this.load(true)
       } catch (e) {
         toast(errText(e), 'err')
@@ -751,10 +643,10 @@ const Accounts = {
         this.busy = ''
       }
     },
-    copy(text) {
-      if (!text) return
-      try { navigator.clipboard.writeText(text); toast('已复制', 'ok') }
-      catch (e) { toast('复制失败', 'err') }
+    closeQr() {
+      this.qrOpen = false
+      this.qr = ''
+      this.msg = ''
     },
   },
   template: `
@@ -763,139 +655,75 @@ const Accounts = {
 
     <div class="rcq-pnl">
       <div class="rcq-ph">
-        <b>QQ 实例</b>
-        <span class="rcq-hint">共 {{ items.length }} 个 · 在线 {{ onlineCount }} 个</span>
+        <b>QQ 账户</b>
+        <span class="rcq-hint">单账户模式</span>
         <span class="sp"></span>
-        <button class="btn btn-sm btn-primary" :disabled="adding" @click="addAccount()">
-          {{ adding ? '准备中…' : '+ 添加 QQ 账户' }}
+        <button class="btn btn-sm btn-primary" :disabled="qrBusy" @click="showQr()">
+          {{ qrBusy ? '获取中…' : (login ? '重新登录' : '扫码登录') }}
         </button>
         <button class="btn btn-sm" :disabled="!!busy" @click="load()">刷新</button>
       </div>
 
-      <div v-if="addOpen" class="rcq-form" style="margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--bd)">
-        <div class="rcq-fi" style="align-items:flex-start;gap:16px">
-            <div>
-              <div style="font-size:12px;color:var(--fg2);margin-bottom:6px">
-                请用手机 QQ 扫描下面的二维码授权登录
-              </div>
-              <!-- ★ 必须用 v-html：makeQr 返回的是 SVG 字符串，
-                   塞进 <img src> 是渲染不出来的（img 的 src 要的是 URL）。
-                   复用现成的 .rcq-qr 样式（里面已有 svg{width:100%;height:100%}）。 -->
-              <div v-if="addQr" v-html="addQr" class="rcq-qr"
-                style="width:180px;height:180px"></div>
-              <div v-else class="rcq-empty"
-                style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;border-radius:8px">
-                {{ adding ? '正在生成二维码…' : '二维码还没出来' }}
-              </div>
-            </div>
-          <div style="flex:1;min-width:0">
-            <div class="rcq-note" style="display:block">
-              扫完就会自动识别出这是哪个 QQ 号，不用手填。<br />
-              每个号是一个独立的 NapCat 实例（独立配置、登录态、显示、端口）。<br />
-              端口会自动分配（WebUI 6099 起、OneBot 6700 起，避开 rcbot 用的 6710）。
-            </div>
-            <div v-if="addMsg" style="margin-top:10px;font-size:12px">{{ addMsg }}</div>
-            <div style="margin-top:12px;display:flex;gap:8px">
-              <button class="btn btn-sm" :disabled="adding" @click="addAccount()">重新出码</button>
-              <button class="btn btn-sm" @click="closeAdd()">关闭</button>
-            </div>
+      <div class="rcq-acct" style="padding:16px">
+        <img class="rcq-ava" :src="avatar" alt="" v-if="avatar" />
+        <div class="rcq-ava" v-else></div>
+        <div style="min-width:0;flex:1">
+          <div class="rcq-nick">
+            {{ nick || (uin ? 'QQ ' + uin : '未登录') }}
+            <span class="rcq-pill" :class="statusCls">{{ statusText }}</span>
+          </div>
+          <div class="rcq-uin">{{ uin || '还没有登录 QQ 账号' }}</div>
+        </div>
+      </div>
+
+      <div class="rcq-iacts" style="margin-top:12px">
+        <button class="btn btn-sm" :disabled="!!busy" @click="act('restart')">重启</button>
+        <button class="btn btn-sm" :disabled="!!busy || !login" @click="act('quick_login')">快速登录</button>
+        <button class="btn btn-sm" :disabled="!!busy" @click="act('stop')">停止</button>
+        <button class="btn btn-sm" :disabled="!!busy || !login" @click="act('logout')">退出登录</button>
+      </div>
+
+      <div v-if="qrOpen" style="margin-top:14px;display:flex;gap:14px;align-items:flex-start">
+        <div>
+          <!-- ★ 必须用 v-html：makeQr 返回的是 SVG 字符串，
+               塞进 <img src> 是渲染不出来的（img 的 src 要的是 URL）。 -->
+          <div v-if="qr" v-html="qr" class="rcq-qr" style="width:180px;height:180px"></div>
+          <div v-else class="rcq-empty"
+            style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;border-radius:8px">
+            {{ qrBusy ? '正在获取二维码…' : (qrErr || '二维码还没出来') }}
+          </div>
+        </div>
+        <div style="flex:1;min-width:0">
+          <div class="rcq-note" style="display:block">
+            请用手机 QQ 扫描下面的二维码授权登录。<br />
+            登录成功后会自动识别出账号并连接机器人。
+          </div>
+          <div v-if="msg" style="margin-top:10px;font-size:12px">{{ msg }}</div>
+          <div v-if="qrErr" style="margin-top:10px;font-size:12px;color:var(--bad)">{{ qrErr }}</div>
+          <div style="margin-top:12px;display:flex;gap:8px">
+            <button class="btn btn-sm" :disabled="qrBusy" @click="refreshQr()">刷新二维码</button>
+            <button class="btn btn-sm" @click="closeQr()">关闭</button>
           </div>
         </div>
       </div>
 
-      <div v-if="!items.length" class="rcq-empty"><b>◇</b>还没有实例，点右上角「添加 QQ 账户」</div>
-
-      <div class="rcq-inst" v-else>
-        <div class="rcq-icard" v-for="x in items" :key="x.unit || x.uin" :class="{ on: x.online }">
-          <div class="rcq-itop">
-            <img class="rcq-ava" :src="instAvatar(x)" alt="" v-if="instAvatar(x)" />
-            <div class="rcq-ava" v-else style="width:38px;height:38px"></div>
-            <div class="nm">
-              <b>{{ x.nick || ('QQ ' + x.uin) }}</b>
-              <span>{{ x.uin }}</span>
-            </div>
-            <span class="rcq-pill" :class="stateCls(x)">{{ stateText(x) }}</span>
-          </div>
-
-          <div v-if="broken(x)" class="rcq-pnl rcq-warn"
-            style="font-size:11.5px;margin:0 0 10px;padding:8px 10px">
-            这个实例没能正常启动（多半是显示号或端口分配有问题）。
-            点「修复」会自动重新分配端口和显示号并重启。
-          </div>
-
-          <div class="rcq-imeta">
-            <div class="k">WebUI</div><div class="v">{{ x.webui_port || '—' }}</div>
-            <div class="k">OneBot</div><div class="v">{{ x.onebot_port || '—' }}</div>
-            <div class="k">显示</div><div class="v">{{ x.display || '—' }}</div>
-            <div class="k">服务</div><div class="v">{{ x.unit }}</div>
-          </div>
-
-          <div v-if="x.legacy" class="rcq-pnl"
-            style="font-size:11.5px;margin:0 0 10px;padding:8px 10px">
-            这是升级前的旧式单实例（systemd 单元 <code class="rcq-mono">{{ x.unit }}</code>），
-            不是多实例模板管理的，没有二维码可扫。
-            要用新实例的话，点右上角「添加 QQ 账户」建一个。
-          </div>
-
-          <div class="rcq-iacts">
-            <button class="btn btn-sm btn-primary" :disabled="!!busy"
-              v-if="!x.online && !x.legacy"
-              @click="showQr(x)">{{ qrUin === x.uin ? '加载中…' : '扫码登录' }}</button>
-            <button class="btn btn-sm" :disabled="!!busy" v-if="!x.online && !x.legacy"
-              @click="act(x, 'quick_login')">快登</button>
-            <button class="btn btn-sm" :disabled="!!busy" v-if="x.online"
-              @click="act(x, 'restart')">重启</button>
-            <button class="btn btn-sm" :disabled="!!busy"
-              @click="act(x, x.state === 'active' ? 'stop' : 'start')">
-              {{ x.state === 'active' ? '停止' : '启动' }}
-            </button>
-            <button class="btn btn-sm" :disabled="!!busy"
-              @click="act(x, 'repair')">修复</button>
-            <button class="btn btn-sm btn-danger" :disabled="!!busy"
-              @click="remove(x)">删除</button>
-          </div>
-
-          <div v-if="qrUin === x.uin" style="margin-top:12px;display:flex;gap:12px;align-items:flex-start">
-            <div class="rcq-qr" style="width:150px;height:150px">
-              <div v-html="qr" v-if="qr" style="width:100%;height:100%"></div>
-              <div class="ph" v-else-if="qrErr" style="padding:8px;font-size:11px;line-height:1.5">
-                {{ qrErr }}
-              </div>
-              <div class="ph" v-else>二维码加载中…</div>
-            </div>
-            <div style="flex:1;min-width:0;font-size:11.5px;color:var(--m);line-height:1.6">
-              用手机 QQ 扫这个码。<br />
-              扫完点「刷新」看状态。<br />
-              每个号第一次都要扫一次。
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="rcq-pnl">
-      <div class="rcq-ph"><b>怎么跑起来的</b></div>
-      <div class="rcq-note" style="line-height:1.8">
-        每个实例是独立的 systemd 服务 <code class="rcq-mono">napcat@&lt;QQ号&gt;</code>，
-        配一个专属的虚拟显示 <code class="rcq-mono">xvfb@&lt;N&gt;</code>。
+      <div class="rcq-note" style="margin-top:14px">
+        本插件是单账户模式：只管理一个 QQ 号。
         <br />
-        QQ 本体只有一份，所有实例共享 —— 隔离靠的是各自独立的配置目录、登录态目录和端口。
+        登录用 NapCat 自带的二维码登录（和 QQ 客户端官方扫码一致）。
         <br />
-        机器人侧（rcbot）为每个号建一条 OneBot 连接，事件按账号归属，聊天记录也按账号分开存。
+        换号时点「退出登录」清掉登录态，再重新扫码即可。
       </div>
     </div>
   </div>`,
 }
 
 // ------------------------------------------------------------------ 聊天记录
-//
-// 三栏：账号 → 会话 → 消息。目标是不依赖 QQ 客户端也能原样回看。
-
 const Chats = {
   data() {
     return {
-      S, accounts: [], sess: [], msgs: [], stats: null,
-      curAcc: '', curSess: '', kw: '', beforeId: 0, more: false,
+      S, sess: [], msgs: [], stats: null,
+      curSess: '', kw: '', beforeId: 0, more: false,
       busy: '', err: '', light: '', loadingMore: false,
     }
   },
@@ -908,11 +736,6 @@ const Chats = {
       }
       return g
     },
-    accLabel() {
-      if (!this.curAcc) return '全部账号'
-      const a = this.accounts.find((x) => x.uin === this.curAcc)
-      return a ? (a.nick || a.uin) : this.curAcc
-    },
     mediaBytes() {
       return ((this.stats || {}).media || {}).bytes || 0
     },
@@ -924,7 +747,6 @@ const Chats = {
     },
   },
   async mounted() {
-    await this.loadAccounts()
     await this.loadSessions()
     await this.loadStats()
   },
@@ -937,22 +759,16 @@ const Chats = {
       if (n >= 1024) return (n / 1024).toFixed(0) + ' K'
       return n + ' B'
     },
-    async loadAccounts() {
-      try {
-        const d = await callData('rcbot.accounts')
-        this.accounts = (d && d.items) || []
-      } catch (e) { /* 账号拿不到不影响看记录 */ }
-    },
     async loadStats() {
       try {
-        this.stats = await callData('qqbot.chat.stats', { account_id: this.curAcc })
+        this.stats = await callData('qqbot.chat.stats', {})
       } catch (e) { this.stats = null }
     },
     async loadSessions() {
       this.busy = 'sess'
       try {
         const d = await callData('qqbot.chat.sessions', {
-          account_id: this.curAcc, kw: this.kw, limit: 300,
+          kw: this.kw, limit: 300,
         })
         this.sess = (d && d.items) || []
         if (this.curSess && !this.sess.some((x) => x.session_id === this.curSess)) {
@@ -964,13 +780,6 @@ const Chats = {
       } finally {
         this.busy = ''
       }
-    },
-    async pickAcc(uin) {
-      this.curAcc = uin || ''
-      this.curSess = ''
-      this.msgs = []
-      await this.loadSessions()
-      await this.loadStats()
     },
     async pickSess(id) {
       this.curSess = id
@@ -1003,7 +812,7 @@ const Chats = {
       this.busy = 'exp'
       try {
         const d = await callData('qqbot.chat.export', {
-          account_id: this.curAcc, session_id: this.curSess,
+          session_id: this.curSess,
         })
         const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' })
         const a = document.createElement('a')
@@ -1056,7 +865,7 @@ const Chats = {
       this.busy = 'purge'
       try {
         const r = await callData('qqbot.chat.purge_media', {
-          account_id: this.curAcc, session_id: this.curSess, confirm: true,
+          session_id: this.curSess, confirm: true,
         })
         toast('已清理 ' + (r.files || 0) + ' 个文件，释放 ' + this.bytes(r.bytes || 0), 'ok')
         await this.loadStats()
@@ -1096,28 +905,6 @@ const Chats = {
     </div>
 
     <div class="rcq-chats">
-      <!-- 账号栏 -->
-      <div class="rcq-chatcol">
-        <div class="hd"><b>账号</b></div>
-        <div class="bd">
-          <div class="rcq-cpick" :class="{ on: !curAcc }" @click="pickAcc('')">
-            <div class="av" style="display:flex;align-items:center;justify-content:center;font-size:11px">全</div>
-            <div class="tx"><b>全部账号</b></div>
-          </div>
-          <div class="rcq-cpick" v-for="a in accounts" :key="a.uin"
-            :class="{ on: curAcc === a.uin }" @click="pickAcc(a.uin)">
-            <img class="av" :src="a.avatar" alt="" v-if="a.avatar" />
-            <div class="av" v-else style="display:flex;align-items:center;justify-content:center;font-size:11px">
-              {{ (a.nick || a.uin || '?').slice(0, 1) }}
-            </div>
-            <div class="tx">
-              <b>{{ a.nick || a.uin }}</b>
-              <span>{{ a.uin }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- 会话栏 -->
       <div class="rcq-chatcol">
         <div class="hd">
@@ -1158,7 +945,7 @@ const Chats = {
       <!-- 消息窗格 -->
       <div class="rcq-chatcol">
         <div class="hd">
-          <b>{{ curSess ? (accLabel) : '聊天记录' }}</b>
+          <b>聊天记录</b>
           <span class="rcq-hint" style="margin-left:auto">
             {{ curSess ? msgs.length + ' 条' : '左边选一个会话' }}
           </span>
