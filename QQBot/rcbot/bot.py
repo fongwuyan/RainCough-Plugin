@@ -11,6 +11,7 @@
 
   三者互不阻塞：记录功能坏了不能让机器人哑掉，应答策略调整不影响已存档内容。
 """
+import asyncio
 import base64
 import io
 import os
@@ -244,6 +245,9 @@ class Bot:
         # 拉不到就退回"裸 QQ 号"显示（见 profile.display_name）。
         self._friend_names = {}
         self._group_avatars = {}
+        # 群主 QQ 号：群头像的正确 URL 需要它
+        # （https://p.qlogo.cn/gh/<群号>/<群主QQ号>/<尺寸>）
+        self._group_owners = {}
         self.last_error = ''
 
     # ---------------- 引用消息：reply 段只给 id，得再查一次
@@ -385,6 +389,11 @@ class Bot:
             await self.fill_group_names(ob)
         except Exception as e:
             logbuf.debug('bot', '拉名字缓存失败：%s' % str(e)[:120])
+        # 群主（为了群头像）放到后台慢慢拉：大群成员列表很大，不能挡住连接
+        try:
+            asyncio.create_task(self.fill_group_owners(ob))
+        except Exception as e:
+            logbuf.debug('bot', '拉群主失败：%s' % str(e)[:120])
 
     async def _maybe_reply(self, ev, account_id, acct_cfg):
         cfg = config.load()
@@ -597,15 +606,57 @@ class Bot:
         except Exception as e:
             logbuf.debug('bot', '拉好友列表失败：%s' % str(e)[:120])
 
+    async def fill_group_owners(self, ob=None):
+        """缓存群主 QQ 号（群头像要用）。
+
+        群主只能从 get_group_member_list 的 role=='owner' 里拿，
+        大群几千个成员、响应很大，所以：
+          · 只拉**会话里出现过**的群，不拉全量群列表
+          · 并发压到 3，后台跑，不阻塞连接
+        """
+        ob = ob or self.ob
+        if ob is None:
+            return
+        gids = []
+        try:
+            rows = await chats.list_sessions(limit=200)
+            gids = [str(r.get('target_id') or '') for r in rows
+                    if str(r.get('kind') or '') == 'group' and r.get('target_id')]
+        except Exception:
+            gids = list(self._group_names.keys())
+        if not gids:
+            return
+        sem = asyncio.Semaphore(3)
+
+        async def one(gid):
+            if not gid or gid in self._group_owners:
+                return
+            async with sem:
+                try:
+                    ml = await ob.call('get_group_member_list',
+                                       {'group_id': int(gid)}, timeout=40)
+                    for m in (ml.get('data') or []):
+                        if str(m.get('role')) == 'owner':
+                            self._group_owners[gid] = str(m.get('user_id') or '')
+                            break
+                except Exception as e:
+                    logbuf.debug('bot', '取群主失败 %s：%s' % (gid, str(e)[:80]))
+
+        await asyncio.gather(*[one(g) for g in gids])
+        if self._group_owners:
+            logbuf.info('bot', '群主已缓存 %d 个' % len(self._group_owners))
+
     def group_display(self, gid):
         """群会话的显示名 + 头像。
 
-        群头像 QQ 没有公开直链（不像个人头像是 qlogo），
-        所以头像用"群号当 QQ 号"去 qlogo 取 —— 取不到时前端显示占位圆。
+        ★ 头像不能用"群号当 QQ 号"去 qlogo 取 —— 群号也是 9~10 位数字，
+          落在合法 QQ 号区间，qlogo 会返回**某个陌生人的头像**
+          （实测每个群都不一样，全是随机路人）。详见 profile.group_avatar_url。
         """
         gid = str(gid or '')
         name = profile.clean_name(self._group_names.get(gid, ''))
-        return name or gid, profile.avatar_url(gid)
+        owner = self._group_owners.get(gid, '')
+        return name or gid, profile.group_avatar_url(gid, owner)
 
     def friend_display(self, uid):
         """私聊会话的显示名 + 头像。"""

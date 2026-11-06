@@ -65,6 +65,34 @@ def avatar_url(uin, size=100):
     return '%s/g?b=qq&nk=%s&s=%d' % (_AVA_HOSTS[0], u, int(size))
 
 
+def group_avatar_url(gid, owner='', size=100):
+    """群头像 URL。
+
+    ★ 群头像**不能**用个人头像接口：
+        https://q1.qlogo.cn/g?b=qq&nk=<群号>
+      群号也是 9~10 位数字，落在合法 QQ 号区间，qlogo 会返回**某个陌生人的头像**
+      （实测每个群返回的图都不一样 —— 全是随机路人，界面上特别违和）。
+
+    群头像的正确格式是 QQ 的群头像接口：
+        https://p.qlogo.cn/gh/<群号>/<群主QQ号>/<尺寸>
+      但实测（2026-11-06）对这些群 CDN 一律返回同一张默认占位图
+      （1657 字节的"两个人"图标），换 UA / 加 Referer 也一样 —— 说明这些群的
+      自定义群头像不对外公开。
+
+    所以这里的取舍：**优先用群主的个人头像**
+    （QQ 的老行为就是：群没自定义群头像时，群里显示的就是群主头像），
+    至少是真的、和群相关的图；拿不到群主再退回官方群头像接口（占位图也比
+    陌生人的照片强）。
+    """
+    g = str(gid or '').strip()
+    o = str(owner or '').strip()
+    if o.isdigit():
+        return avatar_url(o, size)
+    if g.isdigit():
+        return 'https://p.qlogo.cn/gh/%s/%s/%d' % (g, g, int(size))
+    return ''
+
+
 def display_name(uin, nick='', card=''):
     """显示名：群名片 > 昵称 > QQ 号。
 
