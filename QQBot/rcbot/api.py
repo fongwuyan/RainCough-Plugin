@@ -512,9 +512,10 @@ def make_app(mgr, bot):
         b = await _body(request)
         sid = str(b.get('session_id') or '')
         text = str(b.get('text') or '')
+        segs = b.get('segs') if isinstance(b.get('segs'), list) else None
         if not sid:
             return bad('缺少 session_id')
-        if not text.strip():
+        if not text.strip() and not segs:
             return bad('消息内容为空')
         parts = sid.split(':')
         if len(parts) < 3 or not parts[2]:
@@ -524,7 +525,7 @@ def make_app(mgr, bot):
             return bad('不支持的会话类型：%s' % kind)
         reply_id = str(b.get('reply_id') or '')
         try:
-            rec = await bot.send_manual(kind, target, text, reply_id=reply_id)
+            rec = await bot.send_manual(kind, target, text, reply_id=reply_id, segs=segs)
         except Exception as e:
             return bad(str(e)[:200])
         return ok(rec)

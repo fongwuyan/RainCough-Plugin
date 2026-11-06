@@ -527,29 +527,34 @@ class Bot:
                 logbuf.error('bot', '发送失败：%s' % str(e)[:200])
                 break
 
-    async def send_manual(self, kind, target, text, reply_id=''):
+    async def send_manual(self, kind, target, text, reply_id='', segs=None):
         """面板「消息」页手动发一条文本。返回入库后的记录（前端直接替换乐观消息）。
 
         ★ 与机器人自动回复共用同一条发送路径（ob.send_text），
           所以 http/ws、token、群/私聊差异都不用再处理一遍。
         """
         text = str(text or '')
-        if not text.strip():
-            raise RuntimeError('消息内容为空')
         if self.ob is None:
             raise RuntimeError('QQ 还没连上')
+        # 允许前端直接给段数组（表情 / @ / 混排）；只给文本时退回纯文本发送
+        use = []
+        for s0 in (segs or []):
+            if isinstance(s0, dict) and s0.get('type') in ('text', 'face', 'at', 'image', 'mface'):
+                use.append(s0)
+        if not use and text.strip():
+            use = [{'type': 'text', 'data': {'text': text}}]
+        if not use:
+            raise RuntimeError('消息内容为空')
+        if not text.strip():
+            text = chats.seg_text(use)
         # 带引用发送：reply 段要放在最前，QQ 才会渲染成"引用回复"
-        if reply_id:
-            segs0 = [{'type': 'reply', 'data': {'id': str(reply_id)}},
-                     {'type': 'text', 'data': {'text': text}}]
-            if kind == 'group':
-                r = await self.ob.call('send_group_msg',
-                                       {'group_id': int(target), 'message': segs0})
-            else:
-                r = await self.ob.call('send_private_msg',
-                                       {'user_id': int(target), 'message': segs0})
+        msg = [{'type': 'reply', 'data': {'id': str(reply_id)}}] + use if reply_id else use
+        if kind == 'group':
+            r = await self.ob.call('send_group_msg',
+                                   {'group_id': int(target), 'message': msg})
         else:
-            r = await self.ob.send_text(kind, target, text)
+            r = await self.ob.call('send_private_msg',
+                                   {'user_id': int(target), 'message': msg})
         if not isinstance(r, dict) or r.get('status') != 'ok':
             raise RuntimeError('发送失败：%s' % str((r or {}).get('wording') or (r or {}).get('retcode') or r)[:160])
         data = (r or {}).get('data') or {}
@@ -563,9 +568,7 @@ class Bot:
             nick = str(((info or {}).get('data') or {}).get('nickname') or '')
         except Exception:
             pass
-        segs = [{'type': 'text', 'data': {'text': text}}]
-        if reply_id:
-            segs = [{'type': 'reply', 'data': {'id': str(reply_id)}}] + segs
+        segs = msg
         cfg = config.load()
         account_id = config.account_id(uin)
         created = int(time.time())
