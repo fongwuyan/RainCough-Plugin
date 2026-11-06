@@ -1240,6 +1240,15 @@ def chat_forward(params):
     return {"ok": True, "data": _data("/api/chat/forward?" + qs, timeout=45)}
 
 
+@rc.interface("qqbot.chat.session_ui")
+def chat_session_ui(params):
+    """保存会话 UI 状态（置顶 / 免打扰 / 已读位置 / 草稿）。"""
+    p = dict(params or {})
+    if not p.get("session_id"):
+        raise RuntimeError("缺少 session_id")
+    return {"ok": True, "data": _data("/api/chat/session-ui", "POST", p, timeout=20)}
+
+
 @rc.interface("qqbot.chat.recall")
 def chat_recall(params):
     """撤回一条消息（自己的、2 分钟内最稳）。"""
@@ -1557,7 +1566,7 @@ IFACES = [
     # 后端切换（NapCat / SnowLuma）
     "qqbot.backend.get", "qqbot.backend.set",
     "qqbot.chat.sessions", "qqbot.chat.messages", "qqbot.chat.stats",
-    "qqbot.chat.recall", "qqbot.chat.forward",
+    "qqbot.chat.recall", "qqbot.chat.forward", "qqbot.chat.session_ui",
     "qqbot.chat.export", "qqbot.chat.purge_media",
     # 查询 / 清空会话 / 媒体库
     "qqbot.chat.query", "qqbot.chat.senders", "qqbot.chat.clear_session",

@@ -118,6 +118,19 @@ CREATE TABLE IF NOT EXISTS accounts (
   updated_at  INTEGER DEFAULT 0
 );
 
+-- ★ 会话 UI 状态（置顶 / 免打扰 / 已读位置 / 草稿）
+--   这些是"客户端状态"，但放服务端才有意义：换设备也能记住置顶与已读。
+CREATE TABLE IF NOT EXISTS session_ui (
+  session_id   TEXT PRIMARY KEY,
+  account_id   TEXT    DEFAULT '',
+  pinned       INTEGER DEFAULT 0,
+  muted        INTEGER DEFAULT 0,
+  collapsed    INTEGER DEFAULT 0,
+  last_read_id INTEGER DEFAULT 0,
+  draft        TEXT    DEFAULT '',
+  updated_at   INTEGER DEFAULT 0
+);
+
 -- ★ 合并转发展开缓存
 --   QQ 的合并转发在消息里只有一个不透明的 forward id，
 --   展开要再问 OneBot。展开一次后把节点（含已落盘的图片路径）存下来，

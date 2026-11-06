@@ -520,6 +520,23 @@ def make_app(mgr, bot):
             return bad(str(e)[:200])
         return ok(data)
 
+    async def chat_session_ui(request):
+        """会话 UI 状态：置顶 / 免打扰 / 已读位置 / 草稿。"""
+        b = await _body(request)
+        sid = str(b.get('session_id') or '')
+        if not sid:
+            return bad('缺少 session_id')
+        try:
+            data = await chats.save_session_ui(
+                sid,
+                pinned=b.get('pinned'),
+                muted=b.get('muted'),
+                last_read_id=b.get('last_read_id'),
+                draft=b.get('draft'))
+        except Exception as e:
+            return bad(str(e)[:200])
+        return ok(data)
+
     async def chat_recall(request):
         """撤回消息：调 OneBot delete_msg，成功后在库里打撤回标记。"""
         b = await _body(request)
@@ -699,6 +716,7 @@ def make_app(mgr, bot):
     app.router.add_get('/api/chat/stats', chat_stats)
     app.router.add_get('/api/chat/export', chat_export)
     app.router.add_post('/api/chat/recall', chat_recall)
+    app.router.add_post('/api/chat/session-ui', chat_session_ui)
     app.router.add_get('/api/chat/forward', chat_forward)
     app.router.add_post('/api/chat/purge-media', chat_purge_media)
     app.router.add_get('/api/chat/media-check', chat_media_check)

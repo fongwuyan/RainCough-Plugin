@@ -395,6 +395,72 @@ async def _tombstone(account_id, msg_id, by, kind, target=''):
 
 # ---------------------------------------------------------------- 查询
 
+async def save_session_ui(session_id, pinned=None, muted=None,
+                          last_read_id=None, draft=None, account_id=''):
+    """保存会话的置顶 / 免打扰 / 已读位置 / 草稿。
+
+    只传要改的字段，其余保持原值。
+    """
+    sid = str(session_id or '')
+    if not sid:
+        raise ValueError('缺少 session_id')
+    cur = await store._db.execute(
+        'SELECT * FROM session_ui WHERE session_id=?', (sid,))
+    row = await cur.fetchone()
+    old = dict(row) if row else {}
+    pinned_v = int(old.get('pinned') or 0) if pinned is None else (1 if pinned else 0)
+    muted_v = int(old.get('muted') or 0) if muted is None else (1 if muted else 0)
+    collapsed_v = int(old.get('collapsed') or 0)
+    lr_v = int(old.get('last_read_id') or 0) if last_read_id is None else int(last_read_id)
+    draft_v = old.get('draft') or '' if draft is None else str(draft)
+    acc = account_id or old.get('account_id') or ''
+    await store._db.execute(
+        'INSERT OR REPLACE INTO session_ui(session_id, account_id, pinned, muted,'
+        ' collapsed, last_read_id, draft, updated_at) VALUES(?,?,?,?,?,?,?,?)',
+        (sid, acc, pinned_v, muted_v, collapsed_v, lr_v, draft_v, int(time.time())))
+    await store._db.commit()
+    return {'session_id': sid, 'pinned': pinned_v, 'muted': muted_v,
+            'last_read_id': lr_v, 'draft': draft_v}
+
+
+async def _attach_session_ui(rows):
+    """给会话列表补上置顶 / 免打扰 / 未读数。
+
+    未读 = 该会话里 id 大于 last_read_id 的消息条数。
+    没有 last_read_id（从没打开过）就按 0 算 —— 免得第一次进来满屏红点。
+    """
+    if not rows:
+        return
+    sids = [r['session_id'] for r in rows]
+    marks = ', '.join('?' * len(sids))
+    try:
+        cur = await store._db.execute(
+            'SELECT session_id, pinned, muted, last_read_id, draft'
+            ' FROM session_ui WHERE session_id IN (%s)' % marks, sids)
+        ui = {r['session_id']: dict(r) for r in await cur.fetchall()}
+    except Exception:
+        ui = {}
+    for r in rows:
+        u = ui.get(r['session_id']) or {}
+        lr = int(u.get('last_read_id') or 0)
+        r['pinned'] = int(u.get('pinned') or 0)
+        r['muted'] = int(u.get('muted') or 0)
+        r['last_read_id'] = lr
+        r['draft'] = u.get('draft') or ''
+        r['unread'] = 0
+        if lr:
+            try:
+                cur2 = await store._db.execute(
+                    'SELECT COUNT(*) FROM chat_logs WHERE session_id=? AND id>?',
+                    (r['session_id'], lr))
+                row2 = await cur2.fetchone()
+                r['unread'] = int(row2[0]) if row2 else 0
+            except Exception:
+                r['unread'] = 0
+    # 置顶的排前面，其余按最后一条消息时间倒序
+    rows.sort(key=lambda r: (-int(r.get('pinned') or 0), -int(r.get('last_at') or 0)))
+
+
 async def list_sessions(account_id='', kind='', keyword='', limit=200):
     """会话列表（按最后一条消息时间倒序）。
 
@@ -425,6 +491,7 @@ async def list_sessions(account_id='', kind='', keyword='', limit=200):
         pass
     cur = await store._db.execute(sql, args)
     rows = [dict(r) for r in await cur.fetchall()]
+    await _attach_session_ui(rows)
     if keyword:
         k = ('%' + keyword.lower() + '%')
         keep = []
