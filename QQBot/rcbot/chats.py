@@ -913,7 +913,7 @@ async def transcode_media(ids):
 
     返回 {ok, failed, items}。
     """
-    from . import ffmpeg
+    from . import ffmpeg, silk
     root = media_root()
     done = 0
     failed = 0
@@ -934,9 +934,18 @@ async def transcode_media(ids):
         # ★ 用原子转码：先写临时文件，成功了才替换。
         #   历史语音文件后缀是 .mp3 但内容是 AMR，直接输出到同名文件会被
         #   ffmpeg 拒绝（输入输出同路径），失败清理还会把原件删掉。
-        kind = 'audio' if r['kind'] == 'record' else 'video'
-        new_path, new_mime = await ffmpeg.convert_atomic(p, kind)
-        ok = bool(new_path)
+        # ★ SILK（SnowLuma 的 QQ 原生语音）ffmpeg 解不了，得先过 pilk。
+        if r['kind'] == 'record' and silk.is_silk(p):
+            dst = os.path.splitext(p)[0] + '.mp3'
+            if dst == p:
+                dst = p + '.conv.mp3'
+            ok = await silk.to_mp3(p, dst)
+            new_path = dst if ok else ''
+            new_mime = 'audio/mpeg' if ok else ''
+        else:
+            kind = 'audio' if r['kind'] == 'record' else 'video'
+            new_path, new_mime = await ffmpeg.convert_atomic(p, kind)
+            ok = bool(new_path)
         if ok:
             new_rel = os.path.relpath(new_path, root).replace(os.sep, '/')
             try:

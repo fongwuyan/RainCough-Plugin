@@ -26,7 +26,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rcplugin as rc  # noqa: E402
-from rcbot import backend, single  # noqa: E402  后端适配（NapCat / SnowLuma）
+from rcbot import backend, single, snowluma  # noqa: E402  后端适配（NapCat / SnowLuma）
 from rcbot import logbuf as _logbuf  # noqa: E402
 
 NAME = "QQBot"          # ★ 必须与插件目录名一致（目录名即插件身份，不改）
@@ -1031,12 +1031,17 @@ def account_logs_clear(params):
 @rc.interface("qqbot.backend.get")
 def backend_get(params):
     """当前后端与可选值。"""
+    # ★ NapCat 可能已经被卸掉了（生产机上换成 SnowLuma 后删除）。
+    #   这里如实告诉前端"装没装"，前端据此把选项置灰 ——
+    #   否则用户一切换就报"服务不存在"，看着像面板坏了。
+    napcat_ok = os.path.isdir(single.BASE) and os.path.isdir(single.INST_BASE)
+    snow_ok = snowluma.docker_ok() if hasattr(snowluma, "docker_ok") else True
     return {"ok": True, "data": {
         "kind": backend.kind(),
         "options": [
-            {"value": "napcat", "label": "NapCat（原生安装）",
+            {"value": "napcat", "label": "NapCat（原生安装）", "installed": bool(napcat_ok),
              "desc": "宿主机上直接跑 QQ，扫码后由 NapCat 出二维码图片"},
-            {"value": "snowluma", "label": "SnowLuma（Docker）",
+            {"value": "snowluma", "label": "SnowLuma（Docker）", "installed": bool(snow_ok),
              "desc": "整包跑在 Docker 里，扫码要在内嵌的远程桌面里操作"},
         ],
         "snowluma": {
@@ -1054,6 +1059,9 @@ def backend_set(params):
     k = str((params or {}).get("kind") or "").strip().lower()
     if k not in ("napcat", "snowluma"):
         raise RuntimeError("kind 只能是 napcat 或 snowluma")
+    # NapCat 已卸载时别让它切过去（切了只会连不上，还得手动改回来）
+    if k == "napcat" and not (os.path.isdir(single.BASE) and os.path.isdir(single.INST_BASE)):
+        raise RuntimeError("NapCat 已经不在本机了（/opt/napcat 不存在），只能继续用 SnowLuma")
     old = backend.kind()
     backend.set_kind(k)
     # 切换后 OneBot 端口变了，rcbot 的账号表要跟着改

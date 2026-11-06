@@ -334,6 +334,10 @@ def sniff_audio(data):
     """按魔数判断音频真实格式。返回 (ext, mime)。"""
     if not data or len(data) < 12:
         return '', ''
+    # ★ QQ 原生语音：SILK v3，头是 "\x02#!SILK_V3"（前面那个 0x02 是帧长前缀）。
+    #   千万不能落到下面的 AMR 判断里 —— 文件名一直叫 .amr，但内容 ffmpeg 解不了。
+    if b'#!SILK' in bytes(data[:12]):
+        return '.silk', 'audio/silk'
     if data.startswith(b'#!AMR'):
         return '.amr', 'audio/amr'
     if data.startswith(b'RIFF') and data[8:12] == b'WAVE':

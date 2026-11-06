@@ -28,7 +28,7 @@ import time
 
 import aiohttp
 
-from . import ffmpeg, logbuf
+from . import ffmpeg, logbuf, silk
 
 MAX_BYTES = 200 * 1024 * 1024
 
@@ -234,9 +234,18 @@ async def _process(t, full, rel, entry, root, account_id, msg_id,
 async def _transcode_audio(full, rel, entry, root, keep_silk):
     """语音 → mp3。
 
-    没有 ffmpeg / 解不了（silk）就保留原文件并标成不可播放，
-    前端会显示下载按钮而不是播放器。
+    ★ SILK 走单独分支：SnowLuma 给的是 QQ 原生 SILK，ffmpeg 没有解码器，
+      必须先用 pilk 解成 wav（见 rcbot/silk.py），再转 mp3。
+      没装 pilk / 解不开就保留原文件、标成不可播放（前端显示下载按钮）。
     """
+    if silk.is_silk(full):
+        if await _silk_to_mp3(full, entry, root, keep_silk):
+            return
+        entry['mime'] = 'audio/silk'
+        entry['playable'] = 0
+        entry['transcode'] = 'failed'
+        return
+
     # ★ 原子转码：先写临时文件，成功才替换。
     #   历史语音文件后缀是 .mp3 但内容是 AMR —— 直接输出到同名文件会被
     #   ffmpeg 拒绝（输入输出同路径），失败清理还会把原件删掉。
@@ -261,6 +270,38 @@ async def _transcode_audio(full, rel, entry, root, keep_silk):
         entry['mime'] = entry.get('mime') or 'audio/amr'
         entry['playable'] = 0
         entry['transcode'] = 'failed'
+
+
+async def _silk_to_mp3(full, entry, root, keep_silk):
+    """SILK → wav → mp3，成功返回 True。
+
+    pilk 只解 SILK，出来的 wav 是 24kHz 单声道；转 mp3 仍走 ffmpeg。
+    """
+    if not silk.available():
+        logbuf.warn('media', '收到 SILK 语音但没装 pilk，转不了：%s' % os.path.basename(full))
+        return False
+    dst = os.path.splitext(full)[0] + '.mp3'
+    if dst == full:                     # 理论上不会，保险
+        dst = full + '.conv.mp3'
+    if not await silk.to_mp3(full, dst):
+        logbuf.debug('media', 'SILK 解码失败：%s' % os.path.basename(full))
+        return False
+    try:
+        size = os.path.getsize(dst)
+    except Exception:
+        size = 0
+    entry['rel'] = os.path.relpath(dst, root).replace(os.sep, '/')
+    entry['bytes'] = size
+    entry['mime'] = 'audio/mpeg'
+    entry['playable'] = 1
+    entry['transcode'] = 'done'
+    if not keep_silk:
+        try:
+            os.remove(full)
+        except Exception:
+            pass
+    logbuf.info('media', 'SILK 已转 mp3：%s（%d 字节）' % (os.path.basename(dst), size))
+    return True
 
 
 async def _transcode_video_bg(full, rel, entry, root, account_id, msg_id, mode):
