@@ -11,7 +11,7 @@ import time
 
 from aiohttp import web
 
-from . import chats, compress, config, forward, llm, logbuf, media, search, store
+from . import chats, compress, config, forward, group_avatar, llm, logbuf, media, search, store
 from .bot import attach_images
 
 
@@ -480,11 +480,18 @@ def make_app(mgr, bot):
         #   （fill_group_names 没有调用点）→ 群名一直是裸群号。
         #   现在名字由 Bot.group_display / friend_display 提供，
         #   拿不到时退回 QQ 号，头像按 QQ 号从 qlogo 取。
+        # 本机托管的真实群头像（从 QQ 客户端缓存捞出来的）优先
+        local = await group_avatar.local_map()
         for r in rows:
             kind = str(r.get('kind') or '')
             tid = str(r.get('target_id') or '')
             if kind == 'group':
                 name, av = bot.group_display(tid)
+                p = local.get(tid)
+                if p and os.path.isfile(p):
+                    # 绝对路径交给插件层转成预览 URL
+                    r['avatar_path'] = p
+                    av = ''
             else:
                 name, av = bot.friend_display(tid)
             r['display'] = name or tid

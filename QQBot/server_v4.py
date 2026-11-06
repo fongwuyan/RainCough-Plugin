@@ -1211,8 +1211,13 @@ def chat_sessions(params):
         if p.get(k) not in (None, ""):
             q[k] = p[k]
     qs = urllib.parse.urlencode(q)
-    return {"ok": True, "data": _data("/api/chat/sessions" + ("?" + qs if qs else ""),
-                                       timeout=30)}
+    data = _data("/api/chat/sessions" + ("?" + qs if qs else ""), timeout=30)
+    # 本机托管的群头像给的是绝对路径，这里转成面板预览 URL（浏览器直接能取）
+    for it in ((data or {}).get("items") or []):
+        ap = it.get("avatar_path")
+        if ap:
+            it["avatar"] = "/api/fm/preview?path=" + urllib.parse.quote(str(ap))
+    return {"ok": True, "data": data}
 
 
 @rc.interface("qqbot.chat.messages")

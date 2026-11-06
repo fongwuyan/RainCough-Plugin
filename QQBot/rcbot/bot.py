@@ -19,7 +19,7 @@ import time
 
 import aiohttp
 
-from . import chats, compress, config, llm, logbuf, media, profile, store
+from . import chats, compress, config, group_avatar, llm, logbuf, media, profile, store
 
 MAX_REPLY_CHARS = 3000
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
@@ -394,6 +394,13 @@ class Bot:
             asyncio.create_task(self.fill_group_owners(ob))
         except Exception as e:
             logbuf.debug('bot', '拉群主失败：%s' % str(e)[:120])
+        # 真正的群头像：扫 QQ 客户端内存找映射，再把缓存文件托管到本机
+        # （耗时几十秒，放后台，不挡连接）
+        try:
+            asyncio.create_task(self.sync_group_avatars())
+            asyncio.create_task(self._avatar_sync_loop())
+        except Exception as e:
+            logbuf.debug('bot', '同步群头像失败：%s' % str(e)[:120])
 
     async def _maybe_reply(self, ev, account_id, acct_cfg):
         cfg = config.load()
@@ -645,6 +652,37 @@ class Bot:
         await asyncio.gather(*[one(g) for g in gids])
         if self._group_owners:
             logbuf.info('bot', '群主已缓存 %d 个' % len(self._group_owners))
+
+    async def _avatar_sync_loop(self):
+        """每 6 小时补一次群头像（新会话的群、或者客户端新缓存的图）。"""
+        while True:
+            try:
+                await asyncio.sleep(6 * 3600)
+                await self.sync_group_avatars()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logbuf.debug('bot', '定时同步群头像失败：%s' % str(e)[:120])
+
+    async def sync_group_avatars(self):
+        """把 QQ 客户端缓存里的真实群头像捞出来托管到本机。
+
+        群头像的 CDN 接口对外只给默认占位图，真正的图只有客户端本地有，
+        映射关系在 QQ 进程内存里 —— 详见 rcbot/group_avatar.py。
+        """
+        try:
+            rows = await chats.list_sessions(limit=200)
+            gids = [str(r.get('target_id') or '') for r in rows
+                    if str(r.get('kind') or '') == 'group' and r.get('target_id')]
+        except Exception as e:
+            logbuf.debug('bot', '取群列表失败：%s' % str(e)[:120])
+            return
+        if not gids:
+            return
+        try:
+            await group_avatar.sync(gids)
+        except Exception as e:
+            logbuf.debug('bot', '同步群头像失败：%s' % str(e)[:160])
 
     def group_display(self, gid):
         """群会话的显示名 + 头像。
