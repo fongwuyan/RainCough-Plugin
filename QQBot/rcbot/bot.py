@@ -15,6 +15,7 @@ import asyncio
 import base64
 import io
 import os
+import re
 import time
 
 import aiohttp
@@ -24,6 +25,33 @@ from . import cards, chats, compress, config, group_avatar, llm, logbuf, media, 
 MAX_REPLY_CHARS = 3000
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_IMAGE_SIDE = 1536   # 长边；文字截图要看清，太小会糊
+
+
+# emoji / 装饰符号（模型很爱加，taboos 常常压不住，后端再兜一道）
+_EMOJI_RE = re.compile(
+    '[\U0001F000-\U0001FAFF'   # emoji 主区
+    '\U0001F1E6-\U0001F1FF'   # 国旗
+    '\u2600-\u27BF'           # 杂项符号与图形（✨ ✅ ❤ …）
+    '\uFE0E\uFE0F'            # 变体选择符
+    '\u200D'                 # ZWJ
+    '\U0001F3FB-\U0001F3FF]'  # 肤色修饰
+)
+
+
+def strip_emoji(text):
+    """去掉 emoji 与装饰符号。
+
+    ★ 为什么 prompt 里写了「不用 emoji」还要后端做：
+      模型（尤其 GLM）几乎条件反射地加 emoji，taboos 权重不够。
+      人设要的是「用文字表达情绪」，那就干脆不给它这个机会。
+    """
+    if not text:
+        return text
+    s = _EMOJI_RE.sub('', text)
+    # emoji 删掉后常留下多余空格 / 空白行
+    s = re.sub(r'[ \t]{2,}', ' ', s)
+    s = re.sub(r'\n{3,}', '\n\n', s)
+    return s.strip()
 
 
 def truncate_chars(text, limit):
@@ -556,6 +584,9 @@ class Bot:
             return
 
         reply = (reply or '').strip()
+        # emoji 兜底（卡片允许时才保留）
+        if not ((card or {}).get('style') or {}).get('allow_emoji'):
+            reply = strip_emoji(reply)
         if max_chars and len(reply) > max_chars:
             cut = truncate_chars(reply, max_chars)
             logbuf.info('bot', '回复超长（%d 字），按卡片上限截到 %d 字'

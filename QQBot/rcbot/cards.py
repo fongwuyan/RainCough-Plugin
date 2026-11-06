@@ -58,7 +58,8 @@ FIELDS = {
     'knowledge': [],
     'prompt': '',
     'model': {},              # {provider_id, model}
-    'style': {'temperature': 0.8, 'max_tokens': 512, 'max_chars': 0, 'color': ''},
+    'style': {'temperature': 0.8, 'max_tokens': 512, 'max_chars': 0,
+              'allow_emoji': False, 'color': ''},
     'context': {'keep_rounds': 20, 'compress_at': 20000},
     'proactive': {'enabled': False, 'rate': 0, 'window': ''},
     'tools': {'web_search': False, 'vision': False},

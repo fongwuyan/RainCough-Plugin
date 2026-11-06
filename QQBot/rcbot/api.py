@@ -12,7 +12,7 @@ import time
 from aiohttp import web
 
 from . import cards, chats, compress, config, forward, group_avatar, llm, logbuf, media, profile, search, store
-from .bot import attach_images, truncate_chars
+from .bot import attach_images, strip_emoji, truncate_chars
 
 
 def ok(data=None):
@@ -505,6 +505,82 @@ def make_app(mgr, bot):
     async def get_stats(request):
         return ok(await store.stats())
 
+    # ---------------- 随机挑消息回
+
+    async def random_reply(request):
+        """从聊天档案里**随机挑一条**消息，让机器人对它回一句。
+
+        「随机挑消息回」跟普通回复不一样：不是回当前这条，
+        而是从历史里随机翻一条出来回应 —— 有点「翻牌」的意思。
+
+        scope:
+          session —— 只在指定会话里挑
+          all     —— 整个聊天档案里挑（默认，更随机）
+        """
+        b = await _body(request)
+        sid = (b.get('sid') or '').strip()
+        scope = (b.get('scope') or 'all').strip()
+        cfg = config.load()
+        acct = config.default_account(cfg) or {}
+
+        sql = ("SELECT id, session_id, kind, target_id, sender_id, sender_name,"
+               " text, created_at FROM chat_logs"
+               " WHERE role='user' AND text<>'' AND recalled=0")
+        args = []
+        if scope == 'session' and sid:
+            sql += ' AND session_id=?'
+            args.append(sid)
+        sql += ' ORDER BY RANDOM() LIMIT 1'
+        cur = await store._db.execute(sql, args)
+        row = await cur.fetchone()
+        if not row:
+            return bad('没有可挑的消息')
+        picked = dict(row)
+
+        sess = await store.get_session(picked['session_id']) or {}
+        persona = config.get_persona(cfg, sess.get('persona_id'), acct)
+        chain = config.provider_chain(cfg, sess.get('provider_id'), acct)
+        if not chain:
+            return bad('没有可用的模型提供商')
+        system = (persona or {}).get('prompt') or ''
+        # 被挑中的那条当作用户输入；再给一句"这是随机挑的"的提示，
+        # 让模型知道自己在接哪一句
+        msgs = [{'role': 'user',
+                 'content': picked['text']}]
+        try:
+            reply, used = await llm.chat_chain(
+                chain, msgs, system=system,
+                max_tokens=int((cfg.get('context') or {}).get('max_output_tokens') or 4096))
+        except Exception as e:
+            return bad(e)
+        card = cards.find(cfg, sess.get('persona_id')
+                          or cfg.get('default_card') or cfg.get('default_persona') or '')
+        try:
+            mc = int(((card or {}).get('style') or {}).get('max_chars') or 0)
+        except Exception:
+            mc = 0
+        if mc:
+            reply = truncate_chars(reply, mc)
+        if not ((card or {}).get('style') or {}).get('allow_emoji'):
+            reply = strip_emoji(reply)
+        # 附上这条消息来自哪个会话，页面上好显示
+        title = sess.get('title') or picked.get('target_id') or ''
+        return ok({
+            'reply': reply,
+            'provider': (used or {}).get('id'),
+            'picked': {
+                'id': picked['id'],
+                'session_id': picked['session_id'],
+                'kind': picked['kind'],
+                'target_id': picked['target_id'],
+                'title': title,
+                'sender_id': picked['sender_id'],
+                'sender_name': picked['sender_name'],
+                'text': picked['text'],
+                'created_at': picked['created_at'],
+            },
+        })
+
     # ---------------- 上下文预览
 
     async def preview_context(request):
@@ -596,6 +672,8 @@ def make_app(mgr, bot):
                 mc = 0
             if mc:
                 reply = truncate_chars(reply, mc)
+            if not ((card or {}).get('style') or {}).get('allow_emoji'):
+                reply = strip_emoji(reply)
         except Exception as e:
             return bad(e)
         await store.add_message(sid, 'assistant', reply)
@@ -889,6 +967,7 @@ def make_app(mgr, bot):
 
     app.router.add_get('/api/logs', get_logs)
     app.router.add_get('/api/stats', get_stats)
+    app.router.add_post('/api/chat/random_reply', random_reply)
     app.router.add_get('/api/context', preview_context)
     app.router.add_get('/api/tools/search', tools_search)
     app.router.add_post('/api/test/chat', test_chat)
