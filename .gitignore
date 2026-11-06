@@ -16,6 +16,8 @@ __pycache__/
 !registry.json
 # 插件清单必须进仓: 市场 zipball 安装依赖 plugin.json(面板扫描/requirements 依据)
 !**/plugin.json
+# 角色卡片是**源文件**（可导入/分享），不是运行态配置，必须进仓
+!QQBot/cards/*.json
 !raincode/agent/package.json
 !raincode/agent/tsconfig.json
 !**/pojo/**
