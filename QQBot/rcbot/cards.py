@@ -28,7 +28,9 @@
 旧接口 /api/personas* 也保留（内部转到卡片），保证外部调用不炸。
 """
 import json
+import os
 import time
+import urllib.parse
 import uuid
 
 SCHEMA = 2
@@ -257,6 +259,54 @@ def export_card(c):
     """导出成可分享的 JSON（.rccard 的 card.json 部分）。"""
     c = normalize(c)
     return json.dumps(c, ensure_ascii=False, indent=2)
+
+
+# ---------------------------------------------------------------- 资产（图片）
+
+def media_root(cfg=None):
+    """媒体根目录：跟 chats.media_root() 一致（config.chat.media_dir 可覆盖）。"""
+    try:
+        from .chats import media_root as _mr
+        return _mr(cfg)
+    except Exception:
+        return os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'media')
+
+
+def asset_url(value, cfg=None):
+    """把卡片里的图片字段转成面板能直接打开的 URL。
+
+    卡片里存的是**相对媒体根目录**的可移植路径（cards/<id>/cover.jpg），
+    这样卡片导到别的机器也不会失效 —— 渲染时才拼成预览地址。
+
+    写法：
+      · http(s)://… / /api/…  → 原样返回（外链）
+      · cards/xxx.jpg         → 相对媒体根目录
+      · /opt/rcbot/media/…    → 绝对路径
+    文件不存在时返回空串（前端会退回渐变占位）。
+    """
+    v = str(value or '').strip()
+    if not v:
+        return ''
+    if v.startswith('http://') or v.startswith('https://') or v.startswith('//'):
+        return v
+    if v.startswith('/api/'):
+        return v
+    p = v if v.startswith('/') else os.path.join(media_root(cfg), v)
+    try:
+        if not os.path.isfile(p):
+            return ''
+    except Exception:
+        return ''
+    return '/api/fm/preview?path=' + urllib.parse.quote(p)
+
+
+def with_assets(cfg, card):
+    """给卡片补上可直接显示的 *_url 字段（原始字段保持不变，导出时可移植）。"""
+    c = dict(_as_dict(card))
+    for k in ('cover', 'avatar', 'portrait'):
+        c[k + '_url'] = asset_url(c.get(k), cfg)
+    return c
 
 
 def import_card(text):

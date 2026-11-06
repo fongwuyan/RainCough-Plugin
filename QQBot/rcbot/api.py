@@ -308,7 +308,7 @@ def make_app(mgr, bot):
     # ---------------- 角色卡片
     async def get_cards(request):
         cfg = config.load()
-        items = cards.list_cards(cfg)
+        items = [cards.with_assets(cfg, c) for c in cards.list_cards(cfg)]
         return ok({'items': items, 'default': cards.default_id(cfg),
                    'schema': cards.SCHEMA})
 
@@ -321,7 +321,7 @@ def make_app(mgr, bot):
         cfg = config.load()
         saved = cards.save(cfg, card, set_default=bool(b.get('set_default')))
         config.save(cfg)
-        return ok(saved)
+        return ok(cards.with_assets(cfg, saved))
 
     async def del_card(request):
         b = await _body(request)
@@ -341,7 +341,7 @@ def make_app(mgr, bot):
         if not c:
             return bad('找不到这张卡片')
         config.save(cfg)
-        return ok(c)
+        return ok(cards.with_assets(cfg, c))
 
     async def import_card(request):
         b = await _body(request)
@@ -352,7 +352,7 @@ def make_app(mgr, bot):
         cfg = config.load()
         saved = cards.save(cfg, c)
         config.save(cfg)
-        return ok(saved)
+        return ok(cards.with_assets(cfg, saved))
 
     async def export_card(request):
         q = request.query

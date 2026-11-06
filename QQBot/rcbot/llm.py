@@ -110,7 +110,11 @@ async def chat(provider, messages, system=None, max_tokens=2048, temperature=0.7
 
         # 默认按 OpenAI 兼容协议
         url = _join(base, '/chat/completions')
-        headers = {'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'}
+        headers = {'Content-Type': 'application/json'}
+        # ★ api_key 为空就别发 Authorization —— 有些免 key 的端点
+        #   （如 pollinations）收到空的 "Bearer " 会直接 401。
+        if key:
+            headers['Authorization'] = 'Bearer ' + key
         msgs = ([{'role': 'system', 'content': system}] if system else []) + list(messages)
 
         use_tools = bool(tools) and bool(tool_runner)
@@ -159,9 +163,10 @@ async def chat(provider, messages, system=None, max_tokens=2048, temperature=0.7
             if calls:
                 # 轮数用完了还在调工具：直接把最后一次结果拼成文本兜底
                 raise LLMError('模型连续 %d 轮都在调用工具，没有给出回答' % (max_rounds + 1))
-            # 推理模型（如 deepseek-flash）会先吐 reasoning_content，
+            # 推理模型会先吐 reasoning_content / reasoning，
             # max_tokens 给小了就会被推理吃光、content 为空。
-            reason = (msg.get('reasoning_content') or '').strip()
+            reason = ((msg.get('reasoning_content') or '')
+                      or (msg.get('reasoning') or '')).strip()
             fin = ch.get('finish_reason') or ''
             if fin == 'length':
                 raise LLMError('输出被截断（finish_reason=length），把「最大输出 tokens」调大再试')
@@ -196,8 +201,9 @@ async def list_models(provider):
         raise LLMError('没有 api_base')
     async with aiohttp.ClientSession() as sess:
         try:
+            headers = {'Authorization': 'Bearer ' + key} if key else {}
             async with sess.get(_join(base, '/models'),
-                                headers={'Authorization': 'Bearer ' + key},
+                                headers=headers,
                                 timeout=aiohttp.ClientTimeout(total=20)) as r:
                 data = await r.json(content_type=None)
                 items = data.get('data') if isinstance(data, dict) else data
