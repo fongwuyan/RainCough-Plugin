@@ -530,6 +530,28 @@ def make_app(mgr, bot):
             return bad(str(e)[:200])
         return ok(rec)
 
+    async def chat_send_media(request):
+        """发图片：前端先传到临时目录，这里按路径读取并发送。"""
+        b = await _body(request)
+        sid = str(b.get('session_id') or '')
+        path = str(b.get('path') or '')
+        if not sid:
+            return bad('缺少 session_id')
+        if not path:
+            return bad('缺少 path')
+        parts = sid.split(':')
+        if len(parts) < 3 or not parts[2]:
+            return bad('session_id 格式不对')
+        kind, target = parts[1], parts[2]
+        if kind not in ('group', 'private'):
+            return bad('不支持的会话类型：%s' % kind)
+        try:
+            rec = await bot.send_media(kind, target, path,
+                                       reply_id=str(b.get('reply_id') or ''))
+        except Exception as e:
+            return bad(str(e)[:200])
+        return ok(rec)
+
     async def chat_recall(request):
         """撤回消息：调 OneBot delete_msg，成功后在库里打撤回标记。"""
         b = await _body(request)
@@ -710,6 +732,7 @@ def make_app(mgr, bot):
     app.router.add_get('/api/chat/export', chat_export)
     app.router.add_post('/api/chat/send', chat_send)
     app.router.add_post('/api/chat/recall', chat_recall)
+    app.router.add_post('/api/chat/send-media', chat_send_media)
     app.router.add_post('/api/chat/purge-media', chat_purge_media)
     app.router.add_get('/api/chat/media-check', chat_media_check)
 

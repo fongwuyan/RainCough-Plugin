@@ -579,6 +579,71 @@ class Bot:
                 'sender_id': uin, 'sender_name': nick or '我', 'role': 'assistant',
                 'segs': segs, 'text': text, 'media': [], 'recalled': 0}
 
+    async def send_media(self, kind, target, path, reply_id=''):
+        """面板发图片。
+
+        ★ 不能给 OneBot 传宿主机路径：SnowLuma 跑在容器里，看不到 /opt/rcbot。
+          实测 file:// 直接 ENOENT；改成 base64:// 才通。
+        ★ 落库时**不能存 base64**（一张图几 MB，会把库撑爆），
+          只存一个轻量段，媒体实体按消息媒体流水线存到 media/ 下。
+        """
+        import base64 as _b64
+        import mimetypes
+
+        if not os.path.isfile(path):
+            raise RuntimeError('文件不存在：%s' % path)
+        ext = os.path.splitext(path)[1].lower()
+        if ext == '.jpeg':
+            ext = '.jpg'
+        if ext not in ('.jpg', '.png', '.gif', '.webp', '.bmp'):
+            raise RuntimeError('暂时只支持发图片（jpg/png/gif/webp/bmp）')
+        raw = open(path, 'rb').read()
+        if len(raw) > 6 * 1024 * 1024:
+            raise RuntimeError('图片太大（>6MB），先压缩再发')
+        if self.ob is None:
+            raise RuntimeError('QQ 还没连上')
+
+        seg = {'type': 'image', 'data': {'file': 'base64://' + _b64.b64encode(raw).decode()}}
+        msg = [{'type': 'reply', 'data': {'id': str(reply_id)}}] + [seg] if reply_id else [seg]
+        if kind == 'group':
+            r = await self.ob.call('send_group_msg',
+                                   {'group_id': int(target), 'message': msg}, timeout=60)
+        else:
+            r = await self.ob.call('send_private_msg',
+                                   {'user_id': int(target), 'message': msg}, timeout=60)
+        if not isinstance(r, dict) or r.get('status') != 'ok':
+            raise RuntimeError('发送失败：%s' % str((r or {}).get('wording') or (r or {}).get('retcode') or r)[:160])
+        data = (r or {}).get('data') or {}
+        msg_id = str(data.get('message_id') or '')
+        uin = str((data.get('sender') or {}).get('user_id') or getattr(self.ob, 'self_id', '') or '')
+        nick = ''
+        try:
+            info = await self.ob.call('get_login_info', timeout=8)
+            nick = str(((info or {}).get('data') or {}).get('nickname') or '')
+        except Exception:
+            pass
+        account_id = config.account_id(uin)
+        name = os.path.basename(path)
+        mime = mimetypes.guess_type(name)[0] or 'image/jpeg'
+        entry = await chats.save_outgoing_media(account_id, uin, msg_id or str(int(time.time())),
+                                                raw, ext, mime, name)
+        # 发完就清掉面板上传的临时文件，别让 /tmp 越堆越多
+        if path.startswith('/tmp/rc-im-upload'):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        segs = [{'type': 'image', 'data': {'file': name, 'summary': '[图片]'}}]
+        if reply_id:
+            segs = [{'type': 'reply', 'data': {'id': str(reply_id)}}] + segs
+        created = int(time.time())
+        row_id = await chats.record(account_id, kind, target, 'assistant', segs,
+                                    sender_id=uin, sender_name=nick or '我',
+                                    msg_id=msg_id, created_at=created, media=[entry])
+        return {'id': row_id, 'msg_id': msg_id, 'created_at': created, 'sender_id': uin,
+                'sender_name': nick or '我', 'role': 'assistant', 'segs': segs,
+                'text': '[图片]', 'media': [entry], 'recalled': 0}
+
     async def recall(self, msg_id):
         """撤回一条消息（只能撤回自己有权限的，QQ 通常限 2 分钟内）。"""
         mid = str(msg_id or '')

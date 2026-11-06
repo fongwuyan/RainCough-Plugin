@@ -71,6 +71,30 @@ def _json(v, default=''):
 
 # ---------------------------------------------------------------- 写入
 
+async def save_outgoing_media(account_id, account_uin, msg_id, data, ext, mime, name):
+    """把自己发出的图片落盘，返回媒体条目（与收到的媒体同一套目录规则）。
+
+    ★ 自己发的消息不会从事件流回来（reportSelfMessage=false），
+      媒体文件必须在这里补一份，否则气泡里只有个空白。
+    """
+    root = media_root()
+    day = time.strftime('%Y-%m-%d')
+    # 文件名安全化：media.py 里的 _safe_name 不导出，这里就地做一份最小实现
+    safe = ''.join(c if (c.isalnum() or c in '-_.') else '_' for c in str(msg_id or 'x'))[:60] or 'x'
+    rel = '%s/%s/%s_0%s' % (str(account_uin or 'unknown'), day, safe, ext)
+    full = os.path.join(root, rel)
+    try:
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, 'wb') as f:
+            f.write(data)
+    except Exception as e:
+        logbuf.warn('chat', '发送媒体落盘失败：%s' % str(e)[:120])
+        return {'kind': 'image', 'seg': 0, 'rel': '', 'bytes': len(data), 'mime': mime,
+                'local': 0, 'playable': 0, 'transcode': '', 'name': name}
+    return {'kind': 'image', 'seg': 0, 'rel': rel, 'bytes': len(data), 'mime': mime,
+            'local': 1, 'playable': 1, 'transcode': '', 'name': name}
+
+
 async def record(account_id, kind, target_id, role, segs, sender_id='', sender_name='',
                   msg_id='', created_at=0, session_id=None, media=None,
                   sender_avatar=''):
