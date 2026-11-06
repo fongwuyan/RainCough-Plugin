@@ -57,6 +57,15 @@ DEFAULT = {
     'features': {
         'web_search': {'enabled': False, 'max_results': 5},
         'vision': {'enabled': False, 'max_images': 3},
+        # ★ 随机挑消息回（消息页 🎲）
+        #   scope:
+        #     enabled_groups —— 只在「已启用」的群聊里挑（默认）
+        #     all_groups     —— 所有群聊
+        #     session        —— 只在当前会话里挑（前端临时切换）
+        'random_pick': {
+            'enabled': True,
+            'scope': 'enabled_groups',
+        },
     },
     # ★ 聊天记录（全量档案，与喂模型的上下文表分离）
     'chat': {

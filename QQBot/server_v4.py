@@ -1465,7 +1465,15 @@ def config_get(params):
 
 @rc.interface("rcbot.config.save")
 def config_save(params):
-    body = (params or {}).get("config") or {}
+    # ★ 兼容两种参数写法：
+    #   {config: {...}}  —— 规范写法
+    #   {context: {...}} —— 前端设置页的写法（整个 params 就是配置体）
+    #   ★ 以前只认第一种，而前端用的是第二种 —— 设置页的「上下文 / 触发规则 /
+    #     能力开关」三块保存其实一直是**静默失败**的（保存了但没生效）。
+    p = params or {}
+    body = p.get("config")
+    if not isinstance(body, dict):
+        body = {k: v for k, v in p.items() if k != "config"}
     return {"ok": True, "data": _data("/api/config", "POST", body)}
 
 

@@ -508,19 +508,23 @@ def make_app(mgr, bot):
     # ---------------- 随机挑消息回
 
     async def random_reply(request):
-        """从聊天档案里**随机挑一条**消息，让机器人对它回一句。
+        """从**已启用的群聊**里随机挑一条消息，让机器人对它回一句。
 
         「随机挑消息回」跟普通回复不一样：不是回当前这条，
         而是从历史里随机翻一条出来回应 —— 有点「翻牌」的意思。
 
-        scope:
-          session —— 只在指定会话里挑
-          all     —— 整个聊天档案里挑（默认，更随机）
+        范围由设置页决定（features.random_pick.scope）：
+          enabled_groups —— 只在「会话管理」里启用了的群聊里挑（默认）
+          all_groups     —— 所有群聊
+          session        —— 只在指定会话里挑（前端临时切换）
         """
         b = await _body(request)
         sid = (b.get('sid') or '').strip()
-        scope = (b.get('scope') or 'all').strip()
         cfg = config.load()
+        rp = (cfg.get('features') or {}).get('random_pick') or {}
+        if not rp.get('enabled', True):
+            return bad('随机挑消息回已关闭（设置 → 能力 → 允许随机挑消息回）')
+        scope = (b.get('scope') or rp.get('scope') or 'enabled_groups').strip()
         acct = config.default_account(cfg) or {}
 
         sql = ("SELECT id, session_id, kind, target_id, sender_id, sender_name,"
@@ -530,10 +534,19 @@ def make_app(mgr, bot):
         if scope == 'session' and sid:
             sql += ' AND session_id=?'
             args.append(sid)
+        elif scope in ('enabled_groups', 'all_groups'):
+            # ★ 用子查询而不是 IN (?,?,…) —— 群多了参数会超 SQLite 上限
+            if scope == 'enabled_groups':
+                sql += (" AND session_id IN"
+                        " (SELECT id FROM sessions WHERE enabled=1 AND kind='group')")
+            else:
+                sql += " AND session_id IN (SELECT id FROM sessions WHERE kind='group')"
         sql += ' ORDER BY RANDOM() LIMIT 1'
         cur = await store._db.execute(sql, args)
         row = await cur.fetchone()
         if not row:
+            if scope == 'enabled_groups':
+                return bad('没有已启用的群聊可挑 —— 先去「会话管理」把要用的群启用')
             return bad('没有可挑的消息')
         picked = dict(row)
 
