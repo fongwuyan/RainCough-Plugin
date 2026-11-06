@@ -387,7 +387,7 @@ async def _tombstone(account_id, msg_id, by, kind, target=''):
             'sender_name,sender_avatar,role,segs,text,media,recalled,recalled_by,recalled_at,created_at)'
             ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)',
             (account_id or '', sid, kind or '', str(target), str(msg_id or ''), '', '',
-             '', 'system', '[]', '[一条消息被撤回]', '[]', str(by or ''), _now(), _now()))
+             '', 'system', '[]', '有人撤回了一条消息', '[]', str(by or ''), _now(), _now()))
         await store._db.commit()
     except Exception as e:
         logbuf.debug('chat', '墓碑写入失败：%s' % str(e)[:120])

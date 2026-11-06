@@ -35,11 +35,18 @@ _AVA_HOSTS = ('https://q1.qlogo.cn', 'https://q2.qlogo.cn')
 _QQ_MARKUP = re.compile(r'<\$[^>]{0,32}>')
 _CTRL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 
+# ★ 不可见字符：BOM / 零宽空格 / 方向标记 / 软连字符 …
+#   Python 的 str.split() 不认为它们是空白，所以 '\ufeff \ufeffjvwoOIAO'
+#   这种昵称清洗后仍然是"看不见的开头"，界面上就像昵称丢了。
+#   注意别动 U+200C/U+200D（ZWJ）—— emoji 家庭组合靠它连着。
+_INVIS = re.compile(r'[\u200b\u200e\u200f\u2060\ufeff\u00ad\u180e]')
+
 
 def clean_name(s, limit=80):
     """清洗 QQ 名字：去表情占位符 / 控制字符，压缩空白。"""
     out = _QQ_MARKUP.sub('', str(s or ''))
     out = _CTRL.sub('', out)
+    out = _INVIS.sub('', out)
     # 落单的代理项（UTF-16 半个 emoji）会让 json 序列化炸掉，一并清掉
     out = ''.join(ch for ch in out if not (0xd800 <= ord(ch) <= 0xdfff))
     return ' '.join(out.split())[:limit]
