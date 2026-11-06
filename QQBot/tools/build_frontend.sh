@@ -15,7 +15,9 @@ DST="$CORE/plugins/$PLUGIN"
 
 echo "== 同步前端源码: $SRC/frontend → $DST/frontend"
 mkdir -p "$DST/frontend" "$DST/assets"
-cp -f "$SRC/frontend/"*.js "$SRC/frontend/"*.mjs "$DST/frontend/" 2>/dev/null || true
+# ★ 递归复制：frontend/ 下已有子目录（im/），只 cp *.js 会漏掉它们，
+#   构建时报 "Could not resolve ./im/shell.js"。
+cp -rf "$SRC/frontend/." "$DST/frontend/"
 
 echo "== 构建"
 node "$CORE/tools/build-plugin-frontend.js" "$PLUGIN"

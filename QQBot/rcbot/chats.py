@@ -384,7 +384,14 @@ async def list_sessions(account_id='', kind='', keyword='', limit=200):
     """
     sql = ('SELECT session_id, account_id, kind, target_id,'
            ' COUNT(*) AS msg_count, MAX(created_at) AS last_at,'
-           ' SUM(recalled) AS recalled_count'
+           ' SUM(recalled) AS recalled_count,'
+           # 会话列表右侧要显示的"最后一条消息"摘要 + 发送者：
+           # 取该会话 id 最大的一行，换行压成空格再截断。
+           ' (SELECT substr(replace(replace(c2.text, char(10), \' \'), char(13), \' \'), 1, 60)'
+           '    FROM chat_logs c2 WHERE c2.session_id = chat_logs.session_id'
+           '    ORDER BY c2.id DESC LIMIT 1) AS preview,'
+           ' (SELECT c2.sender_name FROM chat_logs c2 WHERE c2.session_id = chat_logs.session_id'
+           '    ORDER BY c2.id DESC LIMIT 1) AS preview_who'
            " FROM chat_logs WHERE target_id<>''")
     args = []
     if account_id:
@@ -435,6 +442,42 @@ async def list_messages(session_id, before_id=0, limit=50, keyword=''):
         r['segs'] = _loads(r.get('segs'), [])
         r['media'] = _loads(r.get('media'), [])
         _abs_media(r['media'])
+
+    # ★ 引用消息解析：OneBot 的 reply 段只给 message_id，不给原文。
+    #   这里一次性把被引用的消息查出来（批量 IN，不做 N+1），
+    #   前端就能直接显示"某某：……"，而不是干巴巴的占位。
+    rids = []
+    for r in rows:
+        for s in (r.get('segs') or []):
+            if isinstance(s, dict) and s.get('type') == 'reply':
+                mid = str((s.get('data') or {}).get('id') or '')
+                if mid:
+                    rids.append(mid)
+    if rids:
+        rids = list(set(rids))
+        q = ','.join('?' * len(rids))
+        try:
+            cur2 = await store._db.execute(
+                'SELECT msg_id, sender_name, text FROM chat_logs WHERE msg_id IN (%s)' % q,
+                rids)
+            hit = {str(x['msg_id']): dict(x) for x in await cur2.fetchall()}
+            for r in rows:
+                for s in (r.get('segs') or []):
+                    if isinstance(s, dict) and s.get('type') == 'reply':
+                        mid = str((s.get('data') or {}).get('id') or '')
+                        h = hit.get(mid)
+                        # 被引用消息自身的 text 可能已经带 "[引用]..." 前缀
+                        # （入库时把引用写进了正文），这里剥掉，避免套娃
+                        qt = ((h or {}).get('text') or '')
+                        if qt.startswith('[引用]'):
+                            qt = qt[4:].lstrip()
+                        r['quote'] = {
+                            'msg_id': mid,
+                            'sender': (h or {}).get('sender_name') or '',
+                            'text': qt[:80],
+                        }
+        except Exception as e:
+            logbuf.debug('chat', '引用解析失败：%s' % str(e)[:120])
     return list(reversed(rows))
 
 
