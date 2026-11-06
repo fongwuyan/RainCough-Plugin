@@ -340,10 +340,15 @@ async def mark_recalled(account_id, msg_id, by='', kind='', target=''):
     """
     if not msg_id:
         return 0
-    cur = await store._db.execute(
-        'UPDATE chat_logs SET recalled=1, recalled_by=?, recalled_at=?'
-        ' WHERE account_id=? AND msg_id=?',
-        (str(by or ''), _now(), account_id or '', str(msg_id)))
+    # account_id 为空表示"不限账号"（面板撤回时不知道账号，
+    # 只按 message_id 定位）—— 原来写死 AND account_id=? 会命中 0 行。
+    sql = ('UPDATE chat_logs SET recalled=1, recalled_by=?, recalled_at=?'
+           ' WHERE msg_id=?')
+    args = [str(by or ''), _now(), str(msg_id)]
+    if account_id:
+        sql += ' AND account_id=?'
+        args.append(account_id)
+    cur = await store._db.execute(sql, args)
     await store._db.commit()
     n = cur.rowcount or 0
     if n:
@@ -363,6 +368,19 @@ async def _tombstone(account_id, msg_id, by, kind, target=''):
         logbuf.debug('chat', '撤回墓碑跳过（不知道会话）：msg_id=%s' % msg_id)
         return
     sid = store.session_key(kind or 'private', str(target), 'public', account_id)
+    # ★ 通知事件带的 message_id 可能和发送时返回的不是同一个
+    #   （实测：自己通过面板撤回，delete_msg 回 652940071，而 friend_recall 通知是 1061180367）。
+    #   这时 mark_recalled 按 id 找不到会补墓碑，结果同一条撤回出现两行。
+    #   处理办法：该会话最近 30 秒内已经有一条"已撤回"记录，就不再补墓碑。
+    try:
+        cur0 = await store._db.execute(
+            'SELECT 1 FROM chat_logs WHERE session_id=? AND recalled=1 AND created_at>?'
+            ' ORDER BY id DESC LIMIT 1', (sid, _now() - 30))
+        if await cur0.fetchone():
+            logbuf.debug('chat', '撤回墓碑跳过（该会话刚撤回过）：msg_id=%s' % msg_id)
+            return
+    except Exception:
+        pass
     try:
         await store._db.execute(
             'INSERT INTO chat_logs(account_id,session_id,kind,target_id,msg_id,sender_id,'

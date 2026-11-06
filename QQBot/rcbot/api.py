@@ -522,11 +522,24 @@ def make_app(mgr, bot):
         kind, target = parts[1], parts[2]
         if kind not in ('group', 'private'):
             return bad('不支持的会话类型：%s' % kind)
+        reply_id = str(b.get('reply_id') or '')
         try:
-            rec = await bot.send_manual(kind, target, text)
+            rec = await bot.send_manual(kind, target, text, reply_id=reply_id)
         except Exception as e:
             return bad(str(e)[:200])
         return ok(rec)
+
+    async def chat_recall(request):
+        """撤回消息：调 OneBot delete_msg，成功后在库里打撤回标记。"""
+        b = await _body(request)
+        mid = str(b.get('msg_id') or '')
+        if not mid:
+            return bad('缺少 msg_id')
+        try:
+            r = await bot.recall(mid)
+        except Exception as e:
+            return bad(str(e)[:200])
+        return ok(r)
 
     async def chat_stats(request):
         account_id = request.query.get('account_id') or ''
@@ -695,6 +708,7 @@ def make_app(mgr, bot):
     app.router.add_get('/api/chat/stats', chat_stats)
     app.router.add_get('/api/chat/export', chat_export)
     app.router.add_post('/api/chat/send', chat_send)
+    app.router.add_post('/api/chat/recall', chat_recall)
     app.router.add_post('/api/chat/purge-media', chat_purge_media)
     app.router.add_get('/api/chat/media-check', chat_media_check)
 

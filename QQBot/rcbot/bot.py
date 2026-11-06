@@ -527,7 +527,7 @@ class Bot:
                 logbuf.error('bot', '发送失败：%s' % str(e)[:200])
                 break
 
-    async def send_manual(self, kind, target, text):
+    async def send_manual(self, kind, target, text, reply_id=''):
         """面板「消息」页手动发一条文本。返回入库后的记录（前端直接替换乐观消息）。
 
         ★ 与机器人自动回复共用同一条发送路径（ob.send_text），
@@ -538,7 +538,18 @@ class Bot:
             raise RuntimeError('消息内容为空')
         if self.ob is None:
             raise RuntimeError('QQ 还没连上')
-        r = await self.ob.send_text(kind, target, text)
+        # 带引用发送：reply 段要放在最前，QQ 才会渲染成"引用回复"
+        if reply_id:
+            segs0 = [{'type': 'reply', 'data': {'id': str(reply_id)}},
+                     {'type': 'text', 'data': {'text': text}}]
+            if kind == 'group':
+                r = await self.ob.call('send_group_msg',
+                                       {'group_id': int(target), 'message': segs0})
+            else:
+                r = await self.ob.call('send_private_msg',
+                                       {'user_id': int(target), 'message': segs0})
+        else:
+            r = await self.ob.send_text(kind, target, text)
         if not isinstance(r, dict) or r.get('status') != 'ok':
             raise RuntimeError('发送失败：%s' % str((r or {}).get('wording') or (r or {}).get('retcode') or r)[:160])
         data = (r or {}).get('data') or {}
@@ -553,6 +564,8 @@ class Bot:
         except Exception:
             pass
         segs = [{'type': 'text', 'data': {'text': text}}]
+        if reply_id:
+            segs = [{'type': 'reply', 'data': {'id': str(reply_id)}}] + segs
         cfg = config.load()
         account_id = config.account_id(uin)
         created = int(time.time())
@@ -562,6 +575,19 @@ class Bot:
         return {'id': row_id, 'msg_id': msg_id, 'created_at': created,
                 'sender_id': uin, 'sender_name': nick or '我', 'role': 'assistant',
                 'segs': segs, 'text': text, 'media': [], 'recalled': 0}
+
+    async def recall(self, msg_id):
+        """撤回一条消息（只能撤回自己有权限的，QQ 通常限 2 分钟内）。"""
+        mid = str(msg_id or '')
+        if not mid:
+            raise RuntimeError('缺少 msg_id')
+        if self.ob is None:
+            raise RuntimeError('QQ 还没连上，稍后再试')
+        if not (mid.lstrip('-').isdigit()):
+            raise RuntimeError('msg_id 不合法：%s' % mid)
+        await self.ob.call('delete_msg', {'message_id': int(mid)}, timeout=15)
+        n = await chats.mark_recalled('', mid, by='self', kind='', target='')
+        return {'recalled': True, 'updated': n}
 
     async def _record_own(self, account_id, acct_cfg, mtype, target, text, resp, nick):
         """记录机器人自己发出的消息。"""
