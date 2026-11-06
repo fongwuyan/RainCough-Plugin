@@ -1229,6 +1229,17 @@ def chat_messages(params):
     return {"ok": True, "data": _data("/api/chat/messages?" + qs, timeout=30)}
 
 
+@rc.interface("qqbot.chat.forward")
+def chat_forward(params):
+    """展开合并转发消息（返回节点列表，图片已落盘）。"""
+    p = dict(params or {})
+    fid = str(p.get("id") or "")
+    if not fid:
+        raise RuntimeError("缺少 id")
+    qs = urllib.parse.urlencode({"id": fid})
+    return {"ok": True, "data": _data("/api/chat/forward?" + qs, timeout=45)}
+
+
 @rc.interface("qqbot.chat.recall")
 def chat_recall(params):
     """撤回一条消息（自己的、2 分钟内最稳）。"""
@@ -1546,7 +1557,7 @@ IFACES = [
     # 后端切换（NapCat / SnowLuma）
     "qqbot.backend.get", "qqbot.backend.set",
     "qqbot.chat.sessions", "qqbot.chat.messages", "qqbot.chat.stats",
-    "qqbot.chat.recall",
+    "qqbot.chat.recall", "qqbot.chat.forward",
     "qqbot.chat.export", "qqbot.chat.purge_media",
     # 查询 / 清空会话 / 媒体库
     "qqbot.chat.query", "qqbot.chat.senders", "qqbot.chat.clear_session",

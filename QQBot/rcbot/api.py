@@ -11,7 +11,7 @@ import time
 
 from aiohttp import web
 
-from . import chats, compress, config, llm, logbuf, media, search, store
+from . import chats, compress, config, forward, llm, logbuf, media, search, store
 from .bot import attach_images
 
 
@@ -503,6 +503,23 @@ def make_app(mgr, bot):
             keyword=q.get('kw') or '')
         return ok({'items': rows, 'count': len(rows)})
 
+    async def chat_forward(request):
+        """合并转发展开：按 forward id 取节点内容。
+
+        节点里的图片会落盘到媒体目录（QQ 的 rkey 会过期），
+        结果按 forward_id 缓存，第二次展开直接命中缓存。
+        """
+        q = request.query
+        fid = str(q.get('id') or '')
+        if not fid:
+            return bad('缺少 id')
+        acct = str(q.get('account_id') or '')
+        try:
+            data = await forward.expand(bot, fid, account_id=acct)
+        except Exception as e:
+            return bad(str(e)[:200])
+        return ok(data)
+
     async def chat_recall(request):
         """撤回消息：调 OneBot delete_msg，成功后在库里打撤回标记。"""
         b = await _body(request)
@@ -682,6 +699,7 @@ def make_app(mgr, bot):
     app.router.add_get('/api/chat/stats', chat_stats)
     app.router.add_get('/api/chat/export', chat_export)
     app.router.add_post('/api/chat/recall', chat_recall)
+    app.router.add_get('/api/chat/forward', chat_forward)
     app.router.add_post('/api/chat/purge-media', chat_purge_media)
     app.router.add_get('/api/chat/media-check', chat_media_check)
 

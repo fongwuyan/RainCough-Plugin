@@ -118,6 +118,19 @@ CREATE TABLE IF NOT EXISTS accounts (
   updated_at  INTEGER DEFAULT 0
 );
 
+-- ★ 合并转发展开缓存
+--   QQ 的合并转发在消息里只有一个不透明的 forward id，
+--   展开要再问 OneBot。展开一次后把节点（含已落盘的图片路径）存下来，
+--   以后直接读缓存 —— 也避免 QQ 给的 rkey 过期后图片全挂。
+CREATE TABLE IF NOT EXISTS forwards (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id TEXT    DEFAULT '',
+  forward_id TEXT    DEFAULT '',
+  payload    TEXT    DEFAULT '{}',
+  created_at INTEGER DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_fwd_key ON forwards(account_id, forward_id);
+
 -- ★ 迁移版本（幂等迁移用）
 CREATE TABLE IF NOT EXISTS schema_version (
   k TEXT PRIMARY KEY,
