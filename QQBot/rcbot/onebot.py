@@ -127,7 +127,7 @@ class OneBot:
     async def call(self, action, params=None, timeout=20):
         ws = self.ws
         if ws is None or ws.closed:
-            raise RuntimeError('还没连上 NapCat')
+            raise RuntimeError('还没连上 QQ 框架')
         self._n += 1
         echo = 'rc-%d' % self._n
         fut = asyncio.get_event_loop().create_future()

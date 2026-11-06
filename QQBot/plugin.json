@@ -258,6 +258,18 @@
       "description": "清空实时日志缓冲"
     },
     {
+      "id": "qqbot.backend.get",
+      "visibility": "main",
+      "version": "1",
+      "description": "当前 QQ 框架后端与可选值"
+    },
+    {
+      "id": "qqbot.backend.set",
+      "visibility": "main",
+      "version": "1",
+      "description": "切换 QQ 框架后端（NapCat / SnowLuma）"
+    },
+    {
       "id": "qqbot.chat.sessions",
       "visibility": "all",
       "version": "1",

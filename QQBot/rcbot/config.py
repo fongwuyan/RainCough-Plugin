@@ -68,6 +68,14 @@ DEFAULT = {
         'media_dir': '',               # 空 = <数据目录同级>/media
         'export_dir': '',              # 空 = <数据目录同级>/exports
     },
+    # ★ QQ 框架后端（2026-11-06 从 NapCat 扩到双后端）
+    #   napcat   —— 宿主机原生安装（/opt/napcat + systemd + Xvfb）
+    #   snowluma —— 整包跑在 Docker 里（镜像自带 QQ + Xvfb + noVNC）
+    'backend': {
+        'kind': 'napcat',
+        # noVNC 对外主机名；空则由前端用当前页面 host 拼（推荐）
+        'snowluma_public_host': '',
+    },
     # ★ 媒体处理
     'media': {
         'ffmpeg': '',                  # ffmpeg 路径（空 = 找系统 PATH 里的）

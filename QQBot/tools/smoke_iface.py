@@ -35,6 +35,8 @@ IFACES = [
     ('qqbot.chat.senders', {}),
     ('qqbot.chat.media_list', {}),
     ('qqbot.chat.media_reindex', {}),
+    # 后端切换
+    ('qqbot.backend.get', {}),
 ]
 
 

@@ -26,7 +26,8 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rcplugin as rc  # noqa: E402
-from rcbot import single  # noqa: E402  单账户：NapCat 实例管理
+from rcbot import backend, single  # noqa: E402  后端适配（NapCat / SnowLuma）
+from rcbot import logbuf as _logbuf  # noqa: E402
 
 NAME = "QQBot"          # ★ 必须与插件目录名一致（目录名即插件身份，不改）
 VERSION = "1.3.0"
@@ -505,8 +506,59 @@ def _qq_process():
         return None
 
 
+def _overview_snowluma():
+    """SnowLuma 下的概览。
+
+    它没有 NapCat 那套 WebUI 接口（版本号/网络配置/QQ 进程），
+    所以这里只给：账号状态（OneBot get_login_info）、OneBot 版本、
+    系统信息、机器人状态。NapCat 专属的字段留空。
+    """
+    out = {"ok": True, "account": {}, "versions": {}, "sys": None,
+           "counters": {}, "proc": None, "errors": [], "backend": "snowluma"}
+    info = backend.account_info()
+    out["account"] = {
+        "uin": info.get("uin") or "",
+        "nick": info.get("nick") or "",
+        "avatar": info.get("avatar") or "",
+        "login": bool(info.get("login")),
+        "offline": not bool(info.get("login")),
+        "phase": info.get("phase") or "",
+        "qrcode": "",
+        "state": info.get("state") or "",
+    }
+    out["instances"] = [{"uin": info.get("uin") or "", "webui": "",
+                         "unit": "snowluma"}]
+    if not info.get("login"):
+        out["errors"].append("还没有登录 QQ 账号 —— 去「QQ 账户」扫码（在远程桌面里）")
+
+    # OneBot 版本（登录后才有）
+    try:
+        v = backend.onebot_call("get_version_info") or {}
+        out["versions"] = {
+            "napcat": "snowluma",
+            "qq": v.get("app_name") or "",
+            "webui": v.get("app_version") or v.get("version") or "",
+        }
+    except Exception:
+        out["versions"] = {"napcat": "snowluma"}
+
+    out["sys"] = _sysinfo_sse()
+    out["proc"] = None          # QQ 跑在容器里，宿主机看不到进程
+    try:
+        out["bot"] = _data("/api/status", timeout=8)
+    except Exception as e:
+        out["bot"] = None
+        out["errors"].append("rcbot：%s" % str(e)[:120])
+    return out
+
+
 @rc.interface("qqbot.nc.overview")
 def nc_overview(params):
+    # ★ 两个框架的概览数据源完全不同：NapCat 有 WebUI 接口，SnowLuma 只有 OneBot。
+    #   走 SnowLuma 时绝不能再去调 single.ensure_running() —— 那会把 NapCat 拉起来。
+    if backend.kind() == "snowluma":
+        return _overview_snowluma()
+
     out = {"ok": True, "account": {}, "versions": {}, "sys": None,
            "counters": {}, "proc": None, "errors": []}
 
@@ -769,260 +821,171 @@ def _unit_enabled(unit):
     return (o or "").strip() or "unknown"
 
 
+# ---------------------------------------------------------------- QQ 账户（后端无关）
+#
+# ★ 2026-11-06：框架从 NapCat 扩到「NapCat / SnowLuma 双后端」。
+#   账户页只关心"什么状态、怎么登录、能不能重启"，底下是哪个框架由
+#   rcbot/backend.py 适配。这里只做转发，不再直接调 NapCat 的接口。
+
 @rc.interface("qqbot.account.info")
 def account_info(params):
-    """当前账户信息（单账户）。
+    """当前账户信息（后端无关）。
 
-    登录状态、QQ 号、昵称一律问 NapCat 的接口拿，这里不自己推断。
-    返回 {uin, nick, avatar, login, accepted, core_ready, phase,
-          state, webui_port, onebot_port, webui, error}。
+    返回 {backend, uin, nick, avatar, login, accepted, core_ready, phase,
+          state, webui_port, onebot_port, scan_mode, novnc_port, novnc_path,
+          novnc_password, online, connected, error}
     """
-    out = {"uin": "", "nick": "", "avatar": "", "login": False,
-           "accepted": False, "core_ready": False, "phase": "",
-           "state": "unknown", "webui_port": 0, "onebot_port": 0,
-           "webui": "", "online": False, "connected": False, "error": ""}
-    ok, st = single.ensure_running()
-    out["state"] = st
-    wp = single.webui_port()
-    op = single.onebot_port()
-    out["webui_port"] = wp
-    out["onebot_port"] = op
-    out["webui"] = "http://127.0.0.1:%d" % wp
-
-    # ① 登录状态 —— NapCat /QQLogin/CheckLoginStatus
-    try:
-        s = _nc_data_at(out["webui"], cfg_napcat_token(),
-                         "/QQLogin/CheckLoginStatus", timeout=8) or {}
-        out["login"] = bool(s.get("isLogin"))
-        out["accepted"] = bool(s.get("qrLoginAccepted"))
-        out["core_ready"] = bool(s.get("coreReady"))
-        out["phase"] = s.get("loginPhase") or ""
-        out["qrcode"] = s.get("qrcodeurl") or ""
-    except Exception as e:
-        out["error"] = str(e)[:160]
-
-    # ② 当前登录号 —— NapCat /QQLogin/GetQQLoginInfo
-    #    ★ 未登录时它返回 {uid:"",uin:"",nick:""}（不是报错），别当异常
-    if out["login"]:
-        try:
-            info = _nc_data_at(out["webui"], cfg_napcat_token(),
-                               "/QQLogin/GetQQLoginInfo", timeout=8) or {}
-            out["uin"] = str(info.get("uin") or "")
-            out["nick"] = info.get("nick") or ""
-            out["avatar"] = info.get("faceUrl") or info.get("avatar") or ""
-        except Exception:
-            pass
-    if not out["avatar"]:
-        out["avatar"] = _qa_avatar(out["uin"])
-
-    # ③ rcbot 侧连接状态
-    try:
-        st2 = _data("/api/status", timeout=8) or {}
-        accs = st2.get("accounts") or []
-        a = accs[0] if accs else None
-        if a:
-            out["online"] = bool(a.get("online"))
-            out["connected"] = bool(a.get("connected"))
-            if not out["uin"]:
-                out["uin"] = str(a.get("uin") or "")
-            if not out["nick"]:
-                out["nick"] = a.get("nick") or ""
-            if not out["avatar"]:
-                out["avatar"] = a.get("avatar") or _qa_avatar(out["uin"])
-    except Exception:
-        pass
-    return {"ok": True, "data": out}
+    return {"ok": True, "data": backend.account_info()}
 
 
 @rc.interface("qqbot.account.qrcode")
 def account_qrcode(params):
-    """取登录二维码 —— 直接问 NapCat 要。
+    """登录入口。
 
-    已登录 → 返回空码 + 当前账号（前端提示"已经登录了"）。
-    未登录 → 返回二维码地址；顺便让 NapCat 出一张新的。
+    NapCat  → {mode:'qrcode', qrcode:'https://txz.qq.com/...'}
+              前端用 qrcode.mjs 画成 SVG
+    SnowLuma→ {mode:'novnc', novnc_port, novnc_path, novnc_password}
+              前端 iframe 嵌远程桌面，用户在里面扫码
     """
     if os.geteuid() != 0:
         raise RuntimeError("扫码登录需要 root 权限（当前面板不是 root 运行）")
-    single.ensure_running()
-    base = "http://127.0.0.1:%d" % single.webui_port()
-    token = cfg_napcat_token()
-
-    st = _nc_data_at(base, token, "/QQLogin/CheckLoginStatus", timeout=10) or {}
-    if st.get("isLogin"):
-        info = _nc_data_at(base, token, "/QQLogin/GetQQLoginInfo", timeout=8) or {}
-        return {"ok": True, "data": {
-            "qrcode": "", "login": True, "phase": st.get("loginPhase") or "",
-            "uin": str(info.get("uin") or ""), "nick": info.get("nick") or "",
-            "hint": "已经登录了"}}
-
-    # ★ 优先用状态里带的 qrcodeurl（NapCat 已经在 waiting_qrcode 时就出好了），
-    #   没有再向它要一张新的。
-    qr = st.get("qrcodeurl") or ""
-    if not qr:
-        try:
-            q = _nc_data_at(base, token, "/QQLogin/GetQQLoginQrcode", timeout=10) or {}
-            qr = q.get("qrcode") or ""
-        except Exception:
-            qr = ""
-    return {"ok": True, "data": {
-        "qrcode": qr, "login": False, "phase": st.get("loginPhase") or "",
-        "hint": "用手机 QQ 扫描下面的二维码授权登录"}}
+    try:
+        return {"ok": True, "data": backend.scan()}
+    except Exception as e:
+        raise RuntimeError(str(e)[:300])
 
 
 @rc.interface("qqbot.account.refresh_qrcode")
 def account_refresh_qrcode(params):
-    """刷新二维码 —— NapCat /QQLogin/RefreshQRcode。"""
-    base = "http://127.0.0.1:%d" % single.webui_port()
-    r = _nc_data_at(base, cfg_napcat_token(), "/QQLogin/RefreshQRcode", timeout=10) or {}
-    return {"ok": True, "data": {"qrcode": r.get("qrcodeurl") or r.get("qrcode") or ""}}
+    """刷新登录二维码（SnowLuma 下是空操作，远程桌面自己轮换）。"""
+    try:
+        return {"ok": True, "data": backend.refresh_scan()}
+    except Exception as e:
+        raise RuntimeError(str(e)[:300])
 
 
 @rc.interface("qqbot.account.status")
 def account_status(params):
-    """查登录进度 —— 只读 NapCat 的状态，不做任何推断。
-
-    返回 {done, uin, nick, avatar, phase, accepted, logged, core_ready,
-          onebot_ready, error}。
-    """
-    base = "http://127.0.0.1:%d" % single.webui_port()
-    token = cfg_napcat_token()
-    out = {"done": False, "uin": "", "nick": "", "avatar": "",
-           "phase": "", "accepted": False, "logged": False,
-           "core_ready": False, "onebot_ready": False, "error": ""}
+    """查登录进度（后端无关）。"""
     try:
-        st = _nc_data_at(base, token, "/QQLogin/CheckLoginStatus", timeout=10) or {}
+        return {"ok": True, "data": backend.status()}
     except Exception as e:
-        out["error"] = str(e)[:160]
-        return {"ok": True, "data": out}
-
-    out["phase"] = st.get("loginPhase") or ""
-    # 登录态三层：手机已确认 / QQ 已登录 / 核心就绪
-    out["accepted"] = bool(st.get("qrLoginAccepted"))
-    out["logged"] = bool(st.get("isLogin"))
-    out["core_ready"] = bool(st.get("coreReady"))
-    if not st.get("isLogin"):
-        return {"ok": True, "data": out}
-
-    # 已登录 → NapCat /QQLogin/GetQQLoginInfo 拿 QQ 号与昵称
-    try:
-        info = _nc_data_at(base, token, "/QQLogin/GetQQLoginInfo", timeout=8) or {}
-    except Exception:
-        info = {}
-    out["uin"] = str(info.get("uin") or "")
-    out["nick"] = info.get("nick") or ""
-    out["avatar"] = info.get("faceUrl") or info.get("avatar") or _qa_avatar(out["uin"])
-    if not out["uin"]:
-        out["error"] = "已登录但还没拿到 QQ 号，稍后再试"
-        return {"ok": True, "data": out}
-
-    # OneBot 端口起来才算账户可用
-    out["onebot_ready"] = single.port_listening(single.onebot_port())
-
-    # 同步 rcbot 账号表（单账号）
-    try:
-        _data("/api/accounts", "POST", {
-            "action": "add", "uin": out["uin"],
-            "ws_url": "ws://127.0.0.1:%d" % single.onebot_port(),
-            "webui": base,
-            "unit": single.UNIT,
-            "instance_dir": single.inst_dir(),
-        }, timeout=25)
-    except Exception:
-        pass
-    out["done"] = True
-    return {"ok": True, "data": out}
+        raise RuntimeError(str(e)[:300])
 
 
 @rc.interface("qqbot.account.action")
 def account_action(params):
-    """账户操作：start / stop / restart / quick_login / logout。
-
-    logout = 换号：清掉登录态（NapCat 没有 LogoutQQ 接口，
-    它提供的 SetQuickLogin 只设快登号，所以这一步只能自己清目录）。
-    """
+    """账户操作：start / stop / restart / quick_login / logout。"""
     if os.geteuid() != 0:
         raise RuntimeError("操作账户需要 root 权限（当前面板不是 root 运行）")
     act = str((params or {}).get("action") or "").lower()
-
-    if act == "logout":
-        single.logout()
-        single.restart()
-        return {"ok": True, "data": {"action": act, "removed": True}}
-
-    if act in ("start", "stop", "restart"):
-        if act == "start":
-            single.ensure_running()
-        elif act == "stop":
-            single.stop()
-        else:
-            single.ensure_running()
-            single.restart()
-        return {"ok": True, "data": {"action": act, "state": single.unit_state()}}
-
-    if act == "quick_login":
-        base = "http://127.0.0.1:%d" % single.webui_port()
-        info = _nc_data_at(base, cfg_napcat_token(),
-                           "/QQLogin/GetQQLoginInfo", timeout=8) or {}
-        uin = str(info.get("uin") or "")
-        if not uin:
-            raise RuntimeError("还没登录，没有可快登的号")
-        r = _nc_data_at(base, cfg_napcat_token(),
-                        "/QQLogin/SetQuickLogin", {"uin": uin})
-        return {"ok": True, "data": r}
-
-    raise RuntimeError("不认识的动作：%s" % act)
+    try:
+        return {"ok": True, "data": backend.action(act)}
+    except Exception as e:
+        raise RuntimeError(str(e)[:300])
 
 
 @rc.interface("qqbot.account.logs")
 def account_logs(params):
-    """NapCat 运行日志。
+    """运行日志。
 
-    mode=live    —— 走 NapCat WebUI 的 SSE 实时日志（_LOG_BUF）
-    mode=history —— 读 systemd journalctl
-
-    ★ 返回结构与前端「运行日志」页一致：{items, source, total, connected, hint}。
-      这里**不能**套 data —— 前端用 call() 直接取 result。
+    NapCat  -> journalctl -u napcat.service
+    SnowLuma-> docker logs snowluma
     """
     p = params or {}
     n = max(50, min(2000, int(p.get("lines") or 400)))
-    mode = p.get("mode") or "live"
     level = (p.get("level") or "").lower()
-    _log_ensure()
+    mode = p.get("mode") or "live"
 
-    unit = single.UNIT
-    if mode == "history":
+    if mode == "history" and backend.kind() == "napcat":
+        # NapCat 额外支持读 systemd 历史日志；SnowLuma 的 docker logs 本身就是历史
+        unit = (_cfg()["napcat"].get("unit") or "napcat").strip()
         raw = _journal(unit, n)
-        source = "journal"
         items = [{"level": _guess_level(x), "text": x, "ts": 0} for x in raw]
         if not items:
             with _LOG_LOCK:
                 items = list(_LOG_BUF)[-n:]
-            source = "webui"
-    else:
+        source = "journal" if raw else "webui"
         with _LOG_LOCK:
-            items = list(_LOG_BUF)[-n:]
-        source = "webui"
+            total = len(_LOG_BUF)
+        d = {"items": items, "source": source, "total": total,
+             "connected": _LOG_STATE["connected"], "err": _LOG_STATE["err"],
+             "unit": unit,
+             "hint": "" if items else "读不到 systemd 日志（可能不是 systemd 起的）"}
+    else:
+        d = backend.logs(n)
+        if mode == "live" and backend.kind() == "napcat":
+            # live 模式优先用内存缓冲（SSE 实时日志）
+            _log_ensure()
+            with _LOG_LOCK:
+                buf = list(_LOG_BUF)[-n:]
+            if buf:
+                d["items"] = buf
+                d["source"] = "webui"
+                d["connected"] = _LOG_STATE["connected"]
+                d["total"] = len(_LOG_BUF)
 
     if level:
-        items = [x for x in items if x["level"] == level]
-
-    with _LOG_LOCK:
-        total = len(_LOG_BUF)
-    return {"ok": True, "items": items, "source": source, "total": total,
-            "connected": _LOG_STATE["connected"], "err": _LOG_STATE["err"],
-            "unit": unit,
-            "hint": "" if items else (
-                "还没有日志。NapCat 的实时日志走 SSE，连上后新产生的日志会出现在这里"
-                if source == "webui" else
-                "读不到 systemd 日志（可能不是 systemd 起的，或当前用户没权限）")}
+        d["items"] = [x for x in d["items"] if x.get("level") == level]
+    d["ok"] = True
+    return d
 
 
 @rc.interface("qqbot.account.logs.clear")
 def account_logs_clear(params):
-    """清空实时日志缓冲。"""
+    """清空实时日志缓冲（NapCat 有内存缓冲；SnowLuma 无，返回成功即可）。"""
     with _LOG_LOCK:
         _LOG_BUF.clear()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- 后端切换
+
+@rc.interface("qqbot.backend.get")
+def backend_get(params):
+    """当前后端与可选值。"""
+    return {"ok": True, "data": {
+        "kind": backend.kind(),
+        "options": [
+            {"value": "napcat", "label": "NapCat（原生安装）",
+             "desc": "宿主机上直接跑 QQ，扫码后由 NapCat 出二维码图片"},
+            {"value": "snowluma", "label": "SnowLuma（Docker）",
+             "desc": "整包跑在 Docker 里，扫码要在内嵌的远程桌面里操作"},
+        ],
+        "snowluma": {
+            "container": "snowluma",
+            "image": "motricseven7/snowluma:latest",
+            "webui_port": 5099, "novnc_port": 6081,
+            "onebot_http": 3000, "onebot_ws": 3001,
+        },
+    }}
+
+
+@rc.interface("qqbot.backend.set")
+def backend_set(params):
+    """切换后端（只改开关，不动底层服务 —— 两套可以并存）。"""
+    k = str((params or {}).get("kind") or "").strip().lower()
+    if k not in ("napcat", "snowluma"):
+        raise RuntimeError("kind 只能是 napcat 或 snowluma")
+    old = backend.kind()
+    backend.set_kind(k)
+    # 切换后 OneBot 端口变了，rcbot 的账号表要跟着改
+    try:
+        accs = _data("/api/accounts", timeout=10) or {}
+        cur = (accs.get("items") or [{}])[0]
+        uin = str(cur.get("uin") or "")
+        if uin:
+            _data("/api/accounts", "POST", {
+                "action": "add", "uin": uin,
+                "ws_url": backend.onebot_url(),
+                "webui": "http://127.0.0.1:%d" % (5099 if k == "snowluma" else 6099),
+                "unit": "snowluma" if k == "snowluma" else "napcat.service",
+                "instance_dir": "",
+            }, timeout=25)
+    except Exception as e:
+        _logbuf.warn("backend", "切换后端后同步 rcbot 账号失败：%s" % str(e)[:150])
+    return {"ok": True, "data": {"from": old, "to": k,
+                                 "onebot_url": backend.onebot_url()}}
 
 
 def cfg_napcat_token():
@@ -1475,6 +1438,8 @@ IFACES = [
     "qqbot.account.info", "qqbot.account.qrcode", "qqbot.account.refresh_qrcode",
     "qqbot.account.status", "qqbot.account.action", "qqbot.account.logs",
     "qqbot.account.logs.clear",
+    # 后端切换（NapCat / SnowLuma）
+    "qqbot.backend.get", "qqbot.backend.set",
     "qqbot.chat.sessions", "qqbot.chat.messages", "qqbot.chat.stats",
     "qqbot.chat.export", "qqbot.chat.purge_media",
     # 查询 / 清空会话 / 媒体库
