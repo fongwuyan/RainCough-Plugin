@@ -490,7 +490,8 @@ def make_app(mgr, bot):
         acct = config.find_account(cfg, (sess or {}).get('account_id')) or {}
         persona = config.get_persona(cfg, (sess or {}).get('persona_id'), acct)
         provider = config.get_provider(cfg, (sess or {}).get('provider_id'), acct)
-        if not provider:
+        chain = config.provider_chain(cfg, (sess or {}).get('provider_id'), acct)
+        if not provider or not chain:
             return bad('没有可用的模型提供商')
         system = (persona or {}).get('prompt') or ''
         await store.add_message(sid, 'user', text, name='测试')
@@ -503,13 +504,14 @@ def make_app(mgr, bot):
                                         int(vis.get('max_images') or 3))
                 if n:
                     meta['images'] = n
-            reply = await llm.chat(
-                provider, messages, system=sys2,
+            reply, used = await llm.chat_chain(
+                chain, messages, system=sys2,
                 max_tokens=int((cfg.get('context') or {}).get('max_output_tokens') or 4096),
                 tools=tools, tool_runner=runner)
         except Exception as e:
             return bad(e)
         await store.add_message(sid, 'assistant', reply)
+        meta['provider'] = (used or {}).get('id')
         return ok({'reply': reply, 'sid': sid, 'meta': meta,
                    'messages': len(messages)})
 

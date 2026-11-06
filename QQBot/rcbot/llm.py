@@ -178,6 +178,30 @@ async def chat(provider, messages, system=None, max_tokens=2048, temperature=0.7
         raise LLMError('调用轮数用尽')
 
 
+async def chat_chain(providers, messages, system=None, **kw):
+    """多个提供商依次尝试：前一个挂了（限流/超时/5xx/网络）自动换下一个。
+
+    免 key 的公共端点（pollinations / OVH 免费推理）随时可能限流或下线，
+    多配几个自动兜底，比卡在一家强得多。
+
+    返回 (回复文本, 实际用上的提供商)。
+    """
+    provs = [p for p in (providers or []) if p]
+    if not provs:
+        raise LLMError('没有可用的模型提供商')
+    errs = []
+    for i, p in enumerate(provs):
+        try:
+            txt = await chat(p, messages, system=system, **kw)
+            if i:
+                logbuf.warn('llm', '已切换到提供商 %s（前面几个都失败了）' % p.get('id'))
+            return txt, p
+        except Exception as e:
+            errs.append('%s：%s' % (p.get('id'), str(e)[:100]))
+            logbuf.warn('llm', '提供商 %s 失败：%s' % (p.get('id'), str(e)[:140]))
+    raise LLMError('所有模型提供商都失败了：%s' % '；'.join(errs[:3]))
+
+
 async def test(provider):
     """测连通性：发一句最短的请求。
 

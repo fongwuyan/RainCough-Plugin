@@ -242,6 +242,24 @@ def get_provider(cfg, pid=None, acct=None):
     return provs[0] if provs else None
 
 
+def provider_chain(cfg, pid=None, acct=None):
+    """按优先级返回**所有可用提供商**（第一个是首选），用于故障转移。
+
+    免 key 的公共端点随时会限流/下线，多配几个自动兜底比卡在一家强。
+    """
+    chain = []
+    first = get_provider(cfg, pid, acct)
+    if first:
+        chain.append(first)
+    for p in (cfg.get('providers') or []):
+        if not p.get('enable', True):
+            continue
+        if first and p.get('id') == first.get('id'):
+            continue
+        chain.append(p)
+    return chain
+
+
 def get_persona(cfg, pid=None, acct=None):
     """人格优先级：会话级 > 账号级 > 全局默认 > 第一个。
 

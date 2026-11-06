@@ -479,8 +479,10 @@ class Bot:
         # 人格 / 提供商（会话级 > 账号级 > 全局）
         persona = config.get_persona(cfg, (sess or {}).get('persona_id'), acct_cfg)
         provider = config.get_provider(cfg, (sess or {}).get('provider_id'), acct_cfg)
+        # 兜底链：第一个挂了自动换下一个（免 key 端点随时会限流）
+        chain = config.provider_chain(cfg, (sess or {}).get('provider_id'), acct_cfg)
         system = (persona or {}).get('prompt') or ''
-        if not provider:
+        if not provider or not chain:
             self.last_error = '没有可用的模型提供商'
             logbuf.error('bot', self.last_error)
             return
@@ -504,18 +506,20 @@ class Bot:
                            '，图 %d 张' % meta['images'] if meta.get('images') else '',
                            '，联网开' if tools else ''))
             try:
-                reply = await llm.chat(provider, messages, system=system,
-                                       max_tokens=int(ctx.get('max_output_tokens') or 2048),
-                                       tools=tools, tool_runner=runner)
+                reply, used = await llm.chat_chain(chain, messages, system=system,
+                                                   max_tokens=int(ctx.get('max_output_tokens') or 2048),
+                                                   tools=tools, tool_runner=runner)
             except Exception as e:
                 if plain and ('image' in str(e).lower() or '图片' in str(e)):
                     logbuf.warn('bot', '带图请求被拒，去掉图片重试：%s' % str(e)[:150])
                     meta.pop('images', None)
-                    reply = await llm.chat(provider, plain, system=system,
-                                           max_tokens=int(ctx.get('max_output_tokens') or 2048),
-                                           tools=tools, tool_runner=runner)
+                    reply, used = await llm.chat_chain(chain, plain, system=system,
+                                                       max_tokens=int(ctx.get('max_output_tokens') or 2048),
+                                                       tools=tools, tool_runner=runner)
                 else:
                     raise
+            if used and used.get('id') != provider.get('id'):
+                logbuf.info('bot', '本次用提供商 %s' % used.get('id'))
         except Exception as e:
             self.last_error = str(e)[:300]
             logbuf.error('bot', '生成失败：%s' % self.last_error)
