@@ -86,7 +86,9 @@ export const IM = {
     close() { this.$emit('close') },
     async onSend() {
       const t = this.draft.trim()
-      if (!t || !cur || this.sending) return
+      // ★ 这里必须是 this.cur：cur 是 computed，不是模块作用域变量。
+      //   漏了 this 会在运行时抛 ReferenceError（模板里能直接写 cur，方法里不行）。
+      if (!t || !this.cur || this.sending) return
       this.sending = true
       this.draft = ''
       try {
