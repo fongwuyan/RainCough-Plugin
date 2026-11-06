@@ -19,11 +19,34 @@ import time
 
 import aiohttp
 
-from . import chats, compress, config, group_avatar, llm, logbuf, media, profile, store
+from . import cards, chats, compress, config, group_avatar, llm, logbuf, media, profile, store
 
 MAX_REPLY_CHARS = 3000
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_IMAGE_SIDE = 1536   # 长边；文字截图要看清，太小会糊
+
+
+def truncate_chars(text, limit):
+    """按句读边界把回复截到 limit 字以内。
+
+    ★ 为什么 prompt 里写了「最多 N 字」还要后端再兜一道：
+      模型不一定听话（GLM 就经常啰嗦）。prompt 是"请求"，这里是"保证"。
+
+    优先在标点处断，别把话切在半句上；
+    找不到合适的标点才硬切并补省略号。
+    """
+    t = (text or '').strip()
+    if not limit or limit <= 0 or len(t) <= limit:
+        return t
+    cut = t[:limit]
+    best = -1
+    for sep in ('。', '！', '？', '；', '，', '、', '\n', '.', '!', '?', ';'):
+        i = cut.rfind(sep)
+        if i > best:
+            best = i
+    if best >= int(limit * 0.5):
+        return cut[:best + 1].rstrip()
+    return cut.rstrip() + '…'
 
 
 def _seg_text(segs):
@@ -482,6 +505,13 @@ class Bot:
         # 兜底链：第一个挂了自动换下一个（免 key 端点随时会限流）
         chain = config.provider_chain(cfg, (sess or {}).get('provider_id'), acct_cfg)
         system = (persona or {}).get('prompt') or ''
+        # 角色卡片的字数上限（prompt 约束之外的硬兜底）
+        card = cards.find(cfg, (sess or {}).get('persona_id')
+                          or cfg.get('default_card') or cfg.get('default_persona') or '')
+        try:
+            max_chars = int(((card or {}).get('style') or {}).get('max_chars') or 0)
+        except Exception:
+            max_chars = 0
         if not provider or not chain:
             self.last_error = '没有可用的模型提供商'
             logbuf.error('bot', self.last_error)
@@ -526,6 +556,11 @@ class Bot:
             return
 
         reply = (reply or '').strip()
+        if max_chars and len(reply) > max_chars:
+            cut = truncate_chars(reply, max_chars)
+            logbuf.info('bot', '回复超长（%d 字），按卡片上限截到 %d 字'
+                        % (len(reply), len(cut)))
+            reply = cut
         if not reply:
             return
         await store.add_message(sid, 'assistant', reply)

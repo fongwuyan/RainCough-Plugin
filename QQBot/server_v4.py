@@ -1593,6 +1593,18 @@ def session_clear(params):
     return {"ok": True, "data": _data("/api/sessions/%s/clear" % sid, "POST", {})}
 
 
+@rc.interface("rcbot.session.catalog")
+def session_catalog(params):
+    """拉取全部群聊/私聊，登记成会话目录（新增项默认不启用）。"""
+    return {"ok": True, "data": _data("/api/sessions/catalog", "POST", params or {}, timeout=90)}
+
+
+@rc.interface("rcbot.session.bulk")
+def session_bulk(params):
+    """批量启用/停用会话。"""
+    return {"ok": True, "data": _data("/api/sessions/bulk", "POST", params or {}, timeout=30)}
+
+
 @rc.interface("rcbot.session.delete")
 def session_delete(params):
     return {"ok": True, "data": _data("/api/sessions/delete", "POST", params or {})}
@@ -1637,6 +1649,7 @@ IFACES = [
     "rcbot.personas", "rcbot.persona.save", "rcbot.persona.delete",
     "rcbot.sessions", "rcbot.session.get", "rcbot.session.save",
     "rcbot.session.clear", "rcbot.session.delete", "rcbot.context",
+    "rcbot.session.catalog", "rcbot.session.bulk",
     "rcbot.test_chat",
 ]
 

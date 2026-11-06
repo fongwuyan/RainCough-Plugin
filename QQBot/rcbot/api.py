@@ -11,8 +11,8 @@ import time
 
 from aiohttp import web
 
-from . import cards, chats, compress, config, forward, group_avatar, llm, logbuf, media, search, store
-from .bot import attach_images
+from . import cards, chats, compress, config, forward, group_avatar, llm, logbuf, media, profile, search, store
+from .bot import attach_images, truncate_chars
 
 
 def ok(data=None):
@@ -372,13 +372,92 @@ def make_app(mgr, bot):
         rows = await store.list_sessions(account_id)
         cfg = config.load()
         gnames = getattr(bot, '_group_names', {}) or {}
+        fnames = getattr(bot, '_friend_names', {}) or {}
         for r in rows:
-            r['display'] = r.get('title') or (
-                gnames.get(str(r.get('target_id')), '') if r.get('kind') == 'group' else '')
+            tid = str(r.get('target_id') or '')
+            if r.get('kind') == 'group':
+                r['display'] = r.get('title') or gnames.get(tid, '')
+            else:
+                r['display'] = r.get('title') or fnames.get(tid, '')
             r['mode_label'] = '公共' if (r.get('kind') == 'group' and r.get('mode') != 'private') else '私有'
+            # 聊过没有 —— 目录行（只是登记了，没消息）
+            r['talked'] = 1 if (r.get('msg_count') or r.get('last_at')) else 0
         return ok({'items': rows, 'stats': await store.stats(),
                    'default_persona': cfg.get('default_persona'),
                    'default_provider': cfg.get('default_provider')})
+
+    async def sync_catalog(request):
+        """拉取账号的**全部**群聊与好友，登记成会话目录行（默认不启用）。
+
+        为什么要这个：
+          原来 sessions 表里只有「收到过消息」的会话，
+          于是使用者没法提前配置某个群的称呼/人格/是否启用。
+        目录行的 enabled 默认 0 —— 机器人不会在没说过话的群里主动开口，
+        要开自己在「会话管理」里点开关。
+        """
+        b = await _body(request)
+        only = (b.get('account_id') or '').strip()
+        accounts = list(getattr(mgr, 'accounts', {}).values())
+        if only:
+            accounts = [a for a in accounts if a.id == only]
+        if not accounts:
+            return bad('没有已连接的账号')
+        stat = {'groups': 0, 'friends': 0, 'new': 0, 'titled': 0,
+                'exists': 0, 'accounts': []}
+        for acc in accounts:
+            ob = getattr(acc, 'ob', None)
+            if ob is None or not getattr(ob, 'connected', False):
+                stat['accounts'].append({'id': acc.id, 'ok': False, 'why': '未连接'})
+                continue
+            one = {'id': acc.id, 'ok': True}
+            # 群
+            try:
+                r = await ob.call('get_group_list', timeout=25)
+                items = r.get('data') or []
+                for g in items:
+                    gid = str(g.get('group_id') or '')
+                    name = profile.clean_name(g.get('group_name'))
+                    if not gid:
+                        continue
+                    stat['groups'] += 1
+                    res = await store.sync_catalog('group', gid, name, acc.id)
+                    stat[res] = stat.get(res, 0) + 1
+                one['groups'] = len(items)
+            except Exception as e:
+                one['group_error'] = str(e)[:160]
+            # 好友
+            try:
+                r = await ob.call('get_friend_list', timeout=25)
+                items = r.get('data') or []
+                for f in items:
+                    fid = str(f.get('user_id') or '')
+                    name = profile.clean_name(f.get('remark') or f.get('nickname') or '')
+                    if not fid:
+                        continue
+                    stat['friends'] += 1
+                    res = await store.sync_catalog('private', fid, name, acc.id)
+                    stat[res] = stat.get(res, 0) + 1
+                one['friends'] = len(items)
+            except Exception as e:
+                one['friend_error'] = str(e)[:160]
+            stat['accounts'].append(one)
+        logbuf.info('api', '会话目录同步：群 %d / 好友 %d，新增 %d'
+                    % (stat['groups'], stat['friends'], stat.get('new', 0)))
+        return ok(stat)
+
+    async def bulk_sessions(request):
+        """批量启用/停用会话。"""
+        b = await _body(request)
+        enabled = 1 if b.get('enabled') else 0
+        ids = b.get('ids')
+        if isinstance(ids, str):
+            ids = [x for x in ids.split(',') if x]
+        ids = [str(x) for x in (ids or [])]
+        n = await store.bulk_set_enabled(enabled, ids=ids,
+                                         kind=str(b.get('kind') or ''),
+                                         account_id=str(b.get('account_id') or ''))
+        logbuf.info('api', '批量%s会话 %d 个' % ('启用' if enabled else '停用', n))
+        return ok({'changed': n})
 
     async def get_session(request):
         sid = request.match_info['sid']
@@ -508,6 +587,15 @@ def make_app(mgr, bot):
                 chain, messages, system=sys2,
                 max_tokens=int((cfg.get('context') or {}).get('max_output_tokens') or 4096),
                 tools=tools, tool_runner=runner)
+            # 卡片的字数上限（和真实回复同一套逻辑）
+            card = cards.find(cfg, (sess or {}).get('persona_id')
+                              or cfg.get('default_card') or cfg.get('default_persona') or '')
+            try:
+                mc = int(((card or {}).get('style') or {}).get('max_chars') or 0)
+            except Exception:
+                mc = 0
+            if mc:
+                reply = truncate_chars(reply, mc)
         except Exception as e:
             return bad(e)
         await store.add_message(sid, 'assistant', reply)
@@ -769,6 +857,10 @@ def make_app(mgr, bot):
     app.router.add_post('/api/cards/import', import_card)
     app.router.add_get('/api/cards/export', export_card)
 
+    # ★ catalog / bulk 必须注册在 /api/sessions/{sid} 前面，
+    #   否则 {sid} 会把 /api/sessions/catalog 当成会话 id 吃掉。
+    app.router.add_post('/api/sessions/catalog', sync_catalog)
+    app.router.add_post('/api/sessions/bulk', bulk_sessions)
     app.router.add_get('/api/sessions', get_sessions)
     app.router.add_get('/api/sessions/{sid}', get_session)
     app.router.add_post('/api/sessions/{sid}', post_session)

@@ -264,6 +264,60 @@ async def update_session(sid, fields):
     return True
 
 
+# ---------------- 会话目录（全部群聊 / 私聊）
+
+async def sync_catalog(kind, target_id, title='', account_id='', mode='public'):
+    """把一个群/好友登记进会话表（目录行）。
+
+    ★ 新建的行 **enabled=0** —— 目录里的东西默认不启用。
+      理由：机器人不该在从没说过话的群里突然冒出来搭话；
+      要不要在某个群/私聊里开口，由使用者在「会话管理」里手动开。
+      已存在的行**不动**（用户改过的 enabled 不能被同步覆盖）。
+
+    返回 'new' / 'titled' / 'exists'。
+    """
+    tid = str(target_id or '').strip()
+    if not tid:
+        return 'skip'
+    sid = session_key(kind, tid, mode, account_id)
+    now = _now()
+    cur = await _db.execute('SELECT id, title FROM sessions WHERE id=?', (sid,))
+    row = await cur.fetchone()
+    if row is None:
+        await _db.execute(
+            'INSERT INTO sessions(id,kind,target_id,title,enabled,mode,account_id,created_at,updated_at)'
+            ' VALUES(?,?,?,?,0,?,?,?,?)',
+            (sid, kind, tid, title or '', mode, account_id or '', now, now))
+        await _db.commit()
+        return 'new'
+    if title and not (row['title'] or ''):
+        await _db.execute('UPDATE sessions SET title=? WHERE id=?', (title, sid))
+        await _db.commit()
+        return 'titled'
+    return 'exists'
+
+
+async def bulk_set_enabled(enabled, ids=None, kind='', account_id=''):
+    """批量启用/停用会话。ids 为空则按 kind/account_id 全表操作。"""
+    val = 1 if enabled else 0
+    if ids:
+        for sid in ids:
+            await _db.execute('UPDATE sessions SET enabled=? WHERE id=?', (val, sid))
+        await _db.commit()
+        return len(ids)
+    sql = 'UPDATE sessions SET enabled=? WHERE 1=1'
+    args = [val]
+    if kind:
+        sql += ' AND kind=?'
+        args.append(kind)
+    if account_id:
+        sql += ' AND account_id=?'
+        args.append(account_id)
+    cur = await _db.execute(sql, args)
+    await _db.commit()
+    return cur.rowcount
+
+
 async def delete_session(sid):
     await _db.execute('DELETE FROM messages WHERE session_id=?', (sid,))
     await _db.execute('DELETE FROM summaries WHERE session_id=?', (sid,))
