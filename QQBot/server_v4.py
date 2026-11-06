@@ -1500,6 +1500,56 @@ def provider_models(params):
 
 # ---------------------------------------------------------------- 人格
 
+@rc.interface("rcbot.cards")
+def cards_list(params):
+    """角色卡片列表。"""
+    return {"ok": True, "data": _data("/api/cards")}
+
+
+@rc.interface("rcbot.card.save")
+def card_save(params):
+    """保存角色卡片（新建/更新/设为默认）。"""
+    p = dict(params or {})
+    if not isinstance(p.get("card"), dict):
+        raise RuntimeError("缺少 card")
+    return {"ok": True, "data": _data("/api/cards", "POST", p, timeout=20)}
+
+
+@rc.interface("rcbot.card.delete")
+def card_delete(params):
+    """删除角色卡片。"""
+    p = dict(params or {})
+    if not p.get("id"):
+        raise RuntimeError("缺少 id")
+    return {"ok": True, "data": _data("/api/cards/delete", "POST", p, timeout=20)}
+
+
+@rc.interface("rcbot.card.clone")
+def card_clone(params):
+    """复制一份角色卡片。"""
+    p = dict(params or {})
+    if not p.get("id"):
+        raise RuntimeError("缺少 id")
+    return {"ok": True, "data": _data("/api/cards/clone", "POST", p, timeout=20)}
+
+
+@rc.interface("rcbot.card.import")
+def card_import(params):
+    """导入角色卡片（JSON）。"""
+    p = dict(params or {})
+    if not p.get("json"):
+        raise RuntimeError("缺少 json")
+    return {"ok": True, "data": _data("/api/cards/import", "POST", p, timeout=20)}
+
+
+@rc.interface("rcbot.card.export")
+def card_export(params):
+    """导出角色卡片（JSON 字符串）。"""
+    p = dict(params or {})
+    qs = urllib.parse.urlencode({"id": p.get("id") or ""})
+    return {"ok": True, "data": _data("/api/cards/export?" + qs, timeout=20)}
+
+
 @rc.interface("rcbot.personas")
 def personas(params):
     return {"ok": True, "data": _data("/api/personas")}
@@ -1582,6 +1632,8 @@ IFACES = [
     "rcbot.config.get", "rcbot.config.save", "rcbot.tools.search",
     "rcbot.providers", "rcbot.provider.save", "rcbot.provider.delete",
     "rcbot.provider.test", "rcbot.provider.models",
+    "rcbot.cards", "rcbot.card.save", "rcbot.card.delete",
+    "rcbot.card.clone", "rcbot.card.import", "rcbot.card.export",
     "rcbot.personas", "rcbot.persona.save", "rcbot.persona.delete",
     "rcbot.sessions", "rcbot.session.get", "rcbot.session.save",
     "rcbot.session.clear", "rcbot.session.delete", "rcbot.context",

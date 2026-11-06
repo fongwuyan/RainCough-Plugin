@@ -349,6 +349,46 @@ const CSS = `
  .rcq-ct:nth-child(4){border-left:0;border-top:1px solid var(--bd)}
  .rcq-ct:nth-child(5){border-top:1px solid var(--bd)}
 }
+
+/* ---- 角色卡片 ---- */
+.cd-row{align-items:center}
+.cd-thumb{position:relative;width:46px;height:46px;flex:none}
+.cd-thumb .cover{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+  border-radius:8px;opacity:.5}
+.cd-thumb .ava{position:relative;width:34px;height:34px;border-radius:8px;object-fit:cover;
+  border:2px solid var(--sf);margin:6px;display:block}
+.cd-thumb .ava.ph{display:flex;align-items:center;justify-content:center;font-size:15px;
+  font-weight:600;color:var(--m);background:var(--sf3)}
+.cd-tag{display:inline-block;margin-left:6px;font-size:10px;padding:0 6px;border-radius:999px;
+  border:1px solid var(--bd2);color:var(--m);vertical-align:1px}
+.cd-tag.draft{border-color:var(--warn);color:var(--warn)}
+.cd-preview{position:relative;border:1px solid var(--bd);border-radius:10px;overflow:hidden;
+  margin:10px 0;min-height:86px;display:flex;align-items:flex-end;background:var(--sf2)}
+.cd-preview .cp-bg{position:absolute;inset:0;background-size:cover;background-position:center;
+  opacity:.5}
+.cd-preview .cp-body{position:relative;display:flex;align-items:center;gap:10px;padding:10px 12px;
+  width:100%}
+.cd-preview .cp-ava{width:40px;height:40px;border-radius:8px;object-fit:cover;background:var(--sf3)}
+.cd-preview .cp-ava.ph{display:flex;align-items:center;justify-content:center;font-size:16px;
+  color:var(--m)}
+.cd-preview .cp-name{font-size:14px;font-weight:600}
+.cd-preview .cp-tag{font-size:12px;color:var(--m);margin-top:2px}
+.cd-tabs{display:flex;gap:4px;margin:10px 0 0;border-bottom:1px solid var(--bd)}
+.cd-tabs button{border:none;background:none;padding:7px 12px;font-size:12.5px;color:var(--m);
+  cursor:pointer;border-bottom:2px solid transparent;font-family:inherit}
+.cd-tabs button.on{color:var(--t);border-bottom-color:var(--ac)}
+.cd-blk{border:1px solid var(--bd);border-radius:8px;padding:9px 11px;margin-top:10px}
+.cd-blk-h{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12.5px}
+.cd-blk-h .sp{flex:1}
+.cd-item{display:flex;gap:6px;align-items:flex-start;margin-bottom:6px}
+.cd-item.col{flex-direction:column}
+.cd-item .rcq-ta{flex:1;min-height:52px}
+.cd-row2{display:flex;gap:6px;align-items:center;width:100%}
+.cd-row2 .input{flex:1;min-width:0}
+.cd-x{border:none;background:none;color:var(--m);font-size:15px;line-height:1;cursor:pointer;
+  padding:2px 5px;border-radius:4px;font-family:inherit}
+.cd-x:hover{background:var(--sf3);color:var(--t)}
+.rcq-ta.tall{min-height:140px}
 `
 
 function injectStyle() {
@@ -358,6 +398,7 @@ function injectStyle() {
   el.textContent = CSS
   document.head.appendChild(el)
 }
+
 
 // ------------------------------------------------------------------ 概览（仿 NapCat 基础信息）
 
@@ -1346,120 +1387,344 @@ const Query = {
   </div>`,
 }
 
-// ------------------------------------------------------------------ 人格
+// ------------------------------------------------------------------ 角色卡片
 
-const Persona = {
+const Cards = {
   data() {
-    return { S, list: [], def: '', cur: null, busy: '', err: '', dirty: false }
+    return {
+      S, list: [], def: '', cur: null, busy: '', err: '', dirty: false,
+      section: 'basic', providers: [],
+    }
   },
   computed: {
     isNew() { return !!(this.cur && this.cur.__new) },
+    // 预览用的气泡背景色（主题色 / 气泡色）
+    themeColor() { return (this.cur && this.cur.style && this.cur.style.color) || '' },
+    provName(pid) {
+      const p = this.providers.find((x) => x.id === pid)
+      return p ? (p.name || p.id) : (pid || '（跟随账号默认）')
+    },
   },
-  async mounted() { await this.load() },
+  async mounted() {
+    await this.load()
+    try {
+      const p = await callData('rcbot.providers')
+      this.providers = (p && p.items) || []
+    } catch (e) { /* 没有提供商也不影响编辑 */ }
+  },
   methods: {
+    fmtNum,
+    cloneDeep(o) { return JSON.parse(JSON.stringify(o || {})) },
     async load() {
+      this.busy = 'load'
       try {
-        const d = await callData('rcbot.personas')
+        const d = await callData('rcbot.cards')
         this.list = (d && d.items) || []
         this.def = (d && d.default) || ''
         if (!this.cur || this.cur.__new) {
-          if (!this.cur) this.pick(this.list[0] || null)
+          if (!this.cur && this.list.length) this.pick(this.list[0])
         } else {
           const same = this.list.find((x) => x.id === this.cur.id)
           if (same && !this.dirty) this.pick(same)
         }
-      } catch (e) { this.err = errText(e) }
+      } catch (e) { this.err = errText(e) } finally { this.busy = '' }
     },
-    pick(p) {
-      this.cur = p ? Object.assign({}, p) : null
+    pick(c) {
+      this.cur = c ? this.cloneDeep(c) : null
       this.dirty = false
     },
     add() {
-      this.cur = { id: '', name: '新人格', prompt: '', __new: true }
+      this.cur = {
+        schema: 2, id: '', version: 1, status: 'draft',
+        name: '新角色', alias: [], tagline: '', avatar: '', cover: '', portrait: '',
+        prompt: '', greetings: [], examples: [], lorebook: [], taboos: [],
+        style: { temperature: 0.8, max_tokens: 512, color: '' },
+        model: { provider_id: '', model: '' },
+        context: { keep_rounds: 20 },
+        __new: true,
+      }
       this.dirty = true
     },
+    // ---------------- 数组类字段的编辑辅助
+    addGreeting() { if (this.cur) { this.cur.greetings = this.cur.greetings || []; this.cur.greetings.push('') } },
+    rmGreeting(i) { if (this.cur && this.cur.greetings) this.cur.greetings.splice(i, 1) },
+    addExample() {
+      if (!this.cur) return
+      this.cur.examples = this.cur.examples || []
+      this.cur.examples.push({ user: '', assistant: '' })
+    },
+    rmExample(i) { if (this.cur && this.cur.examples) this.cur.examples.splice(i, 1) },
+    addLore() {
+      if (!this.cur) return
+      this.cur.lorebook = this.cur.lorebook || []
+      this.cur.lorebook.push({ keys: [], content: '' })
+    },
+    rmLore(i) { if (this.cur && this.cur.lorebook) this.cur.lorebook.splice(i, 1) },
+    loreKeys(l) { return (l.keys || []).join('、') },
+    setLoreKeys(l, v) { l.keys = String(v || '').split(/[、,，\s]+/).filter(Boolean) },
+    taboosText() { return (this.cur && this.cur.taboos || []).join('\n') },
+    setTaboosText(v) { if (this.cur) this.cur.taboos = String(v || '').split('\n').map((x) => x.trim()).filter(Boolean) },
+    // ---------------- 保存 / 其它操作
     async save() {
       if (!this.cur) return
-      const c = this.cur
-      if (!String(c.name || '').trim()) { toast('人格名字不能为空', 'err'); return }
+      const c = this.cloneDeep(this.cur)
+      if (!String(c.name || '').trim()) { toast('角色名字不能为空', 'err'); return }
+      delete c.__new
       this.busy = 'save'
       try {
-        const r = await callData('rcbot.persona.save', {
-          id: c.__new ? '' : c.id, name: c.name, prompt: c.prompt,
-        })
+        const r = await callData('rcbot.card.save', { card: c })
         toast('已保存', 'ok')
         this.dirty = false
+        this.cur = null
         await this.load()
         if (r && r.id) this.pick(this.list.find((x) => x.id === r.id) || null)
       } catch (e) { toast(errText(e), 'err') } finally { this.busy = '' }
     },
-    async setDefault(p) {
-      this.busy = 'def' + p.id
+    async setDefault(c) {
+      this.busy = 'def' + c.id
       try {
-        await call('rcbot.persona.save', { id: p.id, name: p.name, prompt: p.prompt, set_default: true })
-        toast('已设为默认人格', 'ok')
+        const card = this.cloneDeep(c)
+        card.status = 'published'
+        await callData('rcbot.card.save', { card, set_default: true })
+        toast('已设为默认角色', 'ok')
         await this.load()
       } catch (e) { toast(errText(e), 'err') } finally { this.busy = '' }
     },
-    async del(p) {
-      if (!confirm('删除人格「' + (p.name || p.id) + '」？用到它的会话会回落到默认人格。')) return
-      this.busy = 'del' + p.id
+    async cloneCard(c) {
+      this.busy = 'clone' + c.id
       try {
-        await call('rcbot.persona.delete', { id: p.id })
+        const r = await callData('rcbot.card.clone', { id: c.id })
+        toast('已复制一份', 'ok')
+        await this.load()
+        if (r && r.id) this.pick(this.list.find((x) => x.id === r.id) || null)
+      } catch (e) { toast(errText(e), 'err') } finally { this.busy = '' }
+    },
+    async del(c) {
+      if (!confirm('删除角色卡片「' + (c.name || c.id) + '」？\n\n用到它的会话会回落到默认角色。')) return
+      this.busy = 'del' + c.id
+      try {
+        await callData('rcbot.card.delete', { id: c.id })
         toast('已删除', 'ok')
-        this.cur = null
+        if (this.cur && this.cur.id === c.id) this.cur = null
         await this.load()
       } catch (e) { toast(errText(e), 'err') } finally { this.busy = '' }
+    },
+    async exportJson(c) {
+      try {
+        const d = await callData('rcbot.card.export', { id: c.id })
+        const blob = new Blob([(d && d.json) || JSON.stringify(c, null, 2)], { type: 'application/json' })
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = 'card-' + String(c.name || c.id).replace(/[^\w一-龥-]/g, '_') + '.json'
+        a.click()
+        setTimeout(() => URL.revokeObjectURL(a.href), 3000)
+        toast('已导出卡片 JSON', 'ok')
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    importJson() {
+      const inp = document.createElement('input')
+      inp.type = 'file'
+      inp.accept = 'application/json,.json'
+      inp.onchange = async () => {
+        const f = inp.files && inp.files[0]
+        if (!f) return
+        try {
+          const text = await f.text()
+          const r = await callData('rcbot.card.import', { json: text })
+          toast('已导入：' + ((r && r.name) || '角色卡片'), 'ok')
+          await this.load()
+          if (r && r.id) this.pick(this.list.find((x) => x.id === r.id) || null)
+        } catch (e) { toast(errText(e), 'err') }
+      }
+      inp.click()
     },
   },
   template: `
   <div class="rcq-split">
+    <!-- 左：卡片列表 -->
     <div class="rcq-pnl flat">
       <div class="rcq-ph" style="padding:14px 16px 0;margin-bottom:10px">
-        <b>人格</b><span class="sp"></span>
+        <b>角色卡片</b><span class="sp"></span>
+        <button class="btn btn-sm" @click="importJson">导入</button>
         <button class="btn btn-sm btn-primary" @click="add">新建</button>
       </div>
       <div class="rcq-list">
-        <div class="rcq-row click" v-for="p in list" :key="p.id"
-          :class="{ on: cur && cur.id === p.id }" @click="pick(p)">
+        <div class="rcq-row click cd-row" v-for="c in list" :key="c.id"
+          :class="{ on: cur && cur.id === c.id }" @click="pick(c)">
+          <div class="cd-thumb">
+            <img v-if="c.cover" :src="c.cover" class="cover" alt="" />
+            <img v-if="c.avatar" :src="c.avatar" class="ava" alt="" />
+            <span v-else class="ava ph">{{ (c.name || '?').slice(0, 1) }}</span>
+          </div>
           <div class="main">
-            <div class="t">{{ p.name || p.id }}
-              <span class="tag-chip tag-chip-sm" v-if="p.id === def">默认</span>
+            <div class="t">
+              {{ c.name || '未命名' }}
+              <span class="cd-tag" v-if="c.id === def">默认</span>
+              <span class="cd-tag draft" v-if="c.status !== 'published'">草稿</span>
             </div>
-            <div class="d">{{ (p.prompt || '（空提示词）').slice(0, 80) }}</div>
+            <div class="d">{{ c.tagline || ('v' + (c.version || 1) + ' · ' + (c.prompt || '').slice(0, 30)) }}</div>
           </div>
         </div>
-        <div v-if="!list.length" class="rcq-empty"><b>☺</b>还没有人格，点「新建」加一个</div>
+        <div v-if="!list.length" class="rcq-empty"><b>☺</b>还没有角色卡片，点「新建」加一个</div>
       </div>
     </div>
 
+    <!-- 右：卡片编辑 -->
     <div class="rcq-pnl" v-if="cur">
-      <div class="rcq-ph"><b>{{ isNew ? '新建人格' : '编辑人格' }}</b><span class="sp"></span>
-        <span class="tag-chip tag-chip-sm" v-if="cur.id && cur.id === def">默认</span>
+      <div class="rcq-ph">
+        <b>{{ isNew ? '新建角色卡片' : '编辑角色卡片' }}</b><span class="sp"></span>
+        <span class="rcq-hint" v-if="dirty">有未保存的修改</span>
+        <button class="btn btn-sm" @click="exportJson(cur)">导出</button>
+        <button class="btn btn-sm" @click="cloneCard(cur)">复制一份</button>
+        <button class="btn btn-sm btn-primary" :disabled="!!busy" @click="save">
+          {{ busy === 'save' ? '保存中…' : '保存' }}
+        </button>
       </div>
-      <div class="rcq-form">
+
+      <!-- 预览 -->
+      <div class="cd-preview">
+        <div class="cp-bg" :style="cur.cover ? { backgroundImage: 'url(' + cur.cover + ')' } : {}"></div>
+        <div class="cp-body">
+          <img v-if="cur.avatar" :src="cur.avatar" class="cp-ava" alt="" />
+          <span v-else class="cp-ava ph">{{ (cur.name || '?').slice(0, 1) }}</span>
+          <div class="cp-info">
+            <div class="cp-name">{{ cur.name || '未命名' }}</div>
+            <div class="cp-tag">{{ cur.tagline || '（还没有简介）' }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="cd-tabs">
+        <button :class="{ on: section === 'basic' }" @click="section = 'basic'">形象</button>
+        <button :class="{ on: section === 'content' }" @click="section = 'content'">内容</button>
+        <button :class="{ on: section === 'behavior' }" @click="section = 'behavior'">行为</button>
+      </div>
+
+      <!-- 形象 -->
+      <div class="rcq-form" v-if="section === 'basic'">
         <label class="rcq-fi wide"><span>名称</span>
-          <input class="input" v-model="cur.name" @input="dirty = true" placeholder="例如：默认人格 / 客服小助手" />
+          <input class="input" v-model="cur.name" @input="dirty = true" placeholder="例如：雨咯" />
         </label>
+        <label class="rcq-fi wide"><span>一句话简介</span>
+          <input class="input" v-model="cur.tagline" @input="dirty = true"
+            placeholder="列表页显示的那句话" />
+        </label>
+        <label class="rcq-fi wide"><span>封面图 URL</span>
+          <input class="input" v-model="cur.cover" @input="dirty = true"
+            placeholder="https://… 建议 16:9" />
+        </label>
+        <label class="rcq-fi wide"><span>头像 URL</span>
+          <input class="input" v-model="cur.avatar" @input="dirty = true" placeholder="https://…" />
+        </label>
+        <label class="rcq-fi wide"><span>立绘 URL</span>
+          <input class="input" v-model="cur.portrait" @input="dirty = true"
+            placeholder="https://… 建议 3:4" />
+        </label>
+        <label class="rcq-fi"><span>状态</span>
+          <select class="input" v-model="cur.status" @change="dirty = true">
+            <option value="draft">草稿</option>
+            <option value="published">已发布</option>
+          </select>
+        </label>
+        <label class="rcq-fi"><span>版本</span>
+          <input class="input" v-model.number="cur.version" @input="dirty = true" type="number" min="1" />
+        </label>
+      </div>
+
+      <!-- 内容 -->
+      <div class="rcq-form" v-if="section === 'content'">
         <label class="rcq-fi wide"><span>系统提示词</span>
-          <textarea class="rcq-ta" v-model="cur.prompt" @input="dirty = true"
+          <textarea class="rcq-ta tall" v-model="cur.prompt" @input="dirty = true"
             placeholder="描述它的身份、语气、边界。例如：你叫小雨，说话简短自然，不用敬语，不主动提自己是 AI。"></textarea>
         </label>
+
+        <div class="cd-blk">
+          <div class="cd-blk-h"><b>开场白</b>
+            <button class="btn btn-sm" @click="addGreeting">添加一条</button></div>
+          <div class="cd-item" v-for="(g, i) in cur.greetings" :key="'g' + i">
+            <textarea class="rcq-ta" v-model="cur.greetings[i]" @input="dirty = true"
+              placeholder="进入会话时随机说的一句话"></textarea>
+            <button class="cd-x" title="删除" @click="rmGreeting(i)">×</button>
+          </div>
+          <div class="rcq-hint" v-if="!(cur.greetings || []).length">还没有开场白</div>
+        </div>
+
+        <div class="cd-blk">
+          <div class="cd-blk-h"><b>示例对话</b>
+            <button class="btn btn-sm" @click="addExample">添加一组</button></div>
+          <div class="cd-item col" v-for="(ex, i) in cur.examples" :key="'e' + i">
+            <div class="cd-row2">
+              <input class="input" v-model="cur.examples[i].user" @input="dirty = true" placeholder="用户说" />
+              <input class="input" v-model="cur.examples[i].assistant" @input="dirty = true" placeholder="角色回" />
+              <button class="cd-x" title="删除" @click="rmExample(i)">×</button>
+            </div>
+          </div>
+          <div class="rcq-hint" v-if="!(cur.examples || []).length">还没有示例</div>
+        </div>
+
+        <div class="cd-blk">
+          <div class="cd-blk-h"><b>世界书</b>
+            <button class="btn btn-sm" @click="addLore">添加一条</button></div>
+          <div class="cd-item col" v-for="(l, i) in cur.lorebook" :key="'l' + i">
+            <div class="cd-row2">
+              <input class="input" :value="loreKeys(l)" @input="setLoreKeys(l, $event.target.value); dirty = true"
+                placeholder="触发关键词（顿号分隔）" />
+              <button class="cd-x" title="删除" @click="rmLore(i)">×</button>
+            </div>
+            <textarea class="rcq-ta" v-model="cur.lorebook[i].content" @input="dirty = true"
+              placeholder="这条背景设定"></textarea>
+          </div>
+          <div class="rcq-hint" v-if="!(cur.lorebook || []).length">还没有世界书条目</div>
+        </div>
+
+        <label class="rcq-fi wide"><span>禁则（每行一条）</span>
+          <textarea class="rcq-ta" :value="taboosText()" @input="setTaboosText($event.target.value); dirty = true"
+            placeholder="不要说的话、 不要做的事"></textarea>
+        </label>
       </div>
+
+      <!-- 行为 -->
+      <div class="rcq-form" v-if="section === 'behavior'">
+        <label class="rcq-fi wide"><span>模型提供商</span>
+          <select class="input" v-model="cur.model.provider_id" @change="dirty = true">
+            <option value="">（跟随账号默认）</option>
+            <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name || p.id }}</option>
+          </select>
+        </label>
+        <label class="rcq-fi wide"><span>模型名</span>
+          <input class="input" v-model="cur.model.model" @input="dirty = true" placeholder="留空 = 用提供商的默认模型" />
+        </label>
+        <label class="rcq-fi"><span>温度</span>
+          <input class="input" type="number" step="0.1" min="0" max="2"
+            v-model.number="cur.style.temperature" @input="dirty = true" />
+        </label>
+        <label class="rcq-fi"><span>最大 tokens</span>
+          <input class="input" type="number" step="64" min="64"
+            v-model.number="cur.style.max_tokens" @input="dirty = true" />
+        </label>
+        <label class="rcq-fi"><span>上下文轮数</span>
+          <input class="input" type="number" min="1"
+            v-model.number="cur.context.keep_rounds" @input="dirty = true" />
+        </label>
+        <label class="rcq-fi"><span>气泡色</span>
+          <input class="input" v-model="cur.style.color" @input="dirty = true" placeholder="#12b7f5" />
+        </label>
+      </div>
+
       <div class="rcq-flex" style="margin-top:12px">
-        <button class="btn btn-primary btn-sm" :disabled="!!busy" @click="save">保存</button>
-        <button class="btn btn-sm" v-if="cur.id && cur.id !== def" :disabled="!!busy"
-          @click="setDefault(cur)">设为默认</button>
-        <button class="btn btn-sm btn-danger" v-if="cur.id && !isNew" :disabled="!!busy"
-          @click="del(cur)">删除</button>
-        <span class="rcq-hint" v-if="dirty">有未保存的修改</span>
+        <button class="btn btn-sm" @click="setDefault(cur)">设为默认角色</button>
+        <button class="btn btn-sm" style="color:var(--err,#f5534f)"
+          :disabled="busy === 'del' + cur.id" @click="del(cur)">删除</button>
+        <span class="rcq-hint" style="margin-left:auto">卡片 v{{ cur.version || 1 }} · {{ cur.status === 'published' ? '已发布' : '草稿' }}</span>
       </div>
       <div class="rcq-note">
-        人格就是每轮对话的系统提示词。会话可以在「会话管理」里单独指定人格，没指定就用默认人格。
+        角色卡片是「定义」，账号和会话只引用它 —— 改卡片不会影响已经产生的历史会话。
+        想给别的机器人用，直接「导出」成 JSON 发过去，对方「导入」即可。
       </div>
     </div>
+
     <div class="rcq-pnl" v-else>
-      <div class="rcq-empty"><b>☺</b>左边选一个，或者新建</div>
+      <div class="rcq-empty"><b>☺</b>左边选一张卡片，或者新建一张</div>
     </div>
   </div>`,
 }
@@ -1621,7 +1886,7 @@ const Sessions = {
           </div>
 
           <div class="rcq-form">
-            <label class="rcq-fi"><span>人格</span>
+            <label class="rcq-fi"><span>角色卡片</span>
               <select class="select" :value="cur.persona_id || ''" :disabled="!!busy"
                 @change="patch('persona_id', $event.target.value)">
                 <option value="">跟随默认（{{ personaName(defPersona) }}）</option>
@@ -2292,7 +2557,7 @@ const TABS = [
   { id: 'account', label: 'QQ 账户', comp: Accounts },
   { id: 'query', label: '查询', comp: Query },
   { id: 'media', label: '媒体库', comp: MediaLib },
-  { id: 'persona', label: '人格', comp: Persona },
+  { id: 'cards', label: '角色卡片', comp: Cards },
   { id: 'sessions', label: '会话管理', comp: Sessions },
   { id: 'providers', label: '模型提供商', comp: Providers },
   { id: 'logs', label: '运行日志', comp: Logs },

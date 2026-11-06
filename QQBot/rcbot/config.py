@@ -86,8 +86,10 @@ DEFAULT = {
     },
     'providers': [],
     'default_provider': '',
-    'personas': [],
+    'personas': [],        # 旧的人格（自动同步自 cards，保留兼容）
     'default_persona': '',
+    'cards': [],           # 角色卡片（新形态，cards.py 管）
+    'default_card': '',
 }
 
 
@@ -241,8 +243,18 @@ def get_provider(cfg, pid=None, acct=None):
 
 
 def get_persona(cfg, pid=None, acct=None):
-    """人格优先级：会话级 > 账号级 > 全局默认 > 第一个。"""
-    pid = pid or (acct or {}).get('persona_id') or cfg.get('default_persona') or ''
+    """人格优先级：会话级 > 账号级 > 全局默认 > 第一个。
+
+    ★ 现在人格的本体是「角色卡片」（cards.py），这里返回的是**兼容形状**
+      （{id, name, prompt}），prompt 由卡片推导（含风格约束与世界书）。
+      老的调用方（机器人回复、试聊）不用改。
+    """
+    from . import cards as _cards
+    pid = pid or (acct or {}).get('persona_id') or (acct or {}).get('card_id') \
+        or cfg.get('default_card') or cfg.get('default_persona') or ''
+    c = _cards.find(cfg, pid)
+    if c:
+        return _cards.to_persona(c)
     for p in cfg.get('personas') or []:
         if p.get('id') == pid:
             return p

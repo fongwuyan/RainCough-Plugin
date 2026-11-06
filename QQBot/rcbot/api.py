@@ -11,7 +11,7 @@ import time
 
 from aiohttp import web
 
-from . import chats, compress, config, forward, group_avatar, llm, logbuf, media, search, store
+from . import cards, chats, compress, config, forward, group_avatar, llm, logbuf, media, search, store
 from .bot import attach_images
 
 
@@ -276,9 +276,10 @@ def make_app(mgr, bot):
     # ---------------- 人格
 
     async def get_personas(request):
+        # 兼容层：人格的本体已经是「角色卡片」，这里返回兼容形状
         cfg = config.load()
-        return ok({'items': cfg.get('personas') or [],
-                   'default': cfg.get('default_persona')})
+        items = [cards.to_persona(c) for c in cards.list_cards(cfg)]
+        return ok({'items': items, 'default': cards.default_id(cfg)})
 
     async def post_personas(request):
         b = await _body(request)
@@ -286,36 +287,83 @@ def make_app(mgr, bot):
         if not pid:
             return bad('缺少 id')
         cfg = config.load()
-        arr = cfg.get('personas') or []
-        cur = None
-        for p in arr:
-            if p.get('id') == pid:
-                cur = p
-                break
-        if cur is None:
-            cur = {'id': pid, 'name': pid, 'prompt': '', 'created_at': int(time.time())}
-            arr.append(cur)
+        cur = cards.find(cfg, pid) or cards.normalize({'id': pid, 'name': pid})
         for k in ('name', 'prompt'):
             if k in b:
                 cur[k] = b[k]
-        cur['updated_at'] = int(time.time())
         if b.get('make_default'):
-            cfg['default_persona'] = pid
-        cfg['personas'] = arr
-        if not cfg.get('default_persona'):
-            cfg['default_persona'] = pid
+            cur['status'] = 'published'
+        cards.save(cfg, cur, set_default=bool(b.get('make_default')))
         config.save(cfg)
-        return ok({'id': pid})
+        return ok({'id': cur['id']})
 
     async def del_persona(request):
         b = await _body(request)
         pid = (b.get('id') or '').strip()
         cfg = config.load()
-        cfg['personas'] = [p for p in (cfg.get('personas') or []) if p.get('id') != pid]
-        if cfg.get('default_persona') == pid:
-            cfg['default_persona'] = (cfg['personas'][0]['id'] if cfg['personas'] else '')
+        cards.delete(cfg, pid)
         config.save(cfg)
         return ok()
+
+    # ---------------- 角色卡片
+    async def get_cards(request):
+        cfg = config.load()
+        items = cards.list_cards(cfg)
+        return ok({'items': items, 'default': cards.default_id(cfg),
+                   'schema': cards.SCHEMA})
+
+    async def post_cards(request):
+        """保存角色卡片。传 id 就是更新，不传就是新建。"""
+        b = await _body(request)
+        card = b.get('card') if isinstance(b.get('card'), dict) else b
+        if not str(card.get('name') or '').strip():
+            return bad('角色名字不能为空')
+        cfg = config.load()
+        saved = cards.save(cfg, card, set_default=bool(b.get('set_default')))
+        config.save(cfg)
+        return ok(saved)
+
+    async def del_card(request):
+        b = await _body(request)
+        cid = (b.get('id') or '').strip()
+        if not cid:
+            return bad('缺少 id')
+        cfg = config.load()
+        n = cards.delete(cfg, cid)
+        config.save(cfg)
+        return ok({'left': n})
+
+    async def clone_card(request):
+        b = await _body(request)
+        cid = (b.get('id') or '').strip()
+        cfg = config.load()
+        c = cards.clone(cfg, cid, (b.get('name') or '').strip())
+        if not c:
+            return bad('找不到这张卡片')
+        config.save(cfg)
+        return ok(c)
+
+    async def import_card(request):
+        b = await _body(request)
+        try:
+            c = cards.import_card(b.get('json') or b.get('card') or '')
+        except Exception as e:
+            return bad(str(e)[:200])
+        cfg = config.load()
+        saved = cards.save(cfg, c)
+        config.save(cfg)
+        return ok(saved)
+
+    async def export_card(request):
+        q = request.query
+        cid = (q.get('id') or '').strip()
+        cfg = config.load()
+        c = cards.find(cfg, cid) if cid else None
+        if not c:
+            c = cards.find(cfg, cards.default_id(cfg))
+        if not c:
+            return bad('没有可导出的卡片')
+        return ok({'json': cards.export_card(c), 'card': c})
 
     # ---------------- 会话
 
@@ -711,6 +759,13 @@ def make_app(mgr, bot):
     app.router.add_get('/api/personas', get_personas)
     app.router.add_post('/api/personas', post_personas)
     app.router.add_post('/api/personas/delete', del_persona)
+
+    app.router.add_get('/api/cards', get_cards)
+    app.router.add_post('/api/cards', post_cards)
+    app.router.add_post('/api/cards/delete', del_card)
+    app.router.add_post('/api/cards/clone', clone_card)
+    app.router.add_post('/api/cards/import', import_card)
+    app.router.add_get('/api/cards/export', export_card)
 
     app.router.add_get('/api/sessions', get_sessions)
     app.router.add_get('/api/sessions/{sid}', get_session)

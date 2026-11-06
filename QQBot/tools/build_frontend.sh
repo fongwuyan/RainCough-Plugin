@@ -20,7 +20,14 @@ mkdir -p "$DST/frontend" "$DST/assets"
 cp -rf "$SRC/frontend/." "$DST/frontend/"
 
 echo "== 构建"
-node "$CORE/tools/build-plugin-frontend.js" "$PLUGIN"
+# ★ 构建工具即使失败也退出 0（只是打印 [fail]），所以必须自己检查输出，
+#   否则会出现"构建失败但看起来成功、回填的还是旧产物"的假象。
+BUILD_OUT="$(node "$CORE/tools/build-plugin-frontend.js" "$PLUGIN" 2>&1)" || true
+echo "$BUILD_OUT"
+if echo "$BUILD_OUT" | grep -qE '\[fail\]|ERROR'; then
+  echo "!! 构建失败，未回填产物" >&2
+  exit 1
+fi
 
 echo "== 回填产物"
 cp -f "$DST/assets/plugin.js" "$SRC/assets/plugin.js"
