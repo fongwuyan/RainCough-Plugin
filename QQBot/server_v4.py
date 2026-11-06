@@ -1229,30 +1229,6 @@ def chat_messages(params):
     return {"ok": True, "data": _data("/api/chat/messages?" + qs, timeout=30)}
 
 
-@rc.interface("qqbot.chat.send")
-def chat_send(params):
-    """消息页手动发一条文本（走 rcbot 的 OneBot 连接）。"""
-    p = dict(params or {})
-    sid = str(p.get("session_id") or "")
-    text = str(p.get("text") or "")
-    if not sid:
-        raise RuntimeError("缺少 session_id")
-    if not text.strip():
-        raise RuntimeError("消息内容为空")
-    return {"ok": True, "data": _data("/api/chat/send", "POST", p, timeout=40)}
-
-
-@rc.interface("qqbot.chat.send_media")
-def chat_send_media(params):
-    """发图片：前端先上传到临时目录，这里把路径交给 rcbot 发送。"""
-    p = dict(params or {})
-    if not p.get("session_id"):
-        raise RuntimeError("缺少 session_id")
-    if not p.get("path"):
-        raise RuntimeError("缺少 path")
-    return {"ok": True, "data": _data("/api/chat/send-media", "POST", p, timeout=90)}
-
-
 @rc.interface("qqbot.chat.recall")
 def chat_recall(params):
     """撤回一条消息（自己的、2 分钟内最稳）。"""
@@ -1570,7 +1546,7 @@ IFACES = [
     # 后端切换（NapCat / SnowLuma）
     "qqbot.backend.get", "qqbot.backend.set",
     "qqbot.chat.sessions", "qqbot.chat.messages", "qqbot.chat.stats",
-    "qqbot.chat.send", "qqbot.chat.recall", "qqbot.chat.send_media",
+    "qqbot.chat.recall",
     "qqbot.chat.export", "qqbot.chat.purge_media",
     # 查询 / 清空会话 / 媒体库
     "qqbot.chat.query", "qqbot.chat.senders", "qqbot.chat.clear_session",

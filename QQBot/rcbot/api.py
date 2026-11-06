@@ -503,55 +503,6 @@ def make_app(mgr, bot):
             keyword=q.get('kw') or '')
         return ok({'items': rows, 'count': len(rows)})
 
-    async def chat_send(request):
-        """消息页手动发文本。
-
-        session_id 形如 a3975339260:group:428313068 —— 从中拆出群/私聊与目标号。
-        返回入库后的记录，前端用它替换乐观消息（拿到真实 id 与时间）。
-        """
-        b = await _body(request)
-        sid = str(b.get('session_id') or '')
-        text = str(b.get('text') or '')
-        segs = b.get('segs') if isinstance(b.get('segs'), list) else None
-        if not sid:
-            return bad('缺少 session_id')
-        if not text.strip() and not segs:
-            return bad('消息内容为空')
-        parts = sid.split(':')
-        if len(parts) < 3 or not parts[2]:
-            return bad('session_id 格式不对')
-        kind, target = parts[1], parts[2]
-        if kind not in ('group', 'private'):
-            return bad('不支持的会话类型：%s' % kind)
-        reply_id = str(b.get('reply_id') or '')
-        try:
-            rec = await bot.send_manual(kind, target, text, reply_id=reply_id, segs=segs)
-        except Exception as e:
-            return bad(str(e)[:200])
-        return ok(rec)
-
-    async def chat_send_media(request):
-        """发图片：前端先传到临时目录，这里按路径读取并发送。"""
-        b = await _body(request)
-        sid = str(b.get('session_id') or '')
-        path = str(b.get('path') or '')
-        if not sid:
-            return bad('缺少 session_id')
-        if not path:
-            return bad('缺少 path')
-        parts = sid.split(':')
-        if len(parts) < 3 or not parts[2]:
-            return bad('session_id 格式不对')
-        kind, target = parts[1], parts[2]
-        if kind not in ('group', 'private'):
-            return bad('不支持的会话类型：%s' % kind)
-        try:
-            rec = await bot.send_media(kind, target, path,
-                                       reply_id=str(b.get('reply_id') or ''))
-        except Exception as e:
-            return bad(str(e)[:200])
-        return ok(rec)
-
     async def chat_recall(request):
         """撤回消息：调 OneBot delete_msg，成功后在库里打撤回标记。"""
         b = await _body(request)
@@ -730,9 +681,7 @@ def make_app(mgr, bot):
     app.router.add_get('/api/chat/messages', chat_messages)
     app.router.add_get('/api/chat/stats', chat_stats)
     app.router.add_get('/api/chat/export', chat_export)
-    app.router.add_post('/api/chat/send', chat_send)
     app.router.add_post('/api/chat/recall', chat_recall)
-    app.router.add_post('/api/chat/send-media', chat_send_media)
     app.router.add_post('/api/chat/purge-media', chat_purge_media)
     app.router.add_get('/api/chat/media-check', chat_media_check)
 
