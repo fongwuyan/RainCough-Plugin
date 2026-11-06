@@ -1229,6 +1229,19 @@ def chat_messages(params):
     return {"ok": True, "data": _data("/api/chat/messages?" + qs, timeout=30)}
 
 
+@rc.interface("qqbot.chat.send")
+def chat_send(params):
+    """消息页手动发一条文本（走 rcbot 的 OneBot 连接）。"""
+    p = dict(params or {})
+    sid = str(p.get("session_id") or "")
+    text = str(p.get("text") or "")
+    if not sid:
+        raise RuntimeError("缺少 session_id")
+    if not text.strip():
+        raise RuntimeError("消息内容为空")
+    return {"ok": True, "data": _data("/api/chat/send", "POST", p, timeout=40)}
+
+
 @rc.interface("qqbot.chat.stats")
 def chat_stats(params):
     """聊天记录统计 + 媒体占用 + 磁盘水位。"""
@@ -1536,6 +1549,7 @@ IFACES = [
     # 后端切换（NapCat / SnowLuma）
     "qqbot.backend.get", "qqbot.backend.set",
     "qqbot.chat.sessions", "qqbot.chat.messages", "qqbot.chat.stats",
+    "qqbot.chat.send",
     "qqbot.chat.export", "qqbot.chat.purge_media",
     # 查询 / 清空会话 / 媒体库
     "qqbot.chat.query", "qqbot.chat.senders", "qqbot.chat.clear_session",

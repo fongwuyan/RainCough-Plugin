@@ -503,6 +503,31 @@ def make_app(mgr, bot):
             keyword=q.get('kw') or '')
         return ok({'items': rows, 'count': len(rows)})
 
+    async def chat_send(request):
+        """消息页手动发文本。
+
+        session_id 形如 a3975339260:group:428313068 —— 从中拆出群/私聊与目标号。
+        返回入库后的记录，前端用它替换乐观消息（拿到真实 id 与时间）。
+        """
+        b = await _body(request)
+        sid = str(b.get('session_id') or '')
+        text = str(b.get('text') or '')
+        if not sid:
+            return bad('缺少 session_id')
+        if not text.strip():
+            return bad('消息内容为空')
+        parts = sid.split(':')
+        if len(parts) < 3 or not parts[2]:
+            return bad('session_id 格式不对')
+        kind, target = parts[1], parts[2]
+        if kind not in ('group', 'private'):
+            return bad('不支持的会话类型：%s' % kind)
+        try:
+            rec = await bot.send_manual(kind, target, text)
+        except Exception as e:
+            return bad(str(e)[:200])
+        return ok(rec)
+
     async def chat_stats(request):
         account_id = request.query.get('account_id') or ''
         cfg = config.load()
@@ -669,6 +694,7 @@ def make_app(mgr, bot):
     app.router.add_get('/api/chat/messages', chat_messages)
     app.router.add_get('/api/chat/stats', chat_stats)
     app.router.add_get('/api/chat/export', chat_export)
+    app.router.add_post('/api/chat/send', chat_send)
     app.router.add_post('/api/chat/purge-media', chat_purge_media)
     app.router.add_get('/api/chat/media-check', chat_media_check)
 

@@ -527,6 +527,42 @@ class Bot:
                 logbuf.error('bot', '发送失败：%s' % str(e)[:200])
                 break
 
+    async def send_manual(self, kind, target, text):
+        """面板「消息」页手动发一条文本。返回入库后的记录（前端直接替换乐观消息）。
+
+        ★ 与机器人自动回复共用同一条发送路径（ob.send_text），
+          所以 http/ws、token、群/私聊差异都不用再处理一遍。
+        """
+        text = str(text or '')
+        if not text.strip():
+            raise RuntimeError('消息内容为空')
+        if self.ob is None:
+            raise RuntimeError('QQ 还没连上')
+        r = await self.ob.send_text(kind, target, text)
+        if not isinstance(r, dict) or r.get('status') != 'ok':
+            raise RuntimeError('发送失败：%s' % str((r or {}).get('wording') or (r or {}).get('retcode') or r)[:160])
+        data = (r or {}).get('data') or {}
+        msg_id = str(data.get('message_id') or '')
+        uin = str((data.get('sender') or {}).get('user_id') or '')
+        if not uin.strip():
+            uin = str(getattr(self.ob, 'self_id', '') or '')
+        nick = ''
+        try:
+            info = await self.ob.call('get_login_info', timeout=8)
+            nick = str(((info or {}).get('data') or {}).get('nickname') or '')
+        except Exception:
+            pass
+        segs = [{'type': 'text', 'data': {'text': text}}]
+        cfg = config.load()
+        account_id = config.account_id(uin)
+        created = int(time.time())
+        row_id = await chats.record(account_id, kind, target, 'assistant', segs,
+                                    sender_id=uin, sender_name=nick or '我',
+                                    msg_id=msg_id, created_at=created, media=[])
+        return {'id': row_id, 'msg_id': msg_id, 'created_at': created,
+                'sender_id': uin, 'sender_name': nick or '我', 'role': 'assistant',
+                'segs': segs, 'text': text, 'media': [], 'recalled': 0}
+
     async def _record_own(self, account_id, acct_cfg, mtype, target, text, resp, nick):
         """记录机器人自己发出的消息。"""
         try:
