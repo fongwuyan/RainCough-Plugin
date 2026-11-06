@@ -324,7 +324,7 @@
  .rcq-ct:nth-child(4){border-left:0;border-top:1px solid var(--bd)}
  .rcq-ct:nth-child(5){border-top:1px solid var(--bd)}
 }
-`;function pf(){if(document.getElementById(Vd))return;let e=document.createElement("style");e.id=Vd,e.textContent=uf,document.head.appendChild(e)}var hf={data(){return{S:pt,ov:null,busy:!1,err:"",timer:null}},computed:{acc(){return this.ov&&this.ov.account||{}},ver(){return this.ov&&this.ov.versions||{}},sysinfo(){return this.ov&&this.ov.sys||{}},cpu(){return this.sysinfo.cpu||{}},mem(){return this.sysinfo.memory||{}},cnt(){return this.ov&&this.ov.counters||{}},botst(){return this.ov&&this.ov.bot||null},cpuPct(){let e=parseFloat((this.cpu.usage||{}).system);return isNaN(e)?0:Math.min(100,Math.round(e))},memPct(){let e=parseFloat(this.mem.total),t=parseFloat((this.mem.usage||{}).system);return!e||!t?0:Math.min(100,Math.round(t/e*100))},online(){return!!this.acc.login&&!this.acc.offline}},async mounted(){await this.loadBackend(),await this.load(),this.timer=setInterval(()=>this.load(!0),5e3)},beforeUnmount(){this.timer&&clearInterval(this.timer)},methods:{fmtNum:ni,async load(e){e||(this.busy=!0);try{this.ov=await Fe("qqbot.nc.overview"),this.err=(this.ov.errors||[]).join("\uFF1B")}catch(t){this.err=le(t)}finally{this.busy=!1}},dash(e){return 264-264*e/100},accAvatar(e){if(e.avatar)return e.avatar;let t=String(e&&e.uin||"");return/^\d{5,12}$/.test(t)?"https://q1.qlogo.cn/g?b=qq&nk="+t+"&s=100":""}},template:`
+`;function pf(){if(document.getElementById(Vd))return;let e=document.createElement("style");e.id=Vd,e.textContent=uf,document.head.appendChild(e)}var hf={data(){return{S:pt,ov:null,busy:!1,err:"",timer:null}},computed:{acc(){return this.ov&&this.ov.account||{}},ver(){return this.ov&&this.ov.versions||{}},sysinfo(){return this.ov&&this.ov.sys||{}},cpu(){return this.sysinfo.cpu||{}},mem(){return this.sysinfo.memory||{}},cnt(){return this.ov&&this.ov.counters||{}},botst(){return this.ov&&this.ov.bot||null},isSnow(){return(this.ov&&this.ov.backend||"")==="snowluma"},vers(){let e=this.ver;return this.isSnow?[["\u6846\u67B6\u7248\u672C",e.napcat],["QQ \u7248\u672C",e.qq],["OneBot \u7248\u672C",e.webui]]:[["NapCat \u7248\u672C",e.napcat],["QQ \u7248\u672C",e.qq],["WebUI \u7248\u672C",e.webui]]},cpuPct(){let e=parseFloat((this.cpu.usage||{}).system);return isNaN(e)?0:Math.min(100,Math.round(e))},memPct(){let e=parseFloat(this.mem.total),t=parseFloat((this.mem.usage||{}).system);return!e||!t?0:Math.min(100,Math.round(t/e*100))},online(){return!!this.acc.login&&!this.acc.offline}},async mounted(){await this.load(),this.timer=setInterval(()=>this.load(!0),5e3)},beforeUnmount(){this.timer&&clearInterval(this.timer)},methods:{fmtNum:ni,async load(e){e||(this.busy=!0);try{this.ov=await Fe("qqbot.nc.overview"),this.err=(this.ov.errors||[]).join("\uFF1B")}catch(t){this.err=le(t)}finally{this.busy=!1}},dash(e){return 264-264*e/100},accAvatar(e){if(e.avatar)return e.avatar;let t=String(e&&e.uin||"");return/^\d{5,12}$/.test(t)?"https://q1.qlogo.cn/g?b=qq&nk="+t+"&s=100":""}},template:`
   <div>
     <div v-if="err" class="rcq-pnl rcq-warn" style="font-size:12px">{{ err }}</div>
 
@@ -345,9 +345,9 @@
           <div class="rcq-sec">
             <div class="rcq-ph" style="margin-bottom:10px"><b>\u7CFB\u7EDF\u4FE1\u606F</b></div>
             <div class="rcq-kv">
-              <div class="k">NapCat \u7248\u672C</div><div class="v">{{ ver.napcat || '\u2014' }}</div>
-              <div class="k">QQ \u7248\u672C</div><div class="v">{{ ver.qq || '\u2014' }}</div>
-              <div class="k">WebUI \u7248\u672C</div><div class="v">{{ ver.webui || '\u2014' }}</div>
+              <template v-for="row in vers" :key="row[0]">
+                <div class="k">{{ row[0] }}</div><div class="v">{{ row[1] || '\u2014' }}</div>
+              </template>
               <div class="k">\u7CFB\u7EDF\u7248\u672C</div><div class="v">{{ sysinfo.arch || '\u2014' }}</div>
             </div>
           </div>
@@ -398,7 +398,13 @@
       </div>
     </div>
 
-    <div class="rcq-counters">
+    <div class="rcq-counters" v-if="isSnow" style="grid-template-columns:repeat(4,1fr)">
+      <div class="rcq-ct"><b>{{ cnt.groups || 0 }}</b><span>\u7FA4\u804A</span></div>
+      <div class="rcq-ct"><b>{{ cnt.friends || 0 }}</b><span>\u597D\u53CB</span></div>
+      <div class="rcq-ct"><b>{{ cnt.sessions || 0 }}</b><span>\u4F1A\u8BDD</span></div>
+      <div class="rcq-ct"><b>{{ cnt.messages || 0 }}</b><span>\u6D88\u606F</span></div>
+    </div>
+    <div class="rcq-counters" v-else>
       <div class="rcq-ct"><b>{{ cnt.configs || 0 }}</b><span>\u7F51\u7EDC\u914D\u7F6E</span></div>
       <div class="rcq-ct"><b>{{ cnt.httpServers || 0 }}</b><span>HTTP \u670D\u52A1\u5668</span></div>
       <div class="rcq-ct"><b>{{ cnt.httpClients || 0 }}</b><span>HTTP \u5BA2\u6237\u7AEF</span></div>
@@ -409,7 +415,7 @@
     <div class="rcq-pnl">
       <div class="rcq-ph"><b>RainCough Bot</b><span class="sp"></span>
         <span class="rcq-lamp" v-if="botst"><b :class="botst.onebot && botst.onebot.connected ? 'on' : 'off'"></b>
-          {{ botst.onebot && botst.onebot.connected ? '\u5DF2\u8FDE NapCat' : '\u672A\u8FDE\u63A5' }}</span>
+          {{ botst.onebot && botst.onebot.connected ? (isSnow ? '\u5DF2\u8FDE SnowLuma' : '\u5DF2\u8FDE NapCat') : '\u672A\u8FDE\u63A5' }}</span>
         <span class="rcq-lamp" v-else><b class="off"></b>rcbot \u672A\u8FD0\u884C</span>
       </div>
       <div class="rcq-row2" style="margin-top:0">

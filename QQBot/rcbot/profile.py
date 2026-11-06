@@ -22,8 +22,27 @@
   —— 群里别人看到的名字通常是群名片。
 """
 
+import re
+
 # 头像服务。q1/q2 是腾讯的 CDN，任选其一都能取到。
 _AVA_HOSTS = ('https://q1.qlogo.cn', 'https://q2.qlogo.cn')
+
+# ★ QQ 的"表情占位符"：群名里带自定义表情时，客户端存的是
+#     <$ÿĀ\x11">名字<$ÿĀ\x11">
+#   这种内部标记。OneBot 把它原样吐出来（SnowLuma 实测，NapCat 老群没遇到过），
+#   浏览器里就渲染成一串乱码 `<$ÿĀ">橙服①群<$ÿĀ">`。
+#   这里把 <$...> 段和 C0 控制字符一起去掉，只留可读文本。
+_QQ_MARKUP = re.compile(r'<\$[^>]{0,32}>')
+_CTRL = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
+
+
+def clean_name(s, limit=80):
+    """清洗 QQ 名字：去表情占位符 / 控制字符，压缩空白。"""
+    out = _QQ_MARKUP.sub('', str(s or ''))
+    out = _CTRL.sub('', out)
+    # 落单的代理项（UTF-16 半个 emoji）会让 json 序列化炸掉，一并清掉
+    out = ''.join(ch for ch in out if not (0xd800 <= ord(ch) <= 0xdfff))
+    return ' '.join(out.split())[:limit]
 
 
 def avatar_url(uin, size=100):
@@ -45,7 +64,7 @@ def display_name(uin, nick='', card=''):
     card 是群里的名片（sender.card），nick 是个人昵称（sender.nickname）。
     """
     for v in (card, nick):
-        s = str(v or '').strip()
+        s = clean_name(v)
         if s:
             return s
     return str(uin or '')

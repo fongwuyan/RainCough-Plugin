@@ -40,6 +40,15 @@ ONEBOT_WS_PORT = 3001
 # OneBot 的固定令牌 —— 部署时写进 onebot.json，rcbot 用它连 WS
 ONEBOT_TOKEN = "rcsnow"
 
+# ★ 远程桌面密码必须**固定**。
+#
+#   镜像默认行为：没给 VNC_PASSWD 时，每次容器启动都随机生成一个，
+#   只往日志打一次。于是"退出登录 → 重建容器"之后，面板里缓存的旧密码
+#   立刻失效，用户看到的就是 noVNC 弹出「需要凭证登录 / password check failed」。
+#   给了 VNC_PASSWD 就走 env 分支（start.sh: if (!isKnownVncPassword(envPass))），
+#   重启、重建、换卷都不会变。
+VNC_PASSWD = "rcbotvnc"
+
 VOLUMES = {
     "qq-gateway-data": "/app/data",
     "qq-client-config": "/app/.config",
@@ -106,8 +115,11 @@ def create():
             rc, o = sh("docker start %s" % CONTAINER, timeout=120)
             if rc == 0:
                 _boot_fix()
+                _VNC_SHARED["done"] = False
+                _vnc_shared()
             return rc == 0, o
         _boot_fix()
+        _vnc_shared()
         return True, "already running"
 
     cmd = (
@@ -116,11 +128,13 @@ def create():
         "--cap-add=SYS_PTRACE --security-opt seccomp=unconfined "
         "-e SNOWLUMA_WEBUI_HOST=0.0.0.0 "
         "-e SNOWLUMA_WEBUI_PORT=%d "
+        "-e VNC_PASSWD=%s "
         '-e SNOWLUMA_QQ_FLAGS="--disable-gpu --disable-software-rasterizer --disable-gpu-compositing" '
         "-p %d:%d -p %d:%d -p %d:%d -p %d:%d "
         "%s %s"
         % (CONTAINER,
            WEBUI_PORT,
+           VNC_PASSWD,
            NOVNC_PORT, NOVNC_PORT,
            WEBUI_PORT, WEBUI_PORT,
            ONEBOT_HTTP_PORT, ONEBOT_HTTP_PORT,
@@ -130,11 +144,16 @@ def create():
     rc, o = sh(cmd, timeout=300)
     if rc == 0:
         _boot_fix()
+        _VNC_SHARED["done"] = False
+        _vnc_shared()
     return rc == 0, o
 
 
 # 令牌是否已经固化过（进程级缓存，避免每次调接口都 docker exec）
 _TOKEN_FIXED = {"done": False}
+
+# x11vnc 是否已经切成共享模式（同上，进程级）
+_VNC_SHARED = {"done": False}
 
 
 def _boot_fix():
@@ -163,6 +182,54 @@ def _boot_fix():
         _TOKEN_FIXED["done"] = True
 
 
+def _vnc_shared():
+    """把容器里的 x11vnc 切成**共享模式**（允许多个观看者）。
+
+    ★ 为什么必须做：镜像的 start.sh 起 x11vnc 时只给了 -forever，没给 -shared。
+      libvncserver 因此是「独占」的：已经有一个客户端连着时，新连接会被
+        -dontdisconnect: Not shared & existing client  →  refusing new client
+      直接踢掉 —— noVNC 上看到的就是「已断开连接」。
+      面板里 iframe 刷新/关掉重开、或者两个标签页同时看，都会撞上这个。
+
+    ★ 为什么用 docker exec -d 起：直接在 exec 里 `x11vnc ... &` 的话，
+      exec 会话一结束子进程就被收走（SIGHUP / supervisord reaped）。
+      -d 让容器内的 sh 脱离 exec 会话，进程才能活。
+    ★ pkill 必须用 -x x11vnc：`pkill -f "x11vnc -display"` 会把
+      执行这条命令的 sh 自己也匹配上（命令行里含同样的串）→ 自杀。
+    """
+    if _VNC_SHARED["done"]:
+        return
+
+    def _count(pattern):
+        rc, o = sh("docker exec %s sh -c \"pgrep %s | wc -l\""
+                   % (CONTAINER, pattern), timeout=20)
+        try:
+            return int((o or "0").strip().splitlines()[-1])
+        except Exception:
+            return 0
+
+    # 容器刚重启时 start.sh 还没把 x11vnc 拉起来 —— 等它出现再替换，
+    # 否则我们起的实例和它后起的实例会同时在（两个都占不到同一个端口，
+    # 一个 listen 成功、另一个报 Address already in use，但 ps 里都是两个）。
+    for _ in range(15):
+        if _count("-x x11vnc") >= 1:
+            break
+        time.sleep(2)
+
+    all_n = _count("-x x11vnc")
+    shared_n = _count("-f '^x11vnc .*-shared'")
+    if all_n >= 1 and all_n == shared_n:
+        _VNC_SHARED["done"] = True
+        return
+
+    sh("docker exec -d %s sh -c 'pkill -x x11vnc; sleep 3; "
+       "x11vnc -display :1 -shared -noxrecord -noxfixes -noxdamage -forever -threads "
+       "-rfbauth /root/.vnc/passwd >/tmp/x11vnc.log 2>&1'" % CONTAINER, timeout=40)
+    time.sleep(5)
+    if _count("-f '^x11vnc .*-shared'") >= 1:
+        _VNC_SHARED["done"] = True
+
+
 def stop():
     if not exists():
         return True, "absent"
@@ -174,6 +241,9 @@ def restart():
     if not exists():
         return create()
     rc, o = sh("docker restart %s" % CONTAINER, timeout=180)
+    if rc == 0:
+        _VNC_SHARED["done"] = False
+        _vnc_shared()
     return rc == 0, o
 
 
@@ -201,11 +271,23 @@ def logs(lines=400):
 
 
 def vnc_password():
-    """从容器日志里取远程桌面密码。
+    """远程桌面密码。
 
-    ★ 不设 VNC_PASSWD 时，官方镜像首次启动会**随机生成**并只在日志打印一次；
-      容器重建只要数据卷还在，密码就不变（存在卷里）。
+    优先级：容器 env 里的 VNC_PASSWD（我们自己起的容器一定有，固定值）→
+    容器日志里打印的随机密码（老容器，或镜像换了行为时的兜底）。
+
+    ★ 不能只看日志：日志里是**启动那一刻**的值，容器一旦重建，
+      旧密码在日志里还留着（tail -n 1 拿到的是旧行），
+      而 x11vnc 已经用新密码了 —— 于是 iframe 弹「需要凭证登录」。
     """
+    rc, o = sh("docker inspect %s --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null"
+               % CONTAINER, timeout=20)
+    if rc == 0:
+        for ln in (o or "").splitlines():
+            if ln.startswith("VNC_PASSWD="):
+                pw = ln.split("=", 1)[1].strip()
+                if pw:
+                    return pw
     _, o = sh("docker logs %s 2>&1 | grep -Ei '远程桌面密码|remote desktop password' "
               "| tail -n 1" % CONTAINER, timeout=60)
     m = _VNC_RE.search(o or "")

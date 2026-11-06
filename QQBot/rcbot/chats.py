@@ -331,10 +331,12 @@ def seg_text(segs):
 
 # ---------------------------------------------------------------- 撤回
 
-async def mark_recalled(account_id, msg_id, by='', kind=''):
+async def mark_recalled(account_id, msg_id, by='', kind='', target=''):
     """按 message_id 给已记录的消息打撤回标记。返回命中的行数。
 
     撤回事件只有 message_id，没有原文 —— 原文在消息到达时就存好了。
+    target 是群号/对方 QQ 号：只用来给"没记到原文"的墓碑找对会话，
+    不然会落到一个 target 为空的幽灵会话里（前端左侧多出一行空白）。
     """
     if not msg_id:
         return 0
@@ -349,19 +351,24 @@ async def mark_recalled(account_id, msg_id, by='', kind=''):
     else:
         # 没命中：这条消息我们没记录到（机器人离线期间撤的，或 msg_id 对不上）。
         # 补一条墓碑，让聊天记录里能看出"这里原本有东西被撤了"。
-        await _tombstone(account_id, msg_id, by, kind)
+        await _tombstone(account_id, msg_id, by, kind, target)
     return n
 
 
-async def _tombstone(account_id, msg_id, by, kind):
+async def _tombstone(account_id, msg_id, by, kind, target=''):
     """撤回但没记录到原文 → 写一条占位。"""
-    sid = store.session_key(kind or 'private', '', 'public', account_id)
+    if not target:
+        # 找不到归属会话就干脆不写 —— 宁可少一条墓碑，
+        # 也不要凭空造一个会话（之前就是这么冒出空会话的）。
+        logbuf.debug('chat', '撤回墓碑跳过（不知道会话）：msg_id=%s' % msg_id)
+        return
+    sid = store.session_key(kind or 'private', str(target), 'public', account_id)
     try:
         await store._db.execute(
             'INSERT INTO chat_logs(account_id,session_id,kind,target_id,msg_id,sender_id,'
             'sender_name,sender_avatar,role,segs,text,media,recalled,recalled_by,recalled_at,created_at)'
             ' VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)',
-            (account_id or '', sid, kind or '', '', str(msg_id or ''), '', '',
+            (account_id or '', sid, kind or '', str(target), str(msg_id or ''), '', '',
              '', 'system', '[]', '[一条消息被撤回]', '[]', str(by or ''), _now(), _now()))
         await store._db.commit()
     except Exception as e:
@@ -378,7 +385,7 @@ async def list_sessions(account_id='', kind='', keyword='', limit=200):
     sql = ('SELECT session_id, account_id, kind, target_id,'
            ' COUNT(*) AS msg_count, MAX(created_at) AS last_at,'
            ' SUM(recalled) AS recalled_count'
-           ' FROM chat_logs WHERE 1=1')
+           " FROM chat_logs WHERE target_id<>''")
     args = []
     if account_id:
         sql += ' AND account_id=?'

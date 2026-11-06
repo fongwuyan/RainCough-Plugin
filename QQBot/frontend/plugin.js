@@ -434,6 +434,14 @@ const Overview = {
     mem() { return this.sysinfo.memory || {} },
     cnt() { return (this.ov && this.ov.counters) || {} },
     botst() { return (this.ov && this.ov.bot) || null },
+    // 框架不同，版本区三行的含义不同（NapCat 有 WebUI，SnowLuma 只有 OneBot）
+    isSnow() { return ((this.ov && this.ov.backend) || '') === 'snowluma' },
+    vers() {
+      const v = this.ver
+      return this.isSnow
+        ? [['框架版本', v.napcat], ['QQ 版本', v.qq], ['OneBot 版本', v.webui]]
+        : [['NapCat 版本', v.napcat], ['QQ 版本', v.qq], ['WebUI 版本', v.webui]]
+    },
     cpuPct() {
       const v = parseFloat((this.cpu.usage || {}).system)
       return isNaN(v) ? 0 : Math.min(100, Math.round(v))
@@ -447,7 +455,10 @@ const Overview = {
     online() { return !!this.acc.login && !this.acc.offline },
   },
   async mounted() {
-    await this.loadBackend()
+    // ★ 这里以前有一句 this.loadBackend()，但那是「QQ 账户」页的方法，
+    //   概览页没有 → mounted 直接抛 TypeError，ov 永远不加载，
+    //   整页停在"未登录/—"，而且 5 秒轮询也没起来（看着像后端挂了）。
+    //   概览的框架信息来自 overview 自己的 backend 字段，不需要单独拉。
     await this.load()
     this.timer = setInterval(() => this.load(true), 5000)
   },
@@ -495,9 +506,9 @@ const Overview = {
           <div class="rcq-sec">
             <div class="rcq-ph" style="margin-bottom:10px"><b>系统信息</b></div>
             <div class="rcq-kv">
-              <div class="k">NapCat 版本</div><div class="v">{{ ver.napcat || '—' }}</div>
-              <div class="k">QQ 版本</div><div class="v">{{ ver.qq || '—' }}</div>
-              <div class="k">WebUI 版本</div><div class="v">{{ ver.webui || '—' }}</div>
+              <template v-for="row in vers" :key="row[0]">
+                <div class="k">{{ row[0] }}</div><div class="v">{{ row[1] || '—' }}</div>
+              </template>
               <div class="k">系统版本</div><div class="v">{{ sysinfo.arch || '—' }}</div>
             </div>
           </div>
@@ -548,7 +559,13 @@ const Overview = {
       </div>
     </div>
 
-    <div class="rcq-counters">
+    <div class="rcq-counters" v-if="isSnow" style="grid-template-columns:repeat(4,1fr)">
+      <div class="rcq-ct"><b>{{ cnt.groups || 0 }}</b><span>群聊</span></div>
+      <div class="rcq-ct"><b>{{ cnt.friends || 0 }}</b><span>好友</span></div>
+      <div class="rcq-ct"><b>{{ cnt.sessions || 0 }}</b><span>会话</span></div>
+      <div class="rcq-ct"><b>{{ cnt.messages || 0 }}</b><span>消息</span></div>
+    </div>
+    <div class="rcq-counters" v-else>
       <div class="rcq-ct"><b>{{ cnt.configs || 0 }}</b><span>网络配置</span></div>
       <div class="rcq-ct"><b>{{ cnt.httpServers || 0 }}</b><span>HTTP 服务器</span></div>
       <div class="rcq-ct"><b>{{ cnt.httpClients || 0 }}</b><span>HTTP 客户端</span></div>
@@ -559,7 +576,7 @@ const Overview = {
     <div class="rcq-pnl">
       <div class="rcq-ph"><b>RainCough Bot</b><span class="sp"></span>
         <span class="rcq-lamp" v-if="botst"><b :class="botst.onebot && botst.onebot.connected ? 'on' : 'off'"></b>
-          {{ botst.onebot && botst.onebot.connected ? '已连 NapCat' : '未连接' }}</span>
+          {{ botst.onebot && botst.onebot.connected ? (isSnow ? '已连 SnowLuma' : '已连 NapCat') : '未连接' }}</span>
         <span class="rcq-lamp" v-else><b class="off"></b>rcbot 未运行</span>
       </div>
       <div class="rcq-row2" style="margin-top:0">

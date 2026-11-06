@@ -485,6 +485,64 @@ def _sysinfo_sse(timeout=7):
     return None
 
 
+def _sysinfo_proc():
+    """宿主机 CPU / 内存（SnowLuma 用）。
+
+    ★ 不能再调 _sysinfo_sse()：那是 NapCat WebUI 的 SSE 接口，
+      SnowLuma 下它要么超时（7s！把概览拖到 4 秒以上，前端首屏空白），
+      要么把已经停掉的 NapCat 又拉起来。直接读 /proc 最稳也最快。
+    返回结构与 SSE 那版一致：{cpu:{model,core,speed,usage:{system,qq}},
+                              memory:{total,usage:{system,qq}}}
+    """
+    out = {"cpu": {}, "memory": {}}
+    try:
+        model, mhz = "", []
+        with open("/proc/cpuinfo", "r", encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                if ln.startswith("model name") and not model:
+                    model = ln.split(":", 1)[1].strip()
+                elif ln.startswith("cpu MHz"):
+                    try:
+                        mhz.append(float(ln.split(":", 1)[1]))
+                    except ValueError:
+                        pass
+        out["cpu"]["model"] = model
+        out["cpu"]["core"] = len(mhz) or (os.cpu_count() or 0)
+        if mhz:
+            out["cpu"]["speed"] = "%.2f" % (sum(mhz) / len(mhz) / 1024.0)
+    except Exception:
+        pass
+
+    # 使用率要两次采样：/proc/stat 首行是累计值
+    try:
+        def snap():
+            with open("/proc/stat", "r", encoding="utf-8") as f:
+                p = [int(x) for x in f.readline().split()[1:]]
+            return p[3] + p[4], sum(p)      # idle+wait, total
+
+        i1, t1 = snap()
+        time.sleep(0.25)
+        i2, t2 = snap()
+        dt = (t2 - t1) or 1
+        out["cpu"]["usage"] = {"system": "%.1f" % (100.0 * (1 - (i2 - i1) / float(dt)))}
+    except Exception:
+        out["cpu"]["usage"] = {}
+
+    try:
+        mi = {}
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for ln in f:
+                k, _ = ln.split(":", 1)
+                mi[k] = int(ln.split()[1])
+        total = mi.get("MemTotal", 0) / 1024.0
+        avail = mi.get("MemAvailable", mi.get("MemFree", 0)) / 1024.0
+        out["memory"] = {"total": "%.1f" % total,
+                         "usage": {"system": "%.1f" % (total - avail)}}
+    except Exception:
+        pass
+    return out
+
+
 def _qq_process():
     """找到 QQ 主进程，返回 (pid, rss_mb, cpu_pct 采样)。"""
     try:
@@ -504,6 +562,10 @@ def _qq_process():
         return {"pid": pid, "rss_mb": round(rss, 1)}
     except Exception:
         return None
+
+
+# 群数/好友数的短期缓存（概览 5 秒轮询，别每次都问 OneBot）
+_COUNT_CACHE = {"v": {}, "t": 0}
 
 
 def _overview_snowluma():
@@ -532,23 +594,48 @@ def _overview_snowluma():
         out["errors"].append("还没有登录 QQ 账号 —— 去「QQ 账户」扫码（在远程桌面里）")
 
     # OneBot 版本（登录后才有）
+    #
+    # ★ 键名沿用 NapCat 那套（napcat/qq/webui），前端按 backend 决定标签文案：
+    #   SnowLuma 下 "napcat" 放框架名、"webui" 放网关版本（app_version）。
+    #   QQ 版本在容器里拿不到（不像 NapCat 是宿主机 deb），留空显示 —。
     try:
         v = backend.onebot_call("get_version_info") or {}
         out["versions"] = {
-            "napcat": "snowluma",
-            "qq": v.get("app_name") or "",
+            "napcat": v.get("app_name") or "SnowLuma",
+            "qq": "",
             "webui": v.get("app_version") or v.get("version") or "",
+            "onebot": v.get("protocol_version") or "",
         }
     except Exception:
-        out["versions"] = {"napcat": "snowluma"}
+        out["versions"] = {"napcat": "SnowLuma"}
 
-    out["sys"] = _sysinfo_sse()
+    out["sys"] = _sysinfo_proc()
     out["proc"] = None          # QQ 跑在容器里，宿主机看不到进程
     try:
         out["bot"] = _data("/api/status", timeout=8)
     except Exception as e:
         out["bot"] = None
         out["errors"].append("rcbot：%s" % str(e)[:120])
+
+    # 计数器：SnowLuma 没有 NapCat 的"网络配置/HTTP/WS 服务器"概念，
+    # 换成对用户有用的几个数（群/好友/会话/消息）。
+    # 群/好友数走 OneBot 查，但概览每 5 秒刷一次 —— 加 30 秒缓存，
+    # 不然一天下来白调几万次。
+    cnt = dict(_COUNT_CACHE.get("v") or {})
+    if time.time() - _COUNT_CACHE.get("t", 0) > 30 or not cnt:
+        try:
+            gl = backend.onebot_call("get_group_list") or []
+            fl = backend.onebot_call("get_friend_list") or []
+            cnt["groups"] = len(gl) if isinstance(gl, list) else 0
+            cnt["friends"] = len(fl) if isinstance(fl, list) else 0
+            _COUNT_CACHE.update({"v": {"groups": cnt["groups"], "friends": cnt["friends"]},
+                                 "t": time.time()})
+        except Exception:
+            pass
+    st = ((out.get("bot") or {}).get("stats") or {})
+    cnt["sessions"] = st.get("sessions") or 0
+    cnt["messages"] = st.get("chat_logs") or st.get("messages") or 0
+    out["counters"] = cnt
     return out
 
 

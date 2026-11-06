@@ -298,8 +298,10 @@ class Bot:
         msg_id = str(ev.get('message_id') or '')
         by = str(ev.get('operator_id') or ev.get('user_id') or '')
         kind = 'group' if nt == 'group_recall' else 'private'
+        # 群号/对方号：给"没记到原文"的墓碑定位会话用
+        target = str(ev.get('group_id') or ev.get('user_id') or '')
         try:
-            await chats.mark_recalled(account_id, msg_id, by, kind)
+            await chats.mark_recalled(account_id, msg_id, by, kind, target)
         except Exception as e:
             logbuf.warn('chat', '撤回处理失败：%s' % str(e)[:200])
 
@@ -560,7 +562,8 @@ class Bot:
             r = await ob.call('get_group_list', timeout=15)
             for g in (r.get('data') or []):
                 gid = str(g.get('group_id') or '')
-                name = g.get('group_name') or ''
+                # 群名里可能带 QQ 的表情占位符（<$ÿĀ">…），必须清洗后再入缓存
+                name = profile.clean_name(g.get('group_name'))
                 if gid and name:
                     self._group_names[gid] = name
             if self._group_names:
@@ -573,7 +576,7 @@ class Bot:
             r = await ob.call('get_friend_list', timeout=15)
             for f in (r.get('data') or []):
                 fid = str(f.get('user_id') or '')
-                name = f.get('remark') or f.get('nickname') or ''
+                name = profile.clean_name(f.get('remark') or f.get('nickname') or '')
                 if fid and name:
                     self._friend_names[fid] = name
             if self._friend_names:
@@ -588,11 +591,11 @@ class Bot:
         所以头像用"群号当 QQ 号"去 qlogo 取 —— 取不到时前端显示占位圆。
         """
         gid = str(gid or '')
-        name = self._group_names.get(gid, '')
+        name = profile.clean_name(self._group_names.get(gid, ''))
         return name or gid, profile.avatar_url(gid)
 
     def friend_display(self, uid):
         """私聊会话的显示名 + 头像。"""
         uid = str(uid or '')
-        name = self._friend_names.get(uid, '')
+        name = profile.clean_name(self._friend_names.get(uid, ''))
         return name or uid, profile.avatar_url(uid)
