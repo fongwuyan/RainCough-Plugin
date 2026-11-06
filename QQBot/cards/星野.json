@@ -95,8 +95,8 @@
     "不要跳戏，不要自称 AI，不要说「作为语言模型」"
   ],
   "model": {
-    "provider_id": "ovh-free",
-    "model": "Qwen3.8-27B"
+    "provider_id": "zhipu",
+    "model": "glm-4-flash"
   },
   "style": {
     "temperature": 0.85,
