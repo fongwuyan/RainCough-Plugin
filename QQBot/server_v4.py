@@ -1236,9 +1236,16 @@ def chat_messages(params):
 
 @rc.interface("qqbot.chat.random_reply")
 def chat_random_reply(params):
-    """从聊天档案里随机挑一条消息，让机器人对它回一句。"""
+    """从已启用的群聊里随机挑一条消息，让机器人对它回一句。"""
     p = dict(params or {})
     return {"ok": True, "data": _data("/api/chat/random_reply", "POST", p, timeout=180)}
+
+
+@rc.interface("qqbot.chat.random_reply.send")
+def chat_random_reply_send(params):
+    """把随机挑出来的那条回复真正发到 QQ。"""
+    p = dict(params or {})
+    return {"ok": True, "data": _data("/api/chat/random_reply/send", "POST", p, timeout=60)}
 
 
 @rc.interface("qqbot.chat.forward")
@@ -1649,7 +1656,7 @@ IFACES = [
     "qqbot.backend.get", "qqbot.backend.set",
     "qqbot.chat.sessions", "qqbot.chat.messages", "qqbot.chat.stats",
     "qqbot.chat.recall", "qqbot.chat.forward", "qqbot.chat.session_ui",
-    "qqbot.chat.random_reply",
+    "qqbot.chat.random_reply", "qqbot.chat.random_reply.send",
     "qqbot.chat.export", "qqbot.chat.purge_media",
     # 查询 / 清空会话 / 媒体库
     "qqbot.chat.query", "qqbot.chat.senders", "qqbot.chat.clear_session",

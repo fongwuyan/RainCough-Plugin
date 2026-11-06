@@ -8,11 +8,39 @@
 import json
 import os
 import time
+import uuid
 
 from aiohttp import web
 
 from . import cards, chats, compress, config, forward, group_avatar, llm, logbuf, media, profile, search, store
-from .bot import attach_images, strip_emoji, truncate_chars
+from .bot import attach_images, strip_emoji, strip_meta_leak, truncate_chars
+
+# ---------------- 随机挑回复的临时结果
+# random_reply 生成后先存这儿，用户点「发送到 QQ」时凭 token 取回发送
+# （不重新调模型 —— 页面看到什么，群里就是什么）。
+_RND_CACHE = {}
+_RND_TTL = 300      # 5 分钟过期
+_RND_MAX = 50
+
+
+def _put_random(token, item):
+    now = int(time.time())
+    for k in [k for k, v in _RND_CACHE.items() if now - (v.get('at') or 0) > _RND_TTL]:
+        _RND_CACHE.pop(k, None)
+    if len(_RND_CACHE) >= _RND_MAX:
+        for k in sorted(_RND_CACHE, key=lambda x: _RND_CACHE[x].get('at') or 0)[:10]:
+            _RND_CACHE.pop(k, None)
+    _RND_CACHE[token] = item
+
+
+def _take_random(token):
+    """取回并作废（一条结果只发一次，避免重复点击发两遍）。"""
+    item = _RND_CACHE.pop(token, None)
+    if not item:
+        return None
+    if int(time.time()) - (item.get('at') or 0) > _RND_TTL:
+        return None
+    return item
 
 
 def ok(data=None):
@@ -517,6 +545,9 @@ def make_app(mgr, bot):
           enabled_groups —— 只在「会话管理」里启用了的群聊里挑（默认）
           all_groups     —— 所有群聊
           session        —— 只在指定会话里挑（前端临时切换）
+
+        返回里带 token —— 用户点「发送到 QQ」时凭它把这条回复发出去
+        （不重新调模型，页面看到的就是群里会出现的）。
         """
         b = await _body(request)
         sid = (b.get('sid') or '').strip()
@@ -527,8 +558,8 @@ def make_app(mgr, bot):
         scope = (b.get('scope') or rp.get('scope') or 'enabled_groups').strip()
         acct = config.default_account(cfg) or {}
 
-        sql = ("SELECT id, session_id, kind, target_id, sender_id, sender_name,"
-               " text, created_at FROM chat_logs"
+        sql = ("SELECT id, account_id, session_id, kind, target_id, sender_id,"
+               " sender_name, text, created_at FROM chat_logs"
                " WHERE role='user' AND text<>'' AND recalled=0")
         args = []
         if scope == 'session' and sid:
@@ -572,15 +603,29 @@ def make_app(mgr, bot):
             mc = int(((card or {}).get('style') or {}).get('max_chars') or 0)
         except Exception:
             mc = 0
+        reply = strip_meta_leak(reply)
         if mc:
             reply = truncate_chars(reply, mc)
         if not ((card or {}).get('style') or {}).get('allow_emoji'):
             reply = strip_emoji(reply)
         # 附上这条消息来自哪个会话，页面上好显示
         title = sess.get('title') or picked.get('target_id') or ''
+        # 暂存这次结果：用户点「发送到 QQ」时凭 token 发出去
+        token = uuid.uuid4().hex[:16]
+        _put_random(token, {
+            'account_id': picked.get('account_id') or '',
+            'session_id': picked.get('session_id') or '',
+            'kind': picked.get('kind') or 'group',
+            'target_id': picked.get('target_id') or '',
+            'sender_id': picked.get('sender_id') or '',
+            'sender_name': picked.get('sender_name') or '',
+            'reply': reply,
+            'at': int(time.time()),
+        })
         return ok({
             'reply': reply,
             'provider': (used or {}).get('id'),
+            'token': token,
             'picked': {
                 'id': picked['id'],
                 'session_id': picked['session_id'],
@@ -593,6 +638,55 @@ def make_app(mgr, bot):
                 'created_at': picked['created_at'],
             },
         })
+
+    async def send_random_reply(request):
+        """把刚才随机挑出来的那条回复**真的发到 QQ**。
+
+        凭 random_reply 返回的 token 发送（不重新调模型），
+        页面看到什么，群里就出现什么。
+        """
+        b = await _body(request)
+        token = str(b.get('token') or '').strip()
+        item = _take_random(token)
+        if not item:
+            return bad('这次的结果已过期，请重新挑一条')
+        kind = item.get('kind') or 'group'
+        target = str(item.get('target_id') or '')
+        if not target:
+            return bad('没有目标会话')
+        acc_id = item.get('account_id') or ''
+        acc = getattr(mgr, 'accounts', {}).get(acc_id)
+        ob = getattr(acc, 'ob', None) if acc else None
+        if ob is None or not getattr(ob, 'connected', False):
+            return bad('账号没连上，稍后再试')
+        text = item.get('reply') or ''
+        if not text:
+            return bad('没有可发送的内容')
+        # 群里 @ 一下被挑中消息的说话人，让对方知道在回他
+        mention = item.get('sender_id') if kind == 'group' else None
+        try:
+            r = await ob.send_text(kind, target, text, mention=mention or None)
+        except Exception as e:
+            return bad('发送失败：%s' % str(e)[:200])
+        # 机器人自己的发言进聊天档案 + 喂模型的上下文
+        data = (r or {}).get('data') or {}
+        msg_id = str(data.get('message_id') or '')
+        cfg = config.load()
+        acct_cfg = config.find_account(cfg, acc_id) or {}
+        nick = acct_cfg.get('nick') or '机器人'
+        try:
+            segs = [{'type': 'text', 'data': {'text': text}}]
+            await chats.record(acc_id, kind, target, 'assistant', segs,
+                               sender_id=str((data.get('sender') or {}).get('user_id') or ''),
+                               sender_name=nick, msg_id=msg_id,
+                               created_at=int(time.time()), media=[])
+            if item.get('session_id'):
+                await store.add_message(item['session_id'], 'assistant', text)
+        except Exception as e:
+            logbuf.warn('api', '记录随机回复的自身消息失败：%s' % str(e)[:120])
+        logbuf.info('api', '随机挑回复已发到 %s/%s（msg_id=%s）' % (kind, target, msg_id))
+        return ok({'sent': True, 'message_id': msg_id, 'target_id': target,
+                   'kind': kind, 'at': mention or ''})
 
     # ---------------- 上下文预览
 
@@ -683,6 +777,7 @@ def make_app(mgr, bot):
                 mc = int(((card or {}).get('style') or {}).get('max_chars') or 0)
             except Exception:
                 mc = 0
+            reply = strip_meta_leak(reply)
             if mc:
                 reply = truncate_chars(reply, mc)
             if not ((card or {}).get('style') or {}).get('allow_emoji'):
@@ -981,6 +1076,7 @@ def make_app(mgr, bot):
     app.router.add_get('/api/logs', get_logs)
     app.router.add_get('/api/stats', get_stats)
     app.router.add_post('/api/chat/random_reply', random_reply)
+    app.router.add_post('/api/chat/random_reply/send', send_random_reply)
     app.router.add_get('/api/context', preview_context)
     app.router.add_get('/api/tools/search', tools_search)
     app.router.add_post('/api/test/chat', test_chat)

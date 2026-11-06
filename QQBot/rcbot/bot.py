@@ -38,6 +38,14 @@ _EMOJI_RE = re.compile(
 )
 
 
+# QQ 表情在模型输出里是「[微笑]」这种方括号写法 —— 模型爱加，但人设不要
+_QQ_FACE_RE = re.compile(
+    r'\[(?:微笑|大笑|得意|害羞|流泪|生气|疑问|嘘|委屈|酷|抓狂|吐|困|惊恐|'
+    r'流汗|憨笑|悠闲|奋斗|咒骂|尴尬|发怒|撇嘴|机智|庆祝|怄火|转圈|磕头|'
+    r'再见|擦汗|抠鼻|鼓掌|坏笑|左哼哼|右哼哼|哈欠|鄙视|喷血|斜眼笑|阴险|'
+    r'捂脸|飙泪|可爱|晕|开心|难过|惊讶|狗头|doge|OK|抱拳)\]')
+
+
 def strip_emoji(text):
     """去掉 emoji 与装饰符号。
 
@@ -48,10 +56,34 @@ def strip_emoji(text):
     if not text:
         return text
     s = _EMOJI_RE.sub('', text)
+    s = _QQ_FACE_RE.sub('', s)
     # emoji 删掉后常留下多余空格 / 空白行
     s = re.sub(r'[ \t]{2,}', ' ', s)
     s = re.sub(r'\n{3,}', '\n\n', s)
     return s.strip()
+
+
+# 泄漏了内部设定的用词 —— 出现这些词说明模型把元指令当内容说了
+_META_WORDS = ('人格', '切换', '两面', '理智', '疯狂', '禁则', '字数上限',
+               '人设', '说话风格', '系统提示词', 'system prompt', '我的设定')
+
+
+def strip_meta_leak(text):
+    """删掉那些**泄漏了内部设定**的句子。
+
+    ★ 实测翻车现场：卡片里写了「双人格切换规则」，模型回了一句
+      「……不过，如果是疯狂人格冒头，」—— 把规则当话说出来了。
+      prompt 里怎么写都挡不住（保密条款只是降低概率，不是杜绝），
+      所以后端再兜一道：整句含元词就整句丢掉。
+
+    丢完如果一句都不剩，返回空串（调用方就别发了）——
+      总比发一句胡话强。
+    """
+    if not text:
+        return text
+    parts = re.split(r'(?<=[。！？!?\n])', text)
+    keep = [p for p in parts if p.strip() and not any(w in p for w in _META_WORDS)]
+    return ''.join(keep).strip()
 
 
 def truncate_chars(text, limit):
@@ -584,7 +616,12 @@ class Bot:
             return
 
         reply = (reply or '').strip()
-        # emoji 兜底（卡片允许时才保留）
+        # ★ 兜底一：泄漏了内部设定的句子，整句丢掉
+        reply = strip_meta_leak(reply)
+        if not reply:
+            logbuf.warn('bot', '回复全是内部设定的泄漏，整条丢弃')
+            return
+        # 兜底二：emoji（卡片允许时才保留）
         if not ((card or {}).get('style') or {}).get('allow_emoji'):
             reply = strip_emoji(reply)
         if max_chars and len(reply) > max_chars:
