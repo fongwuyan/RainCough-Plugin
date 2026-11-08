@@ -4,7 +4,7 @@
 
 用法:
     MSYS_NO_PATHCONV=1 python tools/pull_file.py --target prod \
-        /root/qqbot-reinstall/qrcode.png ./napcat-qrcode.png
+        /root/qqbot-reinstall/qrcode.png ./qq-qrcode.png
 """
 import argparse
 import base64

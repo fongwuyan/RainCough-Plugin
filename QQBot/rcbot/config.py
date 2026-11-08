@@ -57,6 +57,14 @@ DEFAULT = {
     'features': {
         'web_search': {'enabled': False, 'max_results': 5},
         'vision': {'enabled': False, 'max_images': 3},
+        # ★ #sl 状态指令：任意群/私聊发这个关键词，机器人回一条 SnowLuma 状态。
+        #   默认开；关掉后 #sl 当成普通消息走正常的应答流程。
+        #   cooldown 是同一会话的冷却秒数，防止群里刷屏。
+        'sl_status': {
+            'enabled': True,
+            'keyword': '#sl',
+            'cooldown': 10,
+        },
         # ★ 随机挑消息回（消息页 🎲）
         #   scope:
         #     enabled_groups —— 只在「已启用」的群聊里挑（默认）
@@ -77,11 +85,10 @@ DEFAULT = {
         'media_dir': '',               # 空 = <数据目录同级>/media
         'export_dir': '',              # 空 = <数据目录同级>/exports
     },
-    # ★ QQ 框架后端（2026-11-06 从 NapCat 扩到双后端）
-    #   napcat   —— 宿主机原生安装（/opt/napcat + systemd + Xvfb）
-    #   snowluma —— 整包跑在 Docker 里（镜像自带 QQ + Xvfb + noVNC）
+    # ★ QQ 框架后端：只用 SnowLuma（Docker 整包，镜像自带 QQ + Xvfb + noVNC）
+    #   2026-11-07 起统一为 SnowLuma 单后端；kind 保留字段只为兼容老配置读取。
     'backend': {
-        'kind': 'napcat',
+        'kind': 'snowluma',
         # noVNC 对外主机名；空则由前端用当前页面 host 拼（推荐）
         'snowluma_public_host': '',
     },

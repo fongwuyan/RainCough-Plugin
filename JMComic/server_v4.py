@@ -145,6 +145,9 @@ def _chapter_files(aid, cid):
 _COVER_INFLIGHT = set()
 _COVER_INFLIGHT_LOCK = _th.Lock()
 
+# 同时生成几张封面。JM 接口并发高了会互相干扰（实测 6 并发有 1/3 失败）
+_COVER_SEM = _th.BoundedSemaphore(3)
+
 # 确认拿不到封面的 aid（本子无图 / 取图失败）。
 # 记下来有两个作用：不必反复重试；顺序裁剪时可以跳过它，避免堵住后面。
 _COVER_FAILED = set()
@@ -271,6 +274,66 @@ def _thumb_url_if_exists(aid):
     return ''
 
 
+def _write_cover(aid, ext, data):
+    """把封面字节落到 cache/<aid>.<ext>，返回路径。"""
+    cache = _cover_cache_dir()
+    os.makedirs(cache, exist_ok=True)
+    out = os.path.join(cache, '%s.%s' % (aid, ext))
+    if os.path.isfile(out) and os.path.getsize(out) > 0:
+        return out
+    tmp = out + '.tmp'
+    with open(tmp, 'wb') as f:
+        f.write(data)
+    os.replace(tmp, out)
+    return out
+
+
+def _local_cover_src(aid):
+    """本地已有这本的图时，直接拿第一页当封面。**0 网络请求**。
+
+    背景：服务端没缓存过封面时只能去 CDN 取，实测 TTFB 41 秒；一屏 20 本排队
+    就是几分钟，客户端必然超时 —— 这就是"云端封面部分不显示"的真因。
+    但这本往往已经下载到服务器上了：zip 里就是解好密的页面，读一条就是封面。
+    """
+    import zipfile
+    exts = ('webp', 'jpg', 'jpeg', 'png', 'gif')
+
+    def is_img(n):
+        return (not n.endswith('/')) and n.rsplit('.', 1)[-1].lower() in exts
+
+    cands = [os.path.join(_cover_cache_dir(), '%s.zip' % aid)]
+    for base in M.storage_paths():
+        cands.append(os.path.join(base, '%s.zip' % aid))
+    for zp in cands:
+        try:
+            if not (os.path.isfile(zp) and os.path.getsize(zp) > 0):
+                continue
+            with zipfile.ZipFile(zp) as zf:
+                names = sorted(n for n in zf.namelist() if is_img(n))
+                if not names:
+                    continue
+                data = zf.read(names[0])
+            if data:
+                return _write_cover(aid, names[0].rsplit('.', 1)[-1].lower(), data)
+        except Exception:
+            continue
+
+    for base in M.storage_paths():
+        d = os.path.join(base, str(aid))
+        if not os.path.isdir(d):
+            continue
+        for root, _dirs, files in os.walk(d):
+            imgs = sorted(f for f in files if f.rsplit('.', 1)[-1].lower() in exts)
+            if not imgs:
+                continue
+            try:
+                with open(os.path.join(root, imgs[0]), 'rb') as f:
+                    return _write_cover(aid, imgs[0].rsplit('.', 1)[-1].lower(), f.read())
+            except Exception:
+                return ''
+    return ''
+
+
 def _cached_cover(aid):
     """只看磁盘缓存，不发起网络请求。有原图但没缩略图时顺手生成。"""
     if not aid or not aid.isdigit():
@@ -289,15 +352,51 @@ def _cached_cover(aid):
                 return _cover_url('%s_t.webp' % aid)
             # 缩略图生成失败（Pillow 缺失/图片损坏）就退回原图，别让封面消失
             return _cover_url('%s.%s' % (aid, ext))
+
+    # 缓存里没有 → 从本地 zip / 图片目录取第一页（不发网络请求）
+    src = _local_cover_src(aid)
+    if src:
+        t = _make_thumb(src, aid)
+        if t:
+            return _cover_url('%s_t.webp' % aid)
+        return _cover_url(os.path.basename(src))
     return ''
 
 
-def _ensure_cover(aid, claim=True):
-    """封面: 缩略图 > 原图 > 在线取第一页并生成。返回 URL 或 ''。
+def _generate_cover(aid):
+    """真正去抓一张封面（含解码、缩略图）。失败抛异常，由调用方决定重试。"""
+    hit = _cached_cover(aid)
+    if hit:
+        return hit
+    cache = _cover_cache_dir()
+    client = M.jm()
+    album = client.get_album_detail(aid)
+    photo_id = str(album.episode_list[0][0])
+    if photo_id == '1' and len(album.episode_list) == 1:
+        photo_id = str(album.album_id)
+    photo = client.get_photo_detail(photo_id)
+    if not photo.page_arr:
+        return ''
+    filename = photo.page_arr[0]
+    ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else 'jpg'
+    save_path = os.path.join(cache, '%s.%s' % (aid, ext))
+    os.makedirs(cache, exist_ok=True)
+    data = M._download_image(aid, photo_id, filename, save_path)
+    if not data:
+        raise RuntimeError('download empty')
+    M.decode_jm_image(data, photo.scramble_id, photo_id, filename, save_path)
+    t = _make_thumb(save_path, aid)
+    _perf('cover', False, 0.0)
+    if t:
+        return _cover_url('%s_t.webp' % aid)
+    return _cover_url('%s.%s' % (aid, ext))
 
-    [claim] True  —— 占用 inflight 名额；若该 aid 正在生成中，直接返回 ''，
-                     本次拿不到，等下一次查询（避免重复生成）。
-             False —— 只查缓存，不触发生成、不占名额（前端轮询用）。
+
+def _ensure_cover(aid, claim=True):
+    """封面: 缩略图 > 原图 > 本地 zip > 在线取第一页并生成。返回 URL 或 ''。
+
+    [claim] True  —— 参与生成；同一 aid 正在生成时等它，而不是直接返回空。
+             False —— 只查缓存，不触发生成（轮询用）。
     """
     if not aid or not aid.isdigit():
         return ''
@@ -308,41 +407,32 @@ def _ensure_cover(aid, claim=True):
     if not claim:
         return ''
 
-    # 抢占：同一 aid 同时只允许一个生成任务
     with _COVER_INFLIGHT_LOCK:
-        if aid in _COVER_INFLIGHT:
-            return ''
-        _COVER_INFLIGHT.add(aid)
-
-    cache = _cover_cache_dir()
-    try:
-        client = M.jm()
-        album = client.get_album_detail(aid)
-        photo_id = str(album.episode_list[0][0])
-        if photo_id == '1' and len(album.episode_list) == 1:
-            photo_id = str(album.album_id)
-        photo = client.get_photo_detail(photo_id)
-        if not photo.page_arr:
-            return ''
-        filename = photo.page_arr[0]
-        ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else 'jpg'
-        save_path = os.path.join(cache, '%s.%s' % (aid, ext))
-        os.makedirs(cache, exist_ok=True)
-        with _SERVE_LOCK:
-            # 双检：等锁期间别的线程可能已经下好了
+        busy = aid in _COVER_INFLIGHT
+        if not busy:
+            _COVER_INFLIGHT.add(aid)
+    if busy:
+        # 别人正在生成：等它（最多 8 秒，桥的超时是 15 秒）。
+        # 旧实现这里直接返回空，客户端会把"正在生成"当成"没有封面"。
+        for _ in range(32):
+            _time.sleep(0.25)
             hit = _cached_cover(aid)
             if hit:
                 return hit
-            data = M._download_image(aid, photo_id, filename, save_path)
-            if not data:
-                return ''
-            M.decode_jm_image(data, photo.scramble_id, photo_id, filename, save_path)
-            t = _make_thumb(save_path, aid)
-        _perf('cover', False, 0.0)
-        if t:
-            return _cover_url('%s_t.webp' % aid)
-        return _cover_url('%s.%s' % (aid, ext))
-    except Exception:
+        return ''
+
+    try:
+        # ★ 并发生成限制在 3：JM 的 album/chapter 接口并发一高就互相干扰，
+        #   表现为"一屏封面里总有几张永远出不来"。失败退避 0.4 秒再试一次。
+        with _COVER_SEM:
+            for attempt in range(2):
+                try:
+                    return _generate_cover(aid)
+                except Exception:
+                    if attempt == 0:
+                        _time.sleep(0.4)
+                    else:
+                        return ''
         return ''
     finally:
         with _COVER_INFLIGHT_LOCK:
@@ -356,6 +446,42 @@ def _s(params, key, defv=''):
 # ---- 搜索内存缓存(5min, ≤50 条 LRU) ----
 _SEARCH_CACHE = {}
 _SEARCH_MAX = 50
+
+# 站内分类。
+#
+# ★ 只有这几个值在**移动端 API** 上真的生效（`/search?...&c=xxx`）：
+#   实测 doujin/single/short/another/hanman/meiman 各自返回不同的列表，
+#   而 cosplay / 3D / english_site 会被服务端忽略（等于"全部"）——
+#   那三个只有网页端支持，而网页端域名在服务器上根本连不通。
+CATEGORY_LIST = [
+    ('', '全部'),
+    ('doujin', '同人'),
+    ('single', '单本'),
+    ('short', '短篇'),
+    ('hanman', '韩漫'),
+    ('meiman', '美漫'),
+    ('another', '其他'),
+]
+CATEGORY_VALUES = set(c for c, _ in CATEGORY_LIST if c)
+
+
+def _api_search(client, keyword, page, category='', main_tag=0):
+    """站内搜索（可带分类）。
+
+    ★ 分类只能靠 URL 上的 `c` 参数：jmcomic 的 search_site(category=...) 只对
+      网页端有效，移动端 API 客户端会把它丢掉。所以这里自己拼 URL 再解析。
+    """
+    from jmcomic import JmPageTool, JmSearchPage
+    params = {'main_tag': main_tag, 'search_query': keyword,
+              'page': page, 'o': 'mr', 't': 'a'}
+    if category:
+        params['c'] = category
+    resp = client.req_api(client.append_params_to_url(client.API_SEARCH, params))
+    data = resp.model_data
+    # 直接搜车号会被重定向成单本
+    if data.get('redirect_aid', None) is not None:
+        return JmSearchPage.wrap_single_album(client.get_album_detail(data.redirect_aid), page)
+    return JmPageTool.parse_api_to_search_page(data, page)
 
 
 def _search_cache_get(key):
@@ -381,10 +507,21 @@ def jm_search(params):
         page = int(_p(params).get('page') or 1)
     except (TypeError, ValueError):
         page = 1
-    mode = _s(params, 'mode', 'keyword')
-    if not keyword:
+    mode = _s(params, 'mode', 'site') or 'site'
+
+    # 分类编码在 mode 里（`cat:doujin`）而不是单独一个参数：
+    # /search 的 REST 参数映射写在 plugin.json 里，加字段要重启面板；
+    # mode 是既有字段，客户端直接传 `cat:xxx` 即可，零改动上线。
+    category = ''
+    if mode.startswith('cat:'):
+        category = mode[4:].strip().lower()
+        if category not in CATEGORY_VALUES:
+            _err('未知分类: %s' % category)
+        mode = 'site'
+
+    if not keyword and not category:
         _err('请输入搜索关键词')
-    cache_key = '%s|%d|%s' % (keyword, page, mode)
+    cache_key = '%s|%d|%s|%s' % (keyword, page, mode, category)
     cached = _search_cache_get(cache_key)
     if cached is not None:
         return cached
@@ -404,11 +541,14 @@ def jm_search(params):
         if mode == 'author':
             result = client.search_author(search_query=keyword, page=page)
         elif mode == 'tag':
-            result = client.search_tag(search_query=keyword, page=page)
+            result = _api_search(client, keyword, page, category, main_tag=3)
         elif mode == 'work':
-            result = client.search_work(search_query=keyword, page=page)
+            result = _api_search(client, keyword, page, category, main_tag=1)
+        elif keyword:
+            result = _api_search(client, keyword, page, category)
         else:
-            result = client.search_site(search_query=keyword, page=page)
+            # 只有分类、没有关键词 → 直接翻这个分类的最新列表
+            result = client.categories_filter(page, 'a', category, 'mr')
         items = [{'id': str(aid), 'name': name} for aid, name in result]
         cached_meta = M.load_metadata()
         for item in items:
@@ -417,7 +557,8 @@ def jm_search(params):
                 item['author'] = m.get('author', '')
                 item['tags'] = m.get('tags', [])
         data = {'items': items, 'total': getattr(result, 'total', 0),
-                'page_count': getattr(result, 'page_count', 1)}
+                'page_count': getattr(result, 'page_count', 1),
+                'category': category, 'mode': mode}
         _search_cache_set(cache_key, data)
         return data
     except Exception as e:
@@ -435,51 +576,156 @@ def jm_meta(params):
         _err('获取信息失败: %s' % e)
 
 
+def _album_with_disk(data, aid):
+    """给专辑详情补上「服务器盘上到底有没有」的三个字段。
+
+    App 打开一本时只有这一个请求，如果详情里不带这个信息，
+    就只能靠 dl/status 猜 —— 而那是有任务记录才准的。
+    """
+    d = dict(data or {})
+    cached = 0
+    complete = False
+    try:
+        cached = int(M.scan_cached_files(aid) or 0)
+    except Exception:
+        cached = 0
+    try:
+        complete = bool(M.is_complete_download(aid))
+    except Exception:
+        complete = False
+    d['cached'] = cached
+    d['downloaded'] = complete
+    # 页数：详情里可能是 page_count，也可能是 total；都没有就用盘上的
+    if not d.get('total_pages'):
+        d['total_pages'] = d.get('page_count') or cached
+    return d
+
+
+ALBUM_TTL = 6 * 3600
+
+
+def _cached_detail(aid, max_age=ALBUM_TTL):
+    """读专辑详情的磁盘缓存。
+
+    [max_age] 为 None 表示**不看时间** —— 已下载到本地的本子用它：
+    章节以盘上为准，缓存只是用来补标签/简介/相关推荐，
+    而这些字段半年不变，没必要跟着 6 小时过期一起丢掉。
+    """
+    try:
+        cache = M._load_cache(M.ALBUM_CACHE_FILE)
+        e = cache.get(str(aid))
+        if e and e.get('_v') == 2 and e.get('data'):
+            if max_age is None or _time.time() - e.get('fetched', 0) < max_age:
+                return e['data']
+    except Exception:
+        pass
+    return None
+
+
+def _merge_local(local, extra):
+    """本地专辑（只有名字/作者/章节）用网络数据补上标签、简介、页数、相关推荐。
+
+    只补**空的**字段：章节这类以盘上为准，不能被网络数据盖掉。
+    """
+    if not extra:
+        return local
+    out = dict(local)
+    for k in ('tags', 'description', 'page_count', 'related',
+              'likes', 'views', 'comment_count'):
+        if not out.get(k) and extra.get(k):
+            out[k] = extra[k]
+    return out
+
+
+def _fetch_detail(aid):
+    """真去站点取一次详情，写缓存 + 顺手把名字/作者/标签记进 metadata。
+
+    metadata 是永久的：这样下载到本地的本子下次从盘上读也能带上标签，
+    不用依赖 6 小时就过期的详情缓存。
+    """
+    import time
+    detail = M.jm().get_album_detail(aid)
+    lib = M.load_library()
+    if aid not in lib:
+        lib[aid] = {}
+    lib[aid]['name'] = detail.name
+    lib[aid]['author'] = detail.author
+    lib[aid]['updated'] = int(time.time())
+    M.save_library(lib)
+    tags = list(detail.tags) if detail.tags else []
+    try:
+        M.remember_meta(aid, detail.name or '', detail.author or '', tags)
+    except Exception:
+        pass
+    chapters = []
+    for ep in detail.episode_list:
+        cid = str(ep[0])
+        if cid == '1' and len(detail.episode_list) == 1:
+            cid = str(detail.album_id)
+        chapters.append({'aid': str(detail.album_id), 'cid': cid,
+                         'name': ep[2] if len(ep) > 2 else ''})
+    data = {
+        'id': str(detail.album_id), 'name': detail.name, 'author': detail.author,
+        'authors': list(detail.authors) if detail.authors else [],
+        'description': detail.description or '',
+        'tags': tags,
+        'likes': detail.likes, 'views': detail.views,
+        'comment_count': detail.comment_count, 'page_count': detail.page_count,
+        'chapters': chapters,
+        'related': [
+            {'id': str(r.get('id', '')), 'name': r.get('name', ''), 'author': r.get('author', '')}
+            for r in (detail.related_list or [])
+        ],
+    }
+    cache = M._load_cache(M.ALBUM_CACHE_FILE)
+    cache[aid] = {'data': data, 'fetched': int(time.time()), '_v': 2}
+    M._save_cache(M.ALBUM_CACHE_FILE, cache)
+    return data
+
+
+def _remember_from(data, aid):
+    """把详情里的名字/作者/标签记进 metadata（已有且相同就不写盘）。
+
+    详情缓存是会过期的，metadata 不会 —— 记一份，库列表和"已下载"的本子
+    才永远带得上标签。
+    """
+    if not data:
+        return
+    try:
+        M.remember_meta(aid, data.get('name') or '', data.get('author') or '',
+                        data.get('tags') or [])
+    except Exception:
+        pass
+
+
 @rc.interface("jmcomic.album")
 def jm_album(params):
     import time
     aid = _s(params, 'aid')
     if not aid or not aid.isdigit():
         _err('缺少漫画ID')
-    cache = M._load_cache(M.ALBUM_CACHE_FILE)
-    entry = cache.get(aid)
-    if entry and entry.get('_v') == 2 and time.time() - entry.get('fetched', 0) < 6 * 3600:
-        return entry['data']
+    entry = _cached_detail(aid)
+    if entry:
+        _remember_from(entry, aid)
+        return _album_with_disk(entry, aid)
+
     local = M.album_from_local(aid)
     if local:
-        return local
+        # ★ 已下载到服务器的本子原来直接 return local —— 而 local 里只有
+        #   名字/作者/章节，tags/简介/页数/相关推荐全是空的，
+        #   表现为"服务器上有的本子，详情页没有标签"。
+        #   这里用详情缓存补（不看时效），仍然空就现取一次（实测约 1 秒）。
+        merged = _merge_local(local, _cached_detail(aid, max_age=None))
+        if not merged.get('tags'):
+            try:
+                merged = _merge_local(merged, _fetch_detail(aid))
+            except Exception:
+                pass          # 取不到就算了，别让详情页打不开
+        _remember_from(merged, aid)
+        return _album_with_disk(merged, aid)
+
     try:
-        detail = M.jm().get_album_detail(aid)
-        lib = M.load_library()
-        if aid not in lib:
-            lib[aid] = {}
-        lib[aid]['name'] = detail.name
-        lib[aid]['author'] = detail.author
-        lib[aid]['updated'] = int(time.time())
-        M.save_library(lib)
-        chapters = []
-        for ep in detail.episode_list:
-            cid = str(ep[0])
-            if cid == '1' and len(detail.episode_list) == 1:
-                cid = str(detail.album_id)
-            chapters.append({'aid': str(detail.album_id), 'cid': cid,
-                             'name': ep[2] if len(ep) > 2 else ''})
-        data = {
-            'id': str(detail.album_id), 'name': detail.name, 'author': detail.author,
-            'authors': list(detail.authors) if detail.authors else [],
-            'description': detail.description or '',
-            'tags': list(detail.tags) if detail.tags else [],
-            'likes': detail.likes, 'views': detail.views,
-            'comment_count': detail.comment_count, 'page_count': detail.page_count,
-            'chapters': chapters,
-            'related': [
-                {'id': str(r.get('id', '')), 'name': r.get('name', ''), 'author': r.get('author', '')}
-                for r in (detail.related_list or [])
-            ],
-        }
-        cache[aid] = {'data': data, 'fetched': int(time.time()), '_v': 2}
-        M._save_cache(M.ALBUM_CACHE_FILE, cache)
-        return data
+        return _album_with_disk(_fetch_detail(aid), aid)
     except Exception as e:
         _err('获取漫画详情失败: %s' % e)
 
@@ -765,14 +1011,77 @@ def jm_dl_start(params):
     return {'ok': True, 'result': r, 'task': _dl().status(aid)}
 
 
+def _disk_task(aid):
+    """没有任务记录时，按盘上实际情况合成一个任务。
+
+    ★ "没有任务记录" ≠ "服务器没下过这本"。
+      旧管理器下的、Web 端下的、任务被「移除」掉但文件留着的，
+      盘上都是齐的 —— 但 dl_tasks.json 里没有它。
+      原来这里直接返回 task=None，App 和 Web 就把它显示成「未下载」，
+      再点一次下载还会整本重下一遍。
+
+    返回 None 表示盘上确实什么都没有。
+    """
+    aid = str(aid)
+    cached = 0
+    complete = False
+    total = 0
+    try:
+        cached = int(M.scan_cached_files(aid) or 0)
+    except Exception:
+        cached = 0
+    try:
+        complete = bool(M.is_complete_download(aid))
+    except Exception:
+        complete = False
+    try:
+        entry = (M.load_library() or {}).get(aid) or {}
+        total = int(entry.get('total') or 0)
+    except Exception:
+        total = 0
+
+    if not complete and cached <= 0:
+        return None
+
+    # 页数以盘上为准：库里的 total 可能是旧的（换过下载目录/删过页）
+    pages = max(cached, total)
+    done = pages if complete else min(cached, pages)
+    status = 'completed' if complete else 'paused'
+    now = int(_time.time())
+    return {
+        'aid': aid,
+        'name': '', 'author': '',
+        'status': status,
+        'total_pages': pages,
+        'done_pages': done,
+        'failed_pages': 0,
+        'total_chapters': 0,
+        'done_chapters': 0,
+        'current': '',
+        'bytes': 0,
+        'started_at': 0,
+        'updated_at': now,
+        'error': '' if complete else '盘上有残留但没任务记录，点继续补齐',
+        'workers': 0,
+        'elapsed': 0,
+        'speed_bps': 0,
+        'eta_sec': 0,
+        'failed_count': 0,
+        'failed_sample': [],
+        'progress': round(done * 100.0 / pages, 1) if pages else 0,
+        # 客户端可以据此区分「真任务」和「盘上补出来的」
+        'synthetic': True,
+    }
+
+
 @rc.interface("jmcomic.dl.status")
 def jm_dl_status(params):
     """单个任务的进度。{aid}"""
     aid = _s(params, 'aid')
     t = _dl().status(aid)
-    if not t:
-        return {'ok': True, 'task': None}
-    return {'ok': True, 'task': t}
+    if t:
+        return {'ok': True, 'task': t}
+    return {'ok': True, 'task': _disk_task(aid)}
 
 
 @rc.interface("jmcomic.dl.list")
@@ -857,13 +1166,33 @@ def jm_image(params):
     return {'ok': True, 'url': url}
 
 
+@rc.interface("jmcomic.zip")
+def jm_zip(params):
+    """整包下载：返回 cache 下的 zip 地址，由面板 REST 桥流给客户端。
+
+    App 端改成「下一个 zip 再本地解压」之后，几百次逐页请求变成一次文件传输。
+    """
+    aid = str(_p(params).get('aid') or '').strip()
+    if not aid.isdigit():
+        _err('缺少漫画ID')
+    path = M.ensure_zip(aid)
+    if not path:
+        _err('这本还没下载到服务器，先触发服务端下载')
+    return {'zip': '/api/plugins/JMComic/cache/%s.zip' % aid}
+
+
 @rc.interface("jmcomic.library.list")
 def jm_library_list(params):
+    # ★ 默认一页给 500 而不是 45。
+    #   REST 桥的 /library 没在 plugin.json 里声明 page/page_size，
+    #   所以 App 传来的分页参数会被丢掉，永远只能拿到第一页 ——
+    #   库里超过 45 本时多出来的那些在 App 里根本看不见。
+    #   前端(Web)自己带 page_size=60，不受这个默认值影响。
     try:
         page = max(int(_p(params).get('page') or 1), 1)
-        page_size = max(int(_p(params).get('page_size') or 45), 1)
+        page_size = max(int(_p(params).get('page_size') or 500), 1)
     except (TypeError, ValueError):
-        page, page_size = 1, 45
+        page, page_size = 1, 500
     snap = _lib_snap_get(force=False)
     items = list(snap) if snap is not None else []
     total = len(items)

@@ -2,7 +2,7 @@
 """SILK 语音解码（QQ 原生语音格式）。
 
 ★ 为什么需要它：
-  NapCat 把语音转成 AMR 再给 OneBot，ffmpeg 直接能解；
+  协议端把语音转成 AMR 再给 OneBot，ffmpeg 直接能解；
   **SnowLuma 给的是原始 SILK**（文件头 `\\x02#!SILK_V3`，但文件名还叫 .amr），
   ffmpeg 没有 SILK 解码器，转码必然失败 → 面板里语音显示"浏览器放不了"。
 

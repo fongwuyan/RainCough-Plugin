@@ -1,0 +1,156 @@
+{
+  "name": "laizhangtu",
+  "label": "来张图",
+  "version": "1.1.0",
+  "description": "Lolicon 插画：标签搜索结果列表、随机取图、图片处理与本地缓存（由原 QQ 脚本插件迁移到面板 v4）",
+  "author": "光 / RainCough",
+  "icon": "",
+  "requirements": [
+    "requests>=2.31",
+    "pillow>=9"
+  ],
+  "frontend": {
+    "entry": "assets/plugin.js",
+    "vue": "3.5",
+    "pages": [
+      {
+        "path": "",
+        "title": "来张图"
+      }
+    ]
+  },
+  "backend": {
+    "lang": "python",
+    "exec": [
+      "python3",
+      "server_v4.py"
+    ],
+    "capabilities": [
+      "invoke",
+      "heartbeat",
+      "log.tail"
+    ]
+  },
+  "interfaces": [
+    {
+      "id": "laizhangtu.info",
+      "visibility": "all",
+      "version": "1",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      },
+      "description": "插件信息与能力说明"
+    },
+    {
+      "id": "laizhangtu.config.get",
+      "visibility": "all",
+      "version": "1",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      },
+      "description": "读取配置"
+    },
+    {
+      "id": "laizhangtu.config.save",
+      "visibility": "main",
+      "version": "1",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      },
+      "description": "保存配置（含取值范围校验）"
+    },
+    {
+      "id": "laizhangtu.fetch",
+      "visibility": "main",
+      "version": "1",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      },
+      "description": "按标签表达式取一张插画，处理后落入本地缓存"
+    },
+    {
+      "id": "laizhangtu.search",
+      "visibility": "all",
+      "version": "1",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      },
+      "description": "按标签搜索，一次返回最多 20 条作品元数据（不下载图片、不写历史）"
+    },
+    {
+      "id": "laizhangtu.pick",
+      "visibility": "main",
+      "version": "1",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      },
+      "description": "从最近一次搜索结果中按 id 选取指定作品，下载处理后落入本地缓存"
+    },
+    {
+      "id": "laizhangtu.history.list",
+      "visibility": "all",
+      "version": "1",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      },
+      "description": "最近获取的插画记录"
+    },
+    {
+      "id": "laizhangtu.history.clear",
+      "visibility": "main",
+      "version": "1",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      },
+      "description": "清空历史与已见记录"
+    },
+    {
+      "id": "laizhangtu.cache.stats",
+      "visibility": "all",
+      "version": "1",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      },
+      "description": "缓存目录占用统计"
+    },
+    {
+      "id": "laizhangtu.cache.clear",
+      "visibility": "main",
+      "version": "1",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      },
+      "description": "清空缓存图片（同时清空历史）"
+    }
+  ]
+}

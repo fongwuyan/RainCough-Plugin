@@ -2,7 +2,7 @@
 
 RainCough 面板（v6）的插件仓库。插件通过根目录的 `registry.json` 分发。
 
-当前包含 1 个插件：**JMComic**（禁漫天堂搜索与漫画阅读，含配套安卓客户端 JMReader）。
+当前包含 4 个可分发插件：**JMComic**、**QQBot**、**vm**、**laizhangtu**（以 `registry.json` 为准）。
 
 ## 安装方式
 
@@ -39,7 +39,18 @@ sudo systemctl restart rc-v6.service
 | 插件 | 说明 | 系统依赖 |
 |---|---|---|
 | `JMComic` | 禁漫天堂搜索与漫画阅读 | Python + `jmcomic` / `requests`（`plugin.json` 的 `requirements` 已声明，面板启动前会预检） |
+| `QQBot` | QQ 机器人控制台（SnowLuma / NapCat 双后端） | Python + OneBot 协议端（NapCat 需自行部署并登录） |
 | `vm` | KVM/QEMU 虚拟机管理：列表、启停、实时监控、创建、快照、VNC 控制台 | `libvirt-clients`(`virsh`) + `qemu-utils`(`qemu-img`)，创建虚拟机额外需要 `virtinst` |
+| `laizhangtu` | 来张图：Lolicon 标签搜索结果列表（≤20 条，可选中取图）、随机取图、图片处理与本地缓存（QQ 脚本插件移植版） | Python + `requests` / `pillow`，需外网访问 `api.lolicon.app` 与图片代理 |
+
+### laizhangtu 插件：内容安全说明
+
+`laizhangtu` 由原目录 `E:/jiaob/来张图` 的 QQ 脚本插件迁移而来，原始源码存档在
+`laizhangtu/legacy/`。**插件不打包任何图片素材**（原目录的本地缓存未复制），图片只在
+运行时按需下载到插件自己的 `cache/`；后端会同时校验输入标签与 API 返回作品的标题/标签，
+拒绝涉及未成年人的性化内容（搜索结果列表逐条过滤）。`r18` 默认关闭，仅限成年人在本地个人环境使用。
+默认走「小图 small」并带整次取图的时间预算，慢速图片代理下会自动降级，避免出现「搜索超时」；
+搜索列表只取元数据、默认不加载第三方缩略图。配置、接口、排障与合规说明详见 `laizhangtu/README.md`。
 
 ### vm 插件：权限说明
 

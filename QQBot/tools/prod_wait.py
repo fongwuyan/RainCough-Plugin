@@ -27,7 +27,7 @@ def main():
     t0 = time.time()
     while time.time() - t0 < args.seconds:
         time.sleep(args.interval)
-        out = api.run('tail -%d %s 2>/dev/null; echo "---MARK---"; ps aux | grep -c "[0]3_install_napcat_qq"' % (args.tail, args.log), timeout=60)
+        out = api.run('tail -%d %s 2>/dev/null; echo "---MARK---"; ps aux | grep -c "[s]nowluma_deploy"' % (args.tail, args.log), timeout=60)
         text = out or ''
         if args.marker and args.marker in text:
             print('== 标记 %s 出现 ==' % args.marker)

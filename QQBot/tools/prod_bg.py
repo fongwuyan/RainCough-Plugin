@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 """在生产机后台跑一个脚本（nohup + 日志），再轮询结果。
 
-面板终端通道有 ~15s 的 RPC 超时，长任务（装 QQ/NapCat/apt）必须走这条路。
+面板终端通道有 ~15s 的 RPC 超时，长任务（拉 SnowLuma 镜像 / apt）必须走这条路。
 
 用法:
     MSYS_NO_PATHCONV=1 python tools/prod_bg.py --target prod \
-        --script /root/qqbot-reinstall/03_install_napcat_qq.sh --tag install
+        --script /root/qqbot-reinstall/snowluma_deploy.sh --tag install
 """
 import argparse
 import os

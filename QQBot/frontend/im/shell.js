@@ -1,6 +1,7 @@
-// 「消息」页 —— 仿 QQ 桌面端整屏视图（方案 A：插件内 fixed overlay）
+// 「消息」页 —— 仿 QQ 桌面端的嵌入式消息中心
 //
-// 布局：rail(56) + 会话列表(268) + 聊天区
+// 布局：rail(52) + 会话列表(268) + 聊天区；不再 fixed 覆盖面板，
+//      跟其它页签一样嵌在插件页里（顶部选项卡始终可见）。
 // 数据：复用 qqbot.chat.sessions / qqbot.chat.messages，与「聊天记录」页同源
 import {
   S, loadSessions, loadSelf, openSession, loadMessages, current,
@@ -450,13 +451,7 @@ export const IM = {
         :title="it.title" @click="rail = it.id">
         <svg viewBox="0 0 24 24"><path :d="it.d" /></svg>
       </button>
-      <button class="im-nav" title="返回面板" @click="close">
-        <svg viewBox="0 0 24 24"><path d="M10 4H5a1 1 0 00-1 1v14a1 1 0 001 1h5v-2H6V6h4V4zm4 0v2h4v12h-4v2h5a1 1 0 001-1V5a1 1 0 00-1-1h-5zM11 11h4l-2-2 1.4-1.4L19 12l-4.6 4.4L13 15l2-2h-4v-2z"/></svg>
-      </button>
       <div class="sp"></div>
-      <button class="im-nav" title="设置" @click="close">
-        <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 100 8 4 4 0 000-8zm9 4c0-.6-.1-1.2-.2-1.8l2-1.5-2-3.4-2.3 1a8 8 0 00-3-1.7L15 2H9l-.5 2.6a8 8 0 00-3 1.7l-2.3-1-2 3.4 2 1.5a9 9 0 000 3.6l-2 1.5 2 3.4 2.3-1a8 8 0 003 1.7L9 22h6l.5-2.6a8 8 0 003-1.7l2.3 1 2-3.4-2-1.5c.1-.6.2-1.2.2-1.8z"/></svg>
-      </button>
     </div>
 
     <!-- 会话列表 -->
@@ -524,9 +519,6 @@ export const IM = {
         </button>
         <button class="im-ico" title="刷新" @click="reload">
           <svg viewBox="0 0 24 24"><path d="M12 5V2L7 6l5 4V7a5 5 0 11-5 5H5a7 7 0 107-7z"/></svg>
-        </button>
-        <button class="im-ico" title="关闭（Esc）" @click="close">
-          <svg viewBox="0 0 24 24"><path d="M6.4 5L5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6 6.4 5z"/></svg>
         </button>
       </div>
 

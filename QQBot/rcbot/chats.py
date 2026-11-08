@@ -7,9 +7,10 @@
 
 为什么撤回只能靠"先存内容再打标"：
   OneBot 的 group_recall / friend_recall 事件只带 message_id，不带原文
-  （实测 napcat.mjs:85979-85988 反编译出的类定义）。
+  （实测协议端反编译出的类定义）。
   所以消息到达那一刻必须把内容存下来，撤回事件只负责按 msg_id 打标。
 """
+import hashlib
 import json
 import os
 import time
@@ -37,10 +38,35 @@ _EXT_BY_TYPE = {
 }
 
 
-def media_root(cfg=None):
-    """媒体根目录：config.chat.media_dir > 默认 <包目录>/media。
+def _panel_plugins_dir():
+    """读面板「多盘存储」落下的 storage-targets.json，返回插件数据根。
 
-    传入 cfg 时直接用它（不重读文件）—— 消息处理路径上会频繁调用。
+    面板不把密码给插件，只落一个小 JSON；读不到就返回空，走默认目录。
+    """
+    cands = []
+    env = os.environ.get('RC_STORAGE_TARGETS')
+    if env:
+        cands.append(env)
+    cands.append('/opt/raincough/data/storage-targets.json')
+    cands.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              '..', '..', 'data', 'storage-targets.json'))
+    for p in cands:
+        try:
+            if os.path.isfile(p):
+                with open(p, 'r', encoding='utf-8') as f:
+                    j = json.load(f)
+                if isinstance(j, dict) and j.get('plugins'):
+                    return str(j['plugins'])
+        except Exception:
+            continue
+    return ''
+
+
+def media_root(cfg=None):
+    """媒体根目录（新数据的写入位置）。
+
+    优先级：测试覆盖 > config.chat.media_dir > 面板多盘策略 > <包目录>/media。
+    老数据的读取另见 media_fallback_roots()（切换盘后旧文件仍能找到）。
     """
     if _media_root_override:
         return _media_root_override
@@ -53,7 +79,42 @@ def media_root(cfg=None):
             d = ((_cfg.load().get('chat') or {}).get('media_dir') or '')
         except Exception:
             pass
-    return d or MEDIA_DIR
+    if d:
+        return d
+    pdir = _panel_plugins_dir()
+    if pdir:
+        d = os.path.join(pdir, 'QQBot', 'media')
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            return MEDIA_DIR
+        return d
+    return MEDIA_DIR
+
+
+def media_fallback_roots(cfg=None):
+    """读老媒体时额外搜索的目录（切盘前的位置）。"""
+    out = []
+    root = media_root(cfg)
+    for d in (root, MEDIA_DIR):
+        if d and d not in out:
+            out.append(d)
+    return out
+
+
+def resolve_rel(rel, cfg=None):
+    """把 media_files.rel 解析成磁盘上的绝对路径，优先当前根，再回落旧根。"""
+    rel = str(rel or '')
+    if not rel:
+        return ''
+    for root in media_fallback_roots(cfg):
+        p = os.path.join(root, rel)
+        try:
+            if os.path.isfile(p):
+                return p
+        except Exception:
+            continue
+    return os.path.join(media_root(cfg), rel)
 
 
 def _now():
@@ -82,6 +143,19 @@ async def record(account_id, kind, target_id, role, segs, sender_id='', sender_n
     """
     if session_id is None:
         session_id = store.session_key(kind, target_id, 'public', account_id)
+    # ★ 同一条消息可能被记两次：
+    #   · SnowLuma 开了 reportSelfMessage → 事件流里来一次 message_sent
+    #   · 发送动作成功后 _record_own 兜底又记一次
+    #   以前没有去重，自发消息要么一条没有、要么变两条。按 (账号, msg_id, role)
+    #   判重；msg_id 为空时不去重（老数据/拿不到 id 的发送仍要记下来）。
+    msg_id = str(msg_id or '')
+    if msg_id:
+        cur = await store._db.execute(
+            'SELECT id FROM chat_logs WHERE account_id=? AND msg_id=? AND role=? LIMIT 1',
+            (account_id or '', msg_id, role or 'user'))
+        dup = await cur.fetchone()
+        if dup:
+            return dup['id']
     text = seg_text(segs)
     if not sender_avatar:
         sender_avatar = profile.avatar_url(sender_id)
@@ -747,7 +821,7 @@ _KIND_TEXT = 'text'
 async def query_messages(sender='', recalled='', kind='', keyword='',
                          session_id='', account_id='', date_from=0, date_to=0,
                          limit=50, before_id=0):
-    """按条件查消息。
+    """按条件查消息，返回 {items, total, has_more}。
 
     sender  —— QQ 号（数字，精确匹配 sender_id）或昵称（模糊匹配 sender_name）
     recalled—— '' 全部 / 'yes' 已撤回 / 'no' 未撤回
@@ -755,67 +829,89 @@ async def query_messages(sender='', recalled='', kind='', keyword='',
                / face 表情 / file 文件
     keyword —— 文本关键词（模糊）
     条件之间是「与」关系，可以叠加使用。
+
+    ★ total 是**真实命中数**（同条件 COUNT），不是本页条数；
+      has_more 用 limit+1 判断，最后一页不会再多请求一次。
     """
-    sql = 'SELECT * FROM chat_logs WHERE 1=1'
+    where = ' WHERE 1=1'
     args = []
 
     if account_id:
-        sql += ' AND account_id=?'
+        where += ' AND account_id=?'
         args.append(account_id)
     if session_id:
-        sql += ' AND session_id=?'
+        where += ' AND session_id=?'
         args.append(session_id)
     if sender:
         s = str(sender).strip()
         if s.isdigit():
-            sql += ' AND sender_id=?'
+            where += ' AND sender_id=?'
             args.append(s)
         else:
-            sql += ' AND sender_name LIKE ?'
+            where += ' AND sender_name LIKE ?'
             args.append('%' + s + '%')
     if recalled == 'yes':
-        sql += ' AND recalled=1'
+        where += ' AND recalled=1'
     elif recalled == 'no':
-        sql += ' AND recalled=0'
+        where += ' AND recalled=0'
     if date_from:
-        sql += ' AND created_at>=?'
+        where += ' AND created_at>=?'
         args.append(int(date_from))
     if date_to:
-        sql += ' AND created_at<=?'
+        where += ' AND created_at<=?'
         args.append(int(date_to))
     if keyword:
-        sql += ' AND LOWER(text) LIKE ?'
-        args.append('%' + str(keyword).lower() + '%')
+        kw = str(keyword).strip()
+        # 3 字以上走 FTS5 trigram（中文子串也能命中）；1-2 字退回 LIKE
+        if len(kw) >= 3 and getattr(store, 'FTS_READY', False):
+            where += ' AND id IN (SELECT rowid FROM chat_logs_fts WHERE chat_logs_fts MATCH ?)'
+            args.append('"' + kw.replace('"', '""') + '"')
+        else:
+            where += ' AND LOWER(text) LIKE ?'
+            args.append('%' + kw.lower() + '%')
 
     if kind and kind != 'all':
         if kind == _KIND_TEXT:
             # 纯文本：不含任何媒体占位符，也不含撤回墓碑
-            sql += (" AND text!=''"
-                    " AND text NOT LIKE '%[图片]%'"
-                    " AND text NOT LIKE '%[语音]%'"
-                    " AND text NOT LIKE '%[视频]%'"
-                    " AND text NOT LIKE '%[表情]%'"
-                    " AND text NOT LIKE '%[文件:%'"
-                    " AND text NOT LIKE '%[卡片]%'"
-                    " AND text NOT LIKE '%一条消息被撤回%'")
+            where += (" AND text!=''"
+                      " AND text NOT LIKE '%[图片]%'"
+                      " AND text NOT LIKE '%[语音]%'"
+                      " AND text NOT LIKE '%[视频]%'"
+                      " AND text NOT LIKE '%[表情]%'"
+                      " AND text NOT LIKE '%[文件:%'"
+                      " AND text NOT LIKE '%[卡片]%'"
+                      " AND text NOT LIKE '%一条消息被撤回%'")
         else:
             # 含该类型媒体：用 media JSON 里的 kind 判定
             # ★ 这里不能用 '%s' 格式化 —— 模式串里的 % 会被当成格式符。
             #   模式串本身是参数，% 在 LIKE 里是通配符，安全。
-            sql += ' AND media LIKE ?'
+            where += ' AND media LIKE ?'
             # ★ 模式串前后都要 % —— 少了末尾的 % 就变成"必须匹配到结尾"，
             #   而 JSON 里 "kind": "video" 后面还有别的字段，永远匹配不上。
             args.append('%"kind": "' + str(kind) + '"%')
 
+    total = 0
+    try:
+        cur = await store._db.execute('SELECT COUNT(*) AS c FROM chat_logs' + where, args)
+        row = await cur.fetchone()
+        total = int(row['c']) if row and row['c'] is not None else 0
+    except Exception as e:
+        logbuf.debug('chat', '查询计数失败：%s' % str(e)[:80])
+
+    sql = 'SELECT * FROM chat_logs' + where
+    page_args = list(args)
     if before_id:
         sql += ' AND id<?'
-        args.append(int(before_id))
-
+        page_args.append(int(before_id))
+    lim = max(1, int(limit))
     sql += ' ORDER BY id DESC LIMIT ?'
-    args.append(int(limit))
+    page_args.append(lim + 1)
 
-    cur = await store._db.execute(sql, args)
+    cur = await store._db.execute(sql, page_args)
     rows = [dict(r) for r in await cur.fetchall()]
+    has_more = len(rows) > lim
+    if has_more:
+        rows = rows[:lim]
     for r in rows:
         r['segs'] = _loads(r.get('segs'), [])
         r['media'] = _loads(r.get('media'), [])
@@ -828,8 +924,7 @@ async def query_messages(sender='', recalled='', kind='', keyword='',
                 if any(isinstance(m, dict) and (m.get('kind') or '') == kind
                        for m in r['media'])]
 
-    total = len(rows)
-    return list(reversed(rows)), total
+    return {'items': list(reversed(rows)), 'total': total, 'has_more': has_more}
 
 
 def _abs_media(media):
@@ -840,16 +935,106 @@ def _abs_media(media):
     exists=0 表示文件已经不在了（被删/被清）—— 前端据此显示"已失效"，
     不该再去发请求（会刷一串 404）。
     """
-    root = media_root()
     for m in media:
         if isinstance(m, dict) and m.get('rel'):
-            p = os.path.join(root, m['rel'])
-            m['abs'] = p
-            try:
-                m['exists'] = 1 if os.path.isfile(p) else 0
-            except Exception:
-                m['exists'] = 0
+            m['abs'] = resolve_rel(m['rel'])
+            m['exists'] = 1 if _exists(m['rel']) else 0
     return media
+
+
+# ---------------------------------------------------------------- 存在性 / 缩略图
+
+# 文件是否存在：媒体库一次翻 60 条 × 多条媒体 = 上百次 stat，
+# 全同步会阻塞事件循环。按 rel 做 60s 缓存，写操作后由 invalidate 清掉。
+_exists_cache = {}
+_EXISTS_TTL = 60.0
+
+
+def invalidate_exists(rels=None):
+    if rels is None:
+        _exists_cache.clear()
+        return
+    for r in rels:
+        _exists_cache.pop(r, None)
+
+
+def _exists(rel):
+    if not rel:
+        return False
+    now = time.time()
+    hit = _exists_cache.get(rel)
+    if hit and now - hit[0] < _EXISTS_TTL:
+        return hit[1]
+    try:
+        ok = os.path.isfile(resolve_rel(rel))
+    except Exception:
+        ok = False
+    _exists_cache[rel] = (now, ok)
+    return ok
+
+
+def thumb_root():
+    d = os.path.join(media_root(), '.thumbs')
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        return ''
+    return d
+
+
+def ensure_thumb(rel, size=320, quality=82):
+    """按需生成缩略图（长边 size），返回缓存文件的绝对路径；失败返回 ''。
+
+    命名带 mtime/size：原图变了自动换新，不会拿旧图当新图。
+    没装 Pillow 时静默降级（返回空，前端回落到原图）。
+    """
+    rel = str(rel or '').strip()
+    if not rel:
+        return ''
+    try:
+        src = os.path.join(media_root(), rel)
+        st = os.stat(src)
+    except Exception:
+        return ''
+    try:
+        size = max(64, min(1024, int(size or 320)))
+    except Exception:
+        size = 320
+    key = hashlib.sha1(('%s|%d|%d|%d' % (rel, st.st_mtime_ns, st.st_size, size)).encode('utf-8')).hexdigest()[:24]
+    root = thumb_root()
+    if not root:
+        return ''
+    dst = os.path.join(root, key + '.jpg')
+    if os.path.isfile(dst):
+        return dst
+    try:
+        from PIL import Image
+    except Exception:
+        return ''
+    tmp = ''
+    try:
+        im = Image.open(src)
+        try:
+            im.draft('RGB', (size, size))  # JPEG 快速缩放，大图省 CPU
+        except Exception:
+            pass
+        im = im.convert('RGB')
+        w, h = im.size
+        scale = min(1.0, float(size) / float(max(w, h) or 1))
+        if scale < 1.0:
+            im = im.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+        tmp = dst + '.tmp'
+        im.save(tmp, 'JPEG', quality=quality, optimize=True)
+        os.replace(tmp, dst)
+        return dst
+    except Exception as e:
+        logbuf.debug('chat', '缩略图失败 %s：%s' % (rel, str(e)[:80]))
+        try:
+            if tmp and os.path.isfile(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        return ''
 
 
 async def query_senders(keyword='', limit=200):
@@ -874,45 +1059,57 @@ async def query_senders(keyword='', limit=200):
 # ---------------------------------------------------------------- 媒体库
 
 async def list_media(kind='', sender='', keyword='', session_id='',
-                     account_id='', limit=100, offset=0):
-    """媒体库列表。"""
-    sql = 'SELECT * FROM media_files WHERE 1=1'
+                     account_id='', limit=100, offset=0, sort='time'):
+    """媒体库列表，返回 {items, total, has_more}。sort: time|size|kind。"""
+    where = ' WHERE 1=1'
     args = []
     if account_id:
-        sql += ' AND account_id=?'
+        where += ' AND account_id=?'
         args.append(account_id)
     if kind and kind != 'all':
-        sql += ' AND kind=?'
+        where += ' AND kind=?'
         args.append(kind)
     if session_id:
-        sql += ' AND session_id=?'
+        where += ' AND session_id=?'
         args.append(session_id)
     if sender:
         s = str(sender).strip()
         if s.isdigit():
-            sql += ' AND sender_id=?'
+            where += ' AND sender_id=?'
             args.append(s)
         else:
-            sql += ' AND sender_name LIKE ?'
+            where += ' AND sender_name LIKE ?'
             args.append('%' + s + '%')
     if keyword:
-        sql += ' AND (LOWER(name) LIKE ? OR LOWER(rel) LIKE ?)'
+        where += ' AND (LOWER(name) LIKE ? OR LOWER(rel) LIKE ?)'
         args.append('%' + str(keyword).lower() + '%')
         args.append('%' + str(keyword).lower() + '%')
 
-    cur = await store._db.execute(sql + ' ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?',
-                                  args + [int(limit), int(offset)])
+    total = 0
+    try:
+        cur = await store._db.execute('SELECT COUNT(*) AS c FROM media_files' + where, args)
+        row = await cur.fetchone()
+        total = int(row['c']) if row and row['c'] is not None else 0
+    except Exception as e:
+        logbuf.debug('chat', '媒体计数失败：%s' % str(e)[:80])
+
+    order = {'time': 'created_at DESC, id DESC',
+             'size': 'bytes DESC, id DESC',
+             'kind': 'kind ASC, created_at DESC'}.get(sort or 'time', 'created_at DESC, id DESC')
+    lim = max(1, int(limit))
+    cur = await store._db.execute(
+        'SELECT * FROM media_files' + where + ' ORDER BY ' + order + ' LIMIT ? OFFSET ?',
+        args + [lim + 1, int(offset)])
     rows = [dict(r) for r in await cur.fetchall()]
+    has_more = len(rows) > lim
+    if has_more:
+        rows = rows[:lim]
     root = media_root()
     for r in rows:
         r['avatar'] = profile.avatar_url(r.get('sender_id') or '')
-        r['abs'] = os.path.join(root, r.get('rel') or '') if r.get('rel') else ''
-        r['exists'] = 1
-        try:
-            r['exists'] = 1 if os.path.isfile(r['abs']) else 0
-        except Exception:
-            r['exists'] = 0
-    return rows
+        r['abs'] = resolve_rel(r.get('rel') or '') if r.get('rel') else ''
+        r['exists'] = 1 if _exists(r.get('rel')) else 0
+    return {'items': rows, 'total': total, 'has_more': has_more}
 
 
 async def media_stats(account_id=''):

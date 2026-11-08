@@ -1,0 +1,7 @@
+# 运行时产物，不入库
+cache/
+config.json
+history.json
+seen.json
+__pycache__/
+*.pyc

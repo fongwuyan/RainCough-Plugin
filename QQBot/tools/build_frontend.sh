@@ -19,6 +19,13 @@ mkdir -p "$DST/frontend" "$DST/assets"
 #   构建时报 "Could not resolve ./im/shell.js"。
 cp -rf "$SRC/frontend/." "$DST/frontend/"
 
+echo "== 模板体检"
+# ★ esbuild 看不见模板字符串里的 Vue 语法（模板是运行时才编译的），
+#   所以模板写错照样能构建成功 —— 面板里却是白屏。构建前先跑一遍编译器。
+if [ -f "$SRC/tools/check_templates.js" ]; then
+  node "$SRC/tools/check_templates.js" "$SRC"
+fi
+
 echo "== 构建"
 # ★ 构建工具即使失败也退出 0（只是打印 [fail]），所以必须自己检查输出，
 #   否则会出现"构建失败但看起来成功、回填的还是旧产物"的假象。

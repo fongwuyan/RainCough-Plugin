@@ -2,8 +2,8 @@
 //
 // ★ 只在这里出现颜色：所有值都从面板下发的 CSS 变量派生，
 //   深浅色切换时面板换变量、这里自动跟随，组件里不写裸 hex。
-// ★ 整屏用 position:fixed 覆盖面板（方案 A），z-index 900 ——
-//   要低于面板自己的 toast（9999），否则提示会被盖住。
+// ★ 嵌入式布局：不再 fixed 覆盖面板，高度按"视口 - 顶部选项卡/内边距"算，
+//   跟其它页签一样待在插件页里；窄屏时 min-height 兜底。
 
 export const IM_STYLE_ID = 'rcq-im-style'
 
@@ -25,10 +25,13 @@ export const IM_CSS = `
   --im-other:var(--surface,#fff);
   --im-r:12px;
   --im-shadow:0 6px 24px rgba(0,0,0,.14);
-  position:fixed;inset:0;z-index:900;display:flex;
+  position:relative;display:flex;
+  height:calc(100vh - 152px);min-height:420px;
   background:var(--im-chat);color:var(--im-t1);
+  border:1px solid var(--im-line);border-radius:14px;overflow:hidden;
+  box-shadow:var(--shadow-sm,0 8px 24px rgba(0,0,0,.16));
   font-family:system-ui,-apple-system,"Microsoft YaHei UI","PingFang SC","Segoe UI",sans-serif;
-  font-size:14px;line-height:1.5;overflow:hidden;
+  font-size:14px;line-height:1.5;
 }
 .rcq-im *{box-sizing:border-box}
 .rcq-im ::-webkit-scrollbar{width:8px;height:8px}
@@ -36,8 +39,8 @@ export const IM_CSS = `
 .rcq-im ::-webkit-scrollbar-track{background:transparent}
 
 /* ---------------- 左侧 rail ---------------- */
-.im-rail{width:56px;flex:none;background:var(--im-rail);display:flex;flex-direction:column;
-  align-items:center;padding:14px 0 10px;gap:6px;border-right:1px solid var(--im-line)}
+.im-rail{width:54px;flex:none;background:var(--im-rail);display:flex;flex-direction:column;
+  align-items:center;padding:12px 0 10px;gap:4px;border-right:1px solid var(--im-line)}
 .im-rail .ava{width:36px;height:36px;border-radius:8px;overflow:hidden;background:var(--im-active);
   margin-bottom:8px;flex:none}
 .im-rail .ava img{width:100%;height:100%;object-fit:cover;display:block}
@@ -60,8 +63,8 @@ export const IM_CSS = `
   font-family:inherit;min-width:0}
 .im-search svg{width:14px;height:14px;fill:currentColor;flex:none}
 .im-list{flex:1;overflow-y:auto;overflow-x:hidden;padding:0 8px 8px}
-.im-row{display:flex;gap:10px;padding:10px 8px;border-radius:8px;cursor:pointer;align-items:center;
-  margin-bottom:2px}
+.im-row{display:flex;gap:10px;padding:9px 8px;border-radius:10px;cursor:pointer;align-items:center;
+  margin-bottom:2px;transition:background .12s ease}
 .im-row:hover{background:var(--im-hover)}
 .im-row.on{background:var(--im-active)}
 .im-row .ava{width:40px;height:40px;border-radius:8px;background:var(--im-active);flex:none;
@@ -92,8 +95,8 @@ export const IM_CSS = `
 .im-empty{padding:40px 16px;text-align:center;color:var(--im-t3);font-size:12.5px}
 
 /* ---------------- 聊天区 ---------------- */
-.im-chat{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--im-chat);position:relative}
-.im-head{height:56px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px;
+.im-chat{flex:1;display:flex;flex-direction:column;min-width:0;background:transparent;position:relative}
+.im-head{height:54px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px;
   border-bottom:1px solid var(--im-line);background:var(--im-list)}
 .im-head .tt{font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .im-head .sub{font-size:12px;color:var(--im-t3);flex:none}
@@ -119,9 +122,11 @@ export const IM_CSS = `
 .im-msg.me .col{align-items:flex-end}
 .im-msg .who{font-size:12px;color:var(--im-t3);margin:0 2px 3px}
 .im-bub{position:relative;background:var(--im-other);border-radius:var(--im-r);
+  border:1px solid var(--im-line);
   padding:8px 12px;color:var(--im-t1);word-break:break-word;white-space:pre-wrap;
   box-shadow:0 1px 2px rgba(0,0,0,.05)}
-.im-msg.me .im-bub{background:var(--im-self);color:var(--im-self-t);border-bottom-right-radius:4px}
+.im-msg.me .im-bub{background:var(--im-self);color:var(--im-self-t);border-color:transparent;
+  border-bottom-right-radius:4px}
 .im-msg:not(.me) .im-bub{border-bottom-left-radius:4px}
 .im-bub.media{padding:4px;background:transparent;box-shadow:none}
 .im-msg.me .im-bub.media{background:transparent}
@@ -173,9 +178,9 @@ export const IM_CSS = `
 .im-jump svg{width:18px;height:18px;fill:currentColor}
 .im-more{text-align:center;padding:8px;font-size:12px;color:var(--im-t3)}
 
-.im-readonly{flex:none;border-top:1px solid var(--im-line);background:var(--im-input);
-  padding:11px 16px;display:flex;align-items:center;justify-content:center;gap:7px;
-  font-size:12.5px;color:var(--im-t3);user-select:none}
+.im-readonly{flex:none;border-top:1px solid var(--im-line);background:transparent;
+  padding:8px 16px;display:flex;align-items:center;justify-content:center;gap:7px;
+  font-size:12px;color:var(--im-t3);user-select:none}
 .im-readonly svg{width:15px;height:15px;fill:currentColor;opacity:.8}
 
 /* 悬停操作条 / 右键菜单 / 高亮 / 未读分割 / 引用条 / 轻提示 */

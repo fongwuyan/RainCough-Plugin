@@ -40,7 +40,7 @@ PRESETS = {
 
 PLUGIN_FILES = [
     'plugin.json', 'server_v4.py', 'rcplugin.py', 'VERSION',
-    'assets/plugin.js', 'frontend/plugin.js', 'frontend/qrcode.mjs',
+    'assets/plugin.js', 'frontend/plugin.js',
 ]
 
 # rcbot 运行时源码也打进插件包。
@@ -54,8 +54,8 @@ RCBOT_SRC_FILES = ['rcbot.py'] + [
 ]
 PLUGIN_FILES += RCBOT_SRC_FILES
 
-# 多实例管理脚本（面板调它增删 NapCat 实例）
-PLUGIN_FILES += ['tools/napcat_inst.py', 'tools/smoke_chat.py']
+# 冒烟脚本（部署后自检用）
+PLUGIN_FILES += ['tools/smoke_chat.py']
 
 RCBOT_REMOTE = '/opt/rcbot'
 

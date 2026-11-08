@@ -5,6 +5,7 @@
   /api/accounts*  多账号（连接状态、账号级配置）
   /api/chat/*     全量聊天记录（会话、消息、导出、统计、清理）
 """
+import asyncio
 import json
 import os
 import time
@@ -15,7 +16,60 @@ from aiohttp import web
 from . import cards, chats, compress, config, forward, group_avatar, llm, logbuf, media, profile, search, store
 from .bot import attach_images, strip_emoji, strip_meta_leak, truncate_chars
 
-# ---------------- 随机挑回复的临时结果
+# ---------------- 媒体转码任务（异步）
+# 一次转几十个大视频要几分钟，同步 HTTP 会超时、也不能取消。
+# 这里用内存任务表：启动 → 逐条转 → 进度/取消可查（进程重启后任务丢失，前端会提示）。
+_media_jobs = {}
+_media_job_seq = 0
+
+
+def _job_public(job):
+    return {k: v for k, v in job.items() if k != 'cancel'}
+
+
+async def _start_transcode_job(ids):
+    global _media_job_seq
+    _media_job_seq += 1
+    jid = 'tr%d-%d' % (int(time.time()), _media_job_seq)
+    _media_jobs[jid] = {
+        'id': jid, 'state': 'running', 'total': len(ids), 'done': 0,
+        'ok': 0, 'failed': 0, 'error': '', 'current': 0,
+        'started_at': int(time.time()), 'cancel': False,
+    }
+    asyncio.create_task(_run_transcode_job(jid, list(ids)))
+    return jid
+
+
+async def _run_transcode_job(jid, ids):
+    job = _media_jobs.get(jid)
+    if not job:
+        return
+    for i, mid in enumerate(ids):
+        if job.get('cancel'):
+            job['state'] = 'cancelled'
+            break
+        job['current'] = mid
+        try:
+            r = await chats.transcode_media([mid])
+            job['ok'] += int((r or {}).get('ok') or 0)
+            job['failed'] += int((r or {}).get('failed') or 0)
+        except Exception as e:
+            job['failed'] += 1
+            job['error'] = str(e)[:160]
+            logbuf.debug('chat', '转码任务失败 %s：%s' % (mid, str(e)[:80]))
+        job['done'] = i + 1
+        await asyncio.sleep(0)
+    if job.get('state') != 'cancelled':
+        job['state'] = 'done'
+    job['finished_at'] = int(time.time())
+    # 只保留最近 20 个任务
+    if len(_media_jobs) > 20:
+        for k in sorted(_media_jobs, key=lambda x: _media_jobs[x].get('started_at', 0))[:len(_media_jobs) - 20]:
+            if _media_jobs[k].get('state') != 'running':
+                _media_jobs.pop(k, None)
+
+
+
 # random_reply 生成后先存这儿，用户点「发送到 QQ」时凭 token 取回发送
 # （不重新调模型 —— 页面看到什么，群里就是什么）。
 _RND_CACHE = {}
@@ -674,12 +728,14 @@ def make_app(mgr, bot):
         cfg = config.load()
         acct_cfg = config.find_account(cfg, acc_id) or {}
         nick = acct_cfg.get('nick') or '机器人'
+        sid = str((data.get('sender') or {}).get('user_id')
+                  or getattr(ob, 'self_id', '') or acct_cfg.get('uin') or '')
         try:
             segs = [{'type': 'text', 'data': {'text': text}}]
             await chats.record(acc_id, kind, target, 'assistant', segs,
-                               sender_id=str((data.get('sender') or {}).get('user_id') or ''),
-                               sender_name=nick, msg_id=msg_id,
-                               created_at=int(time.time()), media=[])
+                               sender_id=sid, sender_name=nick, msg_id=msg_id,
+                               created_at=int(time.time()), media=[],
+                               sender_avatar=profile.avatar_url(sid))
             if item.get('session_id'):
                 await store.add_message(item['session_id'], 'assistant', text)
         except Exception as e:
@@ -935,7 +991,7 @@ def make_app(mgr, bot):
 
     async def chat_query(request):
         q = request.query
-        rows, total = await chats.query_messages(
+        r = await chats.query_messages(
             sender=q.get('sender') or '',
             recalled=q.get('recalled') or '',
             kind=q.get('kind') or '',
@@ -946,11 +1002,16 @@ def make_app(mgr, bot):
             date_to=int(q.get('to') or 0),
             limit=int(q.get('limit') or 50),
             before_id=int(q.get('before_id') or 0))
-        return ok({'items': rows, 'count': len(rows), 'total': total})
+        r['count'] = len(r.get('items') or [])
+        return ok(r)
 
     async def chat_senders(request):
+        try:
+            lim = int(request.query.get('limit') or 200)
+        except Exception:
+            lim = 200
         return ok({'items': await chats.query_senders(
-            keyword=request.query.get('kw') or '')})
+            keyword=request.query.get('kw') or '', limit=lim)})
 
     # ---------------- 一键清空会话
 
@@ -974,19 +1035,40 @@ def make_app(mgr, bot):
 
     async def chat_media_list(request):
         q = request.query
-        items = await chats.list_media(
+        r = await chats.list_media(
             kind=q.get('kind') or '',
             sender=q.get('sender') or '',
             keyword=q.get('kw') or '',
             session_id=q.get('session_id') or '',
             account_id=q.get('account_id') or '',
             limit=int(q.get('limit') or 100),
-            offset=int(q.get('offset') or 0))
-        st = await chats.media_stats(q.get('account_id') or '')
-        return ok({'items': items, 'stats': st})
+            offset=int(q.get('offset') or 0),
+            sort=q.get('sort') or 'time')
+        # 统计只在首屏/显式要求时算：翻页时不必每次 GROUP BY 全表
+        want_stats = (q.get('with_stats') or '') not in ('0', 'false')
+        if want_stats and int(q.get('offset') or 0) == 0:
+            r['stats'] = await chats.media_stats(q.get('account_id') or '')
+        return ok(r)
 
     async def chat_media_stats(request):
         return ok(await chats.media_stats(request.query.get('account_id') or ''))
+
+    async def chat_thumb(request):
+        """按需生成缩略图，返回缓存文件的绝对路径。
+
+        图片解码是同步 CPU 活，丢线程池，别卡住收消息的循环。
+        """
+        rel = request.query.get('rel') or ''
+        try:
+            size = int(request.query.get('size') or 320)
+        except Exception:
+            size = 320
+        try:
+            path = await asyncio.to_thread(chats.ensure_thumb, rel, size)
+        except Exception as e:
+            logbuf.debug('chat', '缩略图接口失败：%s' % str(e)[:80])
+            path = ''
+        return ok({'path': path or ''})
 
     async def chat_media_delete(request):
         b = await _body(request)
@@ -1002,15 +1084,39 @@ def make_app(mgr, bot):
         return ok(r)
 
     async def chat_media_transcode(request):
-        """把 HEVC / AMR 之类转成浏览器能播的格式。"""
+        """把 HEVC / AMR 之类转成浏览器能播的格式。
+
+        默认同步（兼容旧前端）；async=true 时起后台任务，立即返回 job id，
+        前端轮询 /api/chat/media/task 看进度并可取消 —— 大视频不会撞 15s 超时。
+        """
         b = await _body(request)
         ids = b.get('ids') or []
         if not isinstance(ids, list):
             ids = []
         if not ids:
             ids = [x['id'] for x in await chats.media_need_transcode()]
+        if b.get('async'):
+            jid = await _start_transcode_job(ids)
+            return ok({'job': jid, 'total': len(ids)})
         r = await chats.transcode_media(ids)
         return ok(r)
+
+    async def chat_media_task(request):
+        """转码任务进度 / 取消。"""
+        if request.method == 'POST':
+            b = await _body(request)
+            jid = str(b.get('id') or '')
+            job = _media_jobs.get(jid)
+            if not job:
+                return bad('任务不存在')
+            if b.get('cancel'):
+                job['cancel'] = True
+            return ok(_job_public(job))
+        jid = request.query.get('id') or ''
+        job = _media_jobs.get(jid)
+        if not job:
+            return bad('任务不存在')
+        return ok(_job_public(job))
 
     async def chat_media_reindex(request):
         return ok(await chats.rebuild_media_index())
@@ -1068,6 +1174,8 @@ def make_app(mgr, bot):
     app.router.add_post('/api/chat/session-clear', chat_clear_session)
     app.router.add_get('/api/chat/media', chat_media_list)
     app.router.add_get('/api/chat/media/stats', chat_media_stats)
+    app.router.add_get('/api/chat/thumb', chat_thumb)
+    app.router.add_route('*', '/api/chat/media/task', chat_media_task)
     app.router.add_post('/api/chat/media/delete', chat_media_delete)
     app.router.add_post('/api/chat/media/transcode', chat_media_transcode)
     app.router.add_post('/api/chat/media/reindex', chat_media_reindex)

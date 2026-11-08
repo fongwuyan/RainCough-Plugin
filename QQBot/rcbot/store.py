@@ -76,6 +76,9 @@ CREATE INDEX IF NOT EXISTS idx_chat_sess  ON chat_logs(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_chat_acct  ON chat_logs(account_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_msgid ON chat_logs(account_id, msg_id);
 CREATE INDEX IF NOT EXISTS idx_chat_time  ON chat_logs(created_at);
+-- 查询页高频组合：按发送者/撤回状态 + 时间倒序
+CREATE INDEX IF NOT EXISTS idx_chat_sender   ON chat_logs(sender_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_chat_recalled ON chat_logs(recalled, created_at);
 
 -- ★ 媒体索引（媒体库用）
 -- 为什么要单独一张表：media 原本是 chat_logs 里的 JSON 字段，
@@ -102,6 +105,7 @@ CREATE INDEX IF NOT EXISTS idx_media_kind  ON media_files(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_media_sess  ON media_files(session_id);
 CREATE INDEX IF NOT EXISTS idx_media_msg   ON media_files(account_id, msg_id);
 CREATE INDEX IF NOT EXISTS idx_media_sender ON media_files(sender_id);
+CREATE INDEX IF NOT EXISTS idx_media_acct_kind ON media_files(account_id, kind, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_media_rel ON media_files(rel);
 
 -- ★ 账号登记表
@@ -161,7 +165,57 @@ async def init():
     _db.row_factory = aiosqlite.Row
     await _db.executescript(SCHEMA)
     await _db.commit()
+    await _ensure_fts()
     return _db
+
+
+# ---------------------------------------------------------------- 全文索引
+# 关键词查询原来走 LOWER(text) LIKE '%kw%'（全表扫）。15k 行还行，
+# 上百万行会线性变慢。用 FTS5 trigram：支持中文子串匹配，>3 字时走索引。
+FTS_OK = False
+FTS_READY = False
+
+
+async def _ensure_fts():
+    global FTS_OK, FTS_READY
+    try:
+        await _db.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS chat_logs_fts USING fts5("
+            "text, content='chat_logs', content_rowid='id', tokenize='trigram')")
+        await _db.execute(
+            'CREATE TRIGGER IF NOT EXISTS chat_logs_ai AFTER INSERT ON chat_logs BEGIN'
+            ' INSERT INTO chat_logs_fts(rowid, text) VALUES (new.id, new.text); END')
+        await _db.execute(
+            'CREATE TRIGGER IF NOT EXISTS chat_logs_ad AFTER DELETE ON chat_logs BEGIN'
+            " INSERT INTO chat_logs_fts(chat_logs_fts, rowid, text) VALUES('delete', old.id, old.text); END")
+        await _db.execute(
+            'CREATE TRIGGER IF NOT EXISTS chat_logs_au AFTER UPDATE OF text ON chat_logs BEGIN'
+            " INSERT INTO chat_logs_fts(chat_logs_fts, rowid, text) VALUES('delete', old.id, old.text);"
+            ' INSERT INTO chat_logs_fts(rowid, text) VALUES (new.id, new.text); END')
+        await _db.commit()
+        FTS_OK = True
+    except Exception:
+        FTS_OK = False
+        return
+    try:
+        # ★ 外部内容表(count=chat_logs)的 count(*) 永远等于源表行数，
+        #   判断"索引有没有内容"要看 FTS5 自己的 docsize 表。
+        try:
+            cur = await _db.execute('SELECT count(*) AS c FROM chat_logs_fts_docsize')
+            row = await cur.fetchone()
+            indexed = int(row['c']) if row is not None else 0
+        except Exception:
+            indexed = 0
+        if indexed == 0:
+            cur = await _db.execute('SELECT COUNT(*) AS c FROM chat_logs')
+            row2 = await cur.fetchone()
+            if row2 is not None and int(row2['c']) > 0:
+                # 老库首次启动：从 chat_logs 全量重建一次
+                await _db.execute("INSERT INTO chat_logs_fts(chat_logs_fts) VALUES('rebuild')")
+                await _db.commit()
+        FTS_READY = True
+    except Exception:
+        FTS_READY = False
 
 
 async def close():

@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+	<title>Settings</title>
+
+	<style>
+		/* ================= 🌸 变量定义 🌸 ================= */
+		:root {
+		    --brand: #FF5C8D;
+		    --brand-gradient: linear-gradient(135deg, #FF5C8D 0%, #FF8FA3 100%);
+		    
+		    --glass-base: 255, 255, 255; 
+		    --glass-border: rgba(255, 255, 255, 0.5);
+		    --glass-shadow: 0 8px 32px 0 rgba(255, 92, 141, 0.15);
+		    
+		    --text-main: #4A3B3E;
+		    --text-sub: #8C7A7D;
+		    
+		    --blob-1: #FFDEE9;
+		    --blob-2: #B5FFFC;
+		    
+		    --safe-bottom: env(safe-area-inset-bottom);
+		}
+		
+		html.dark, :root:has(html.dark) {
+		    --brand: #FF7EB3;
+		    --brand-gradient: linear-gradient(135deg, #FF7EB3 0%, #8B5CF6 100%);
+		    
+		    --glass-base: 30, 30, 35;
+		    --glass-border: rgba(255, 255, 255, 0.1);
+		    --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+		    
+		    --text-main: #FFF0F5;
+		    --text-sub: #A0A0A0;
+		    
+		    --blob-1: #4A192C;
+		    --blob-2: #1A1A2E;
+		}
+		
+		/* ================= 基础重置 ================= */
+		* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+		body {
+		    margin: 0; 
+		    padding: 20px 16px calc(100px + var(--safe-bottom));
+		    color: var(--text-main);
+		    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+		    min-height: 100vh;
+		    transition: color 0.3s; 
+		    background-color: var(--blob-2);
+		    overflow-x: hidden;
+		}
+		
+		body::before, body::after {
+		    content: ''; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: -1; pointer-events: none;
+		}
+		body::before {
+		    background: radial-gradient(circle at 20% 30%, var(--blob-1), transparent 70%);
+		    animation: moveBlob 15s infinite alternate ease-in-out;
+		}
+		body::after {
+		    background: radial-gradient(circle at 80% 70%, var(--blob-1), transparent 70%);
+		    animation: moveBlob 12s infinite alternate-reverse ease-in-out;
+		}
+		@keyframes moveBlob { 0% { transform: translate(0, 0) scale(1); } 100% { transform: translate(20px, -20px) scale(1.1); } }
+		
+		@keyframes enterSpring {
+			0% { opacity: 0; transform: translateY(40px) scale(0.95); }
+			100% { opacity: 1; transform: translateY(0) scale(1); }
+		}
+
+		.anim-item { opacity: 0; }
+		.anim-active { animation: enterSpring 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
+
+		.glass-panel {
+		    background: rgba(var(--glass-base), 0.65);
+		    border: 1px solid var(--glass-border);
+		    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+		    border-radius: 26px;
+		    box-shadow: var(--glass-shadow);
+		    overflow: visible; 
+		    position: relative;
+		    transition: z-index 0s;
+		}
+		
+		.header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding: 0 4px; }
+		.page-title { font-size: 28px; font-weight: 800; }
+		.theme-btn {
+		    width: 44px; height: 44px; border-radius: 50%;
+		    display: flex; align-items: center; justify-content: center;
+		    font-size: 20px; cursor: pointer; transition: transform 0.2s;
+		}
+		.theme-btn:active { transform: scale(0.9) rotate(20deg); }
+		
+		.hero {
+		    padding: 24px; margin-bottom: 24px;
+		    background: var(--brand-gradient);
+		    color: white; border: none;
+		    display: flex; justify-content: space-between; align-items: center;
+		    transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+		}
+		.hero:active { transform: scale(0.97); }
+		.hero.off { background: rgba(var(--glass-base), 0.65); color: var(--text-main); border: 1px solid var(--glass-border); }
+		.hero-title { font-size: 20px; font-weight: 800; margin-bottom: 4px; }
+		.hero-sub { font-size: 14px; opacity: 0.9; }
+		
+		.module { padding: 8px; margin-bottom: 20px; }
+		.row {
+		    display: flex; justify-content: space-between; align-items: center;
+		    padding: 16px 14px; border-radius: 20px; 
+		    transition: background 0.2s, transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+		    cursor: pointer; margin-bottom: 2px;
+		}
+		.row:active { background: rgba(var(--brand), 0.08); transform: scale(0.96); }
+		html.dark .row:active { background: rgba(255,255,255,0.08); }
+		.label { font-size: 16px; font-weight: 700; }
+		
+		.switch { width: 50px; height: 30px; position: relative; flex-shrink: 0; pointer-events: none; }
+		.switch input { opacity: 0; width: 0; height: 0; }
+		.slider-toggle {
+		    position: absolute; inset: 0; background-color: rgba(0,0,0,0.06);
+		    border-radius: 32px; transition: 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+		    border: 1px solid rgba(0,0,0,0.02);
+		}
+		html.dark .slider-toggle { background-color: rgba(255,255,255,0.15); border: 1px solid transparent; }
+		.slider-toggle:before {
+		    position: absolute; content: ""; height: 24px; width: 24px; left: 3px; bottom: 2px;
+		    background-color: white; border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+		    transition: 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+		}
+		.switch input:checked + .slider-toggle { background: var(--brand); box-shadow: 0 4px 15px rgba(255, 92, 141, 0.4); border-color: transparent; }
+		.hero:not(.off) .switch input:checked + .slider-toggle { background: rgba(255,255,255,0.25); box-shadow: none; }
+		.switch input:checked + .slider-toggle:before { transform: translateX(20px); }
+		
+		.input-group { padding: 4px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
+		.input-item { display: flex; flex-direction: column; gap: 8px; margin-bottom: 4px; }
+		.input-label-text { font-size: 13px; color: var(--text-sub); font-weight: 600; margin-left: 4px; }
+		
+		.custom-select { position: relative; width: 100%; }
+		.select-trigger {
+		    background: rgba(255,255,255,0.4); border: 1px solid var(--glass-border);
+		    border-radius: 18px; padding: 16px; font-size: 15px; font-weight: 600;
+		    color: var(--text-main); display: flex; justify-content: space-between; align-items: center;
+		    cursor: pointer; transition: all 0.2s;
+		}
+		html.dark .select-trigger { background: rgba(0,0,0,0.25); }
+		.select-trigger:active { transform: scale(0.98); }
+		.select-trigger::after {
+		    content: ""; width: 8px; height: 8px;
+		    border-right: 2px solid var(--text-sub); border-bottom: 2px solid var(--text-sub);
+		    transform: rotate(45deg); transition: 0.3s; margin-right: 4px;
+		}
+		.custom-select.open .select-trigger::after { transform: rotate(-135deg); border-color: var(--brand); }
+		.options-container {
+		    position: absolute; top: 100%; left: 0; right: 0; margin-top: 8px;
+		    background: rgba(var(--glass-base), 0.95); backdrop-filter: blur(40px);
+		    border-radius: 20px; border: 1px solid var(--glass-border);
+		    box-shadow: 0 20px 60px rgba(0,0,0,0.3); opacity: 0; pointer-events: none;
+		    transform: translateY(-10px) scale(0.96); transition: 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+		    z-index: 1000; padding: 6px;
+		}
+		.custom-select.open .options-container { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); }
+		.option { padding: 14px 16px; font-size: 15px; font-weight: 500; cursor: pointer; border-radius: 14px; transition: background 0.2s; margin-bottom: 2px; }
+		.option:hover { background: rgba(var(--glass-base), 0.5); }
+		.option.selected { background: var(--brand-gradient); color: white; font-weight: 700; box-shadow: 0 4px 12px rgba(255, 92, 141, 0.3); }
+		
+		.range-container { padding: 10px 14px 24px; }
+		.range-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; font-size: 14px; color: var(--text-sub); font-weight: 700; }
+		
+		/* 滑块数值输入框样式 */
+		.range-val-wrapper { display: flex; align-items: center; gap: 2px; color: var(--brand); }
+		.range-num-input {
+		    background: transparent; border: none; color: var(--brand); font-weight: 800;
+		    font-size: 16px; width: 35px; text-align: right; outline: none; padding: 0; font-family: inherit;
+		}
+		.range-num-input::-webkit-inner-spin-button, .range-num-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+		input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; height: 30px; cursor: pointer; }
+		input[type=range]::-webkit-slider-runnable-track {
+		    width: 100%; height: 6px; border-radius: 10px; border: none;
+		    background: linear-gradient(to right, var(--brand) var(--percent), rgba(0,0,0,0.05) var(--percent));
+		}
+		html.dark input[type=range]::-webkit-slider-runnable-track { background: linear-gradient(to right, var(--brand) var(--percent), rgba(255,255,255,0.1) var(--percent)); }
+		input[type=range]::-webkit-slider-thumb {
+		    -webkit-appearance: none; height: 24px; width: 24px; border-radius: 50%;
+		    background: #FFFFFF; box-shadow: 0 4px 12px rgba(0,0,0,0.2); margin-top: -9px;
+		    transition: transform 0.2s; border: 3px solid var(--brand);
+		}
+		input[type=range]:active::-webkit-slider-thumb { transform: scale(1.2); }
+		
+		.input {
+		    width: 100%; padding: 16px; background: rgba(255,255,255,0.4); border: 1px solid rgba(0,0,0,0.05);
+		    border-radius: 18px; color: var(--text-main); font-size: 15px; font-weight: 600; outline: none; transition: 0.3s;
+		}
+		html.dark .input { background: rgba(0,0,0,0.25); border-color: rgba(255,255,255,0.05); }
+		.input:focus { background: rgba(var(--glass-base), 0.8); box-shadow: 0 0 0 2px var(--brand); }
+		
+		.chevron-icon {
+		    width: 10px; height: 10px; border-right: 2.5px solid var(--text-sub); border-top: 2.5px solid var(--text-sub);
+		    transform: rotate(45deg); margin-right: 4px; opacity: 0.6; transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+		}
+		.row:active .chevron-icon { border-color: var(--brand); transform: translate(4px, 0) rotate(45deg); opacity: 1; }
+		
+		.footer {
+		    position: fixed; bottom: 0; left: 0; right: 0; background: rgba(var(--glass-base), 0.8); 
+		    backdrop-filter: blur(40px) saturate(180%); -webkit-backdrop-filter: blur(40px) saturate(180%);
+		    border-top: 1px solid var(--glass-border); border-radius: 28px 28px 0 0; 
+		    padding: 16px 24px calc(16px + var(--safe-bottom)); display: flex; gap: 12px;
+		    box-shadow: 0 -10px 40px rgba(0,0,0,0.1); z-index: 9000;
+		}
+		
+		.btn { flex: 1; padding: 14px; border-radius: 20px; text-align: center; font-size: 16px; font-weight: 800; text-decoration: none; transition: all 0.2s; position: relative; overflow: hidden; }
+		.btn:active { transform: scale(0.95); }
+		.cancel { color: var(--text-sub); background: rgba(0,0,0,0.03); }
+		html.dark .cancel { background: rgba(255,255,255,0.05); }
+		.save { background: var(--brand-gradient); color: white; box-shadow: 0 4px 15px rgba(255, 92, 141, 0.4); }
+		.save:after { content: ""; position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent); animation: shimmer 3s infinite; }
+		@keyframes shimmer { 100% { left: 100%; } }
+	</style>
+</head>
+
+<body>
+
+	<div class="header-row anim-item">
+		<div class="page-title">设置</div>
+		<div class="theme-btn glass-panel" onclick="toggleTheme()">✨</div>
+	</div>
+
+	<div class="hero glass-panel anim-item" id="hero" onclick="toggleRow(this, event)">
+		<div>
+			<div class="hero-title" id="txt_main">本聊天开关</div>
+			<div class="hero-sub" id="sub_main">打开后才可以使用哦~</div>
+		</div>
+		<label class="switch">
+			<input type="checkbox" id="switch_main" onchange="refreshLink()">
+			<span class="slider-toggle"></span>
+		</label>
+	</div>
+
+	<div class="module glass-panel anim-item">
+		<div class="row" onclick="toggleRow(this, event)">
+			<span class="label">发送涩图信息</span>
+			<label class="switch">
+				<input type="checkbox" id="switch_img" onchange="refreshLink()">
+				<span class="slider-toggle"></span>
+			</label>
+		</div>
+		<div class="row" onclick="toggleRow(this, event)">
+			<span class="label">排除AI作品</span>
+			<label class="switch">
+				<input type="checkbox" id="exclude_ai" onchange="refreshLink()">
+				<span class="slider-toggle"></span>
+			</label>
+		</div>
+	</div>
+
+	<div class="module glass-panel anim-item">
+		<div class="row" onclick="toggleRow(this, event)">
+			<span class="label">水平翻转</span>
+			<label class="switch">
+				<input type="checkbox" id="flip_h" onchange="refreshLink()">
+				<span class="slider-toggle"></span>
+			</label>
+		</div>
+		<div class="row" onclick="toggleRow(this, event)">
+			<span class="label">垂直翻转</span>
+			<label class="switch">
+				<input type="checkbox" id="flip_v" onchange="refreshLink()">
+				<span class="slider-toggle"></span>
+			</label>
+		</div>
+
+		<div class="input-group" style="padding-top:0">
+			<div class="input-item">
+				<div class="input-label-text">图片质量</div>
+				<div class="custom-select" id="custom_img_size_wrapper">
+					<div class="select-trigger" onclick="toggleSelect(this)">原图画质</div>
+					<div class="options-container">
+						<div class="option" onclick="selectOption(0, 'Original')">Original</div>
+						<div class="option" onclick="selectOption(1, 'Regular')">Regular</div>
+						<div class="option" onclick="selectOption(2, 'Small')">Samll</div>
+					</div>
+				</div>
+			</div>
+			<select id="img_size" hidden onchange="refreshLink()">
+				<option value="0">Original</option>
+				<option value="1">Regular</option>
+				<option value="2">Small</option>
+			</select>
+		</div>
+	</div>
+
+	<div class="module glass-panel anim-item">
+		<div class="input-group">
+			<div class="input-item">
+				<div class="input-label-text">pixiv反代服务器</div>
+				<input class="input" type="text" id="proxy_server" placeholder="i.pixiv.re" oninput="refreshLink()">
+			</div>
+		</div>
+	</div>
+
+	<div class="module glass-panel anim-item">
+		<div class="row" onclick="toggleRow(this, event)">
+			<span class="label">自动撤回</span>
+			<label class="switch">
+				<input type="checkbox" id="auto_revoke" onchange="refreshLink()">
+				<span class="slider-toggle"></span>
+			</label>
+		</div>
+		<div class="input-group">
+			<div class="input-item">
+				<div class="input-label-text">撤回延迟 (毫秒)</div>
+				<input class="input" type="number" id="revoke_time" value="5000" oninput="refreshLink()">
+			</div>
+			<div class="input-item">
+				<div class="input-label-text">全群冷却 (秒)</div>
+				<input class="input" type="number" id="cool_down" value="0" oninput="refreshLink()">
+			</div>
+		</div>
+	</div>
+
+	<div class="module glass-panel anim-item">
+		<div class="range-container">
+			<div class="range-header">
+				<span>"冲多了"触发概率</span>
+				<div class="range-val-wrapper">
+					<input type="number" id="prob_txt" class="range-num-input" min="0" max="100" oninput="syncFromInput(this)">
+					<span style="font-weight: 800; font-size: 16px;">%</span>
+				</div>
+			</div>
+			<input type="range" id="prob_slider" min="0" max="100" style="--percent: 5%" oninput="updateSlider(this); refreshLink()">
+		</div>
+	</div>
+	
+	<div class="module glass-panel anim-item">
+		<div class="row" onclick="toggleRow(this, event)">
+			<span class="label">R18 (谨慎开启)</span>
+			<label class="switch">
+				<input type="checkbox" id="r18" onchange="refreshLink()">
+				<span class="slider-toggle"></span>
+			</label>
+		</div>
+	</div>
+
+	<div class="module glass-panel anim-item">
+		<a class="row" href="app://join_group" style="text-decoration: none; color: inherit;">
+			<span class="label">加入交流群</span>
+			<div class="chevron-icon"></div>
+		</a>
+	</div>
+
+	<div class="footer anim-item">
+		<a class="btn cancel" href="app://close">取消</a>
+		<a class="btn save" id="btn_save" href="app://save">保存</a>
+	</div>
+
+	<script>
+		function toggleSelect(trigger) {
+		    const wrapper = document.getElementById('custom_img_size_wrapper');
+		    const panel = wrapper.closest('.glass-panel');
+		    const isOpen = wrapper.classList.contains('open');
+		    if (!isOpen) {
+		        panel.style.zIndex = '100';
+		        wrapper.classList.add('open');
+		    } else {
+		        wrapper.classList.remove('open');
+		        setTimeout(() => { panel.style.zIndex = ''; }, 300);
+		    }
+		}
+		
+		function selectOption(value, text) {
+		    const wrapper = document.getElementById('custom_img_size_wrapper');
+		    const panel = wrapper.closest('.glass-panel');
+		    wrapper.querySelector('.select-trigger').innerText = text;
+		    wrapper.classList.remove('open');
+		    setTimeout(() => { panel.style.zIndex = ''; }, 300);
+		    
+		    const options = wrapper.querySelectorAll('.option');
+		    options.forEach(opt => opt.classList.remove('selected'));
+		    options[value].classList.add('selected');
+		
+		    const nativeSelect = document.getElementById('img_size');
+		    nativeSelect.value = value;
+		    refreshLink();
+		}
+		
+		document.addEventListener('click', function(e) {
+		    const wrapper = document.getElementById('custom_img_size_wrapper');
+		    if (wrapper && wrapper.classList.contains('open') && !wrapper.contains(e.target)) {
+		        wrapper.classList.remove('open');
+		        const panel = wrapper.closest('.glass-panel');
+		        setTimeout(() => { panel.style.zIndex = ''; }, 300);
+		    }
+		});
+		
+		function toggleRow(row, event) {
+		    if (event.target.closest('.switch') || event.target.tagName === 'INPUT') return;
+		    const checkbox = row.querySelector('input[type="checkbox"]');
+		    if (checkbox && !checkbox.disabled) {
+		        checkbox.checked = !checkbox.checked;
+		        refreshLink();
+		    }
+		}
+		
+		// 修改后的 updateSlider：同步到 prob_txt 的 value
+		function updateSlider(element) {
+		    if (!element) return;
+		    const val = element.value;
+		    document.getElementById('prob_txt').value = val;
+		    const min = element.min ? parseFloat(element.min) : 0;
+		    const max = element.max ? parseFloat(element.max) : 100;
+		    const percent = ((val - min) / (max - min)) * 100;
+		    element.style.setProperty('--percent', percent + '%');
+		}
+
+		// 新增：手动输入同步
+		function syncFromInput(inputElement) {
+			let val = parseInt(inputElement.value);
+			if (isNaN(val)) val = 0;
+			if (val > 100) val = 100;
+			if (val < 0) val = 0;
+			const slider = document.getElementById('prob_slider');
+			slider.value = val;
+			updateSlider(slider);
+			refreshLink();
+		}
+		
+		function toggleTheme() {
+		    const html = document.documentElement;
+		    if (html.classList.contains('dark')) {
+		        html.classList.remove('dark');
+		    } else {
+		        html.classList.add('dark');
+		    }
+		}
+		
+		// 更新 refreshLink：加入 proxy_server
+		function refreshLink(){
+		  var data={
+		    switch_main:switch_main.checked,
+		    exclude_ai:exclude_ai.checked,
+		    switch_img:switch_img.checked,
+		    flip_h:flip_h.checked,
+		    flip_v:flip_v.checked, 
+		    auto_revoke:auto_revoke.checked,
+		    img_size:img_size.selectedIndex,
+		    revoke_time:revoke_time.value,
+		    cool_down:cool_down.value,
+		    prob_slider:prob_slider.value,
+		    r18:r18.checked,
+		    proxy_server:proxy_server.value
+		  };
+		  btn_save.href="app://save?data="+encodeURIComponent(JSON.stringify(data));
+		}
+		
+		window.onload=function(){
+		  var cfg=window.AppConfig||{};
+		  var b=v=>v==='true';
+		
+		  switch_main.checked=b(cfg.switch_main);
+		  exclude_ai.checked=b(cfg.exclude_ai);
+		  switch_img.checked=b(cfg.switch_img);
+		  flip_h.checked=b(cfg.flip_h);
+		  flip_v.checked=b(cfg.flip_v);
+		  auto_revoke.checked=b(cfg.auto_revoke);
+		  r18.checked=b(cfg.r18);
+		
+		  const sizeIdx = parseInt(cfg.img_size||0);
+		  img_size.selectedIndex = sizeIdx;
+		  
+		  const options = ['Original', 'Regular', 'Small'];
+		  const wrapper = document.getElementById('custom_img_size_wrapper');
+		  if(wrapper) {
+		      wrapper.querySelector('.select-trigger').innerText = options[sizeIdx] || options[0];
+		      const opts = wrapper.querySelectorAll('.option');
+		      if(opts[sizeIdx]) opts[sizeIdx].classList.add('selected');
+		  }
+		
+		  revoke_time.value=cfg.revoke_time||'5000';
+		  cool_down.value=cfg.cool_down||'0';
+		  prob_slider.value=cfg.prob_slider||'5';
+		  proxy_server.value=cfg.proxy_server||''; // 初始化反代
+		  
+		  if(cfg.banned_group==='true'){
+		    switch_main.checked=false;
+		    switch_main.disabled=true;
+		    hero.classList.add('off');
+		    txt_main.style.color='var(--text-sub)';
+		    sub_main.innerText='此群组已禁用该功能';
+		  }
+		  
+		  if (typeof cfg.dark_mode !== 'undefined') {
+		      if (b(cfg.dark_mode)) {
+		          document.documentElement.classList.add('dark');
+		      } else {
+		          document.documentElement.classList.remove('dark');
+		      }
+		  } else {
+		      if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+		          document.documentElement.classList.add('dark');
+		      }
+		  }
+		
+		  updateSlider(prob_slider);
+		  refreshLink();
+
+		  const animItems = document.querySelectorAll('.anim-item');
+		  animItems.forEach((item, index) => {
+		      item.style.animationDelay = (index * 0.08) + 's';
+		      item.classList.add('anim-active');
+		  });
+		};
+	</script>
+
+</body>
+</html>

@@ -1,4 +1,4 @@
-// QQ Bot 插件前端 —— NapCat + RainCough Bot 统一控制台
+// QQ Bot 插件前端 —— SnowLuma + RainCough Bot 统一控制台
 //
 // 形态约束（对齐 atk / docker 等插件的做法）：
 //  · 不自带左侧栏 —— 宿主已有主导航，插件内导航放顶部横向选项卡
@@ -6,7 +6,6 @@
 //  · 颜色、圆角、按钮、输入框全走宿主 CSS 变量与 .btn/.input/.switch 等既有类
 //  · ctx.invoke 已解包：成功直接返回 result，失败抛异常 → try/catch
 import { createApp, reactive } from 'vue'
-import qrcode from './qrcode.mjs'
 // 消息页（仿 QQ 桌面端）：整屏 overlay，独立样式与数据层
 import { IM } from './im/shell.js'
 import { injectIMStyle } from './im/tokens.js'
@@ -86,16 +85,46 @@ function mediaAlive(md) {
   return md.exists !== 0
 }
 
-function makeQr(text) {
-  if (!text) return ''
-  try {
-    const qr = qrcode(0, 'M')
-    qr.addData(text)
-    qr.make()
-    return qr.createSvgTag({ cellSize: 5, margin: 0, scalable: true })
-  } catch (e) {
-    return ''
-  }
+// ------------------------------------------------------------------ 缩略图
+// 媒体库/查询一次要显示几十张图，直接 <img src=原图> 会一屏拉 10MB+。
+// 这里只在滚到可视区时才请后端生成 320px 缩略图（磁盘缓存），点开再看原图。
+const _thumbCache = new Map()
+const THUMB_BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+const ThumbImg = {
+  name: 'ThumbImg',
+  props: { rel: String, size: { type: Number, default: 360 } },
+  data() { return { src: '', io: null } },
+  computed: { blank() { return THUMB_BLANK } },
+  mounted() {
+    const key = this.rel + '@' + this.size
+    const hit = _thumbCache.get(key)
+    if (hit) { this.src = hit; return }
+    if (typeof IntersectionObserver === 'undefined') { this.load(); return }
+    this.io = new IntersectionObserver((es) => {
+      if (es.some((e) => e.isIntersecting)) {
+        this.io.disconnect(); this.io = null; this.load()
+      }
+    }, { rootMargin: '240px' })
+    this.io.observe(this.$el)
+  },
+  beforeUnmount() { if (this.io) this.io.disconnect() },
+  methods: {
+    async load() {
+      const key = this.rel + '@' + this.size
+      const hit = _thumbCache.get(key)
+      if (hit) { this.src = hit; return }
+      try {
+        const d = await callData('qqbot.chat.thumb', { rel: this.rel, size: this.size })
+        if (d && d.path) {
+          const u = '/api/fm/preview?path=' + encodeURIComponent(d.path)
+          _thumbCache.set(key, u)
+          this.src = u
+        }
+      } catch (e) { /* 缩略图失败就留空，不影响原图查看 */ }
+    },
+  },
+  // 占位透明图：必须始终是可渲染元素，display:none 的元素不会被 IntersectionObserver 命中
+  template: `<img :src="src || blank" decoding="async" alt="" />`,
 }
 
 // ------------------------------------------------------------------ 样式
@@ -108,14 +137,15 @@ const CSS = `
  color:var(--t);font-size:13px;line-height:1.6;font-family:var(--font)}
 .rcq *{box-sizing:border-box}
 
-/* 顶部选项卡（插件内唯一导航） */
-.rcq-bar{position:sticky;top:0;z-index:9;display:flex;align-items:flex-end;gap:2px;
- padding:0 2px;background:var(--bg);border-bottom:1px solid var(--bd);margin-bottom:16px}
-.rcq-tab{padding:9px 14px;font-size:13px;color:var(--m);cursor:pointer;user-select:none;
- border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;transition:color .12s}
-.rcq-tab:hover{color:var(--t)}
-.rcq-tab.on{color:var(--ac);border-bottom-color:var(--ac);font-weight:600}
-.rcq-bar-r{margin-left:auto;display:flex;align-items:center;gap:10px;padding:0 4px 7px}
+/* 顶部选项卡（插件内唯一导航）：胶囊式，活动项用主题色底 */
+.rcq-bar{position:sticky;top:0;z-index:9;display:flex;align-items:center;gap:4px;flex-wrap:wrap;
+ padding:5px 6px;background:var(--sf2);border:1px solid var(--bd);border-radius:12px;
+ margin-bottom:14px;backdrop-filter:blur(8px)}
+.rcq-tab{padding:6px 12px;font-size:13px;color:var(--m);cursor:pointer;user-select:none;
+ border-radius:8px;white-space:nowrap;transition:background .12s,color .12s}
+.rcq-tab:hover{color:var(--t);background:var(--sf3)}
+.rcq-tab.on{color:var(--ac);background:var(--acbg);font-weight:600}
+.rcq-bar-r{margin-left:auto;display:flex;align-items:center;gap:10px;padding:0 4px}
 .rcq-lamp{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--m)}
 .rcq-lamp b{width:7px;height:7px;border-radius:50%;background:var(--bd2);display:inline-block}
 .rcq-lamp b.on{background:var(--ok);box-shadow:0 0 0 3px rgba(63,185,80,.16)}
@@ -123,10 +153,10 @@ const CSS = `
 
 /* 卡片 */
 .rcq-pnl{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);
- padding:14px 16px;margin-bottom:12px}
+ padding:15px 17px;margin-bottom:12px}
 .rcq-pnl.flat{padding:0}
 .rcq-ph{display:flex;align-items:center;gap:8px;margin-bottom:12px;min-height:24px;flex-wrap:wrap}
-.rcq-ph b{font-size:13px;font-weight:600}
+.rcq-ph b{font-size:14px;font-weight:600;letter-spacing:.2px}
 .rcq-ph .sp{margin-left:auto}
 .rcq-sec{border-top:1px solid var(--bd);margin:12px -16px;padding:12px 16px 0}
 /* .rcq-pnl.flat 自身 padding 为 0，负边距会把内容顶到边框上（概览的「系统信息」就是），
@@ -200,7 +230,7 @@ const CSS = `
 .rcq-qr svg{width:100%;height:100%;display:block}
 .rcq-qr .ph{color:#999;font-size:12px;text-align:center;padding:0 10px}
 
-/* 日志（NapCat 猫猫日志风格：纯文本行，按级别着色） */
+/* 日志（SnowLuma 容器日志：纯文本行，按级别着色） */
 .rcq-log{background:var(--sf);border:1px solid var(--bd);border-radius:var(--r);
  padding:11px 13px;font-family:var(--font-mono);font-size:11.5px;line-height:1.85;
  max-height:min(64vh,640px);overflow:auto;white-space:pre-wrap;word-break:break-word}
@@ -292,6 +322,33 @@ const CSS = `
  font-size:11px;color:var(--ac);text-decoration:none}
 .rcq-mcard .dl:hover{background:var(--sf2)}
 .rcq-mcard .dl.gone{color:var(--m);cursor:default}
+
+/* 骨架屏（首屏加载中占位，避免"白屏 + 突然出现"） */
+.rcq-mcard.skel{pointer-events:none}
+.rcq-mcard.skel .th{background:var(--sf2);animation:rcq-pulse 1.2s ease-in-out infinite}
+.rcq-mcard.skel .meta .n,.rcq-mcard.skel .meta .s{height:9px;background:var(--sf2);border-radius:4px;margin:4px 0}
+.rcq-qrow.skel{pointer-events:none}
+.rcq-qrow.skel .ava-sk{width:18px;height:18px;border-radius:50%;background:var(--sf2);display:inline-block}
+.rcq-qrow.skel .ln-sk{display:block;height:9px;background:var(--sf2);border-radius:4px;margin:5px 0}
+.rcq-qrow.skel .w40{width:40%}.rcq-qrow.skel .w80{width:80%}.rcq-qrow.skel .w60{width:60%}
+@keyframes rcq-pulse{0%,100%{opacity:.5}50%{opacity:.95}}
+
+/* 媒体库筛选网格 / 更多菜单 / 批量条 */
+.rcq-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 14px;align-items:end}
+.rcq-grid .rcq-fi{margin:0}
+.rcq-grid .rcq-hit{align-self:center}
+.rcq-acts{display:flex;gap:8px;justify-content:flex-end;align-items:end}
+.rcq-more{position:relative}
+.rcq-more-pop{position:absolute;right:0;top:calc(100% + 6px);z-index:8;background:var(--sf);border:1px solid var(--bd);
+ border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.22);padding:4px;min-width:160px;display:flex;flex-direction:column}
+.rcq-more-pop button{border:none;background:none;text-align:left;padding:7px 10px;border-radius:6px;
+ color:var(--t);font-family:inherit;font-size:12px;cursor:pointer}
+.rcq-more-pop button:hover{background:var(--sf2)}
+.rcq-more-pop button:disabled{opacity:.45;cursor:default}
+.rcq-batch{position:sticky;bottom:12px;z-index:7;margin:12px 0 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+ background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:10px 14px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.rcq-mcard .vid-ic{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+ font-size:26px;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,.65);pointer-events:none}
 .rcq-badge{display:inline-block;font-size:10px;line-height:1.7;padding:0 6px;border-radius:999px;
  border:1px solid var(--bd);color:var(--m);margin-left:4px;vertical-align:middle}
 .rcq-badge.warn{border-color:var(--warn);color:var(--warn)}
@@ -437,7 +494,7 @@ function injectStyle() {
 }
 
 
-// ------------------------------------------------------------------ 概览（仿 NapCat 基础信息）
+// ------------------------------------------------------------------ 概览（SnowLuma）
 
 const Overview = {
   data() { return { S, ov: null, busy: false, err: '', timer: null } },
@@ -449,13 +506,10 @@ const Overview = {
     mem() { return this.sysinfo.memory || {} },
     cnt() { return (this.ov && this.ov.counters) || {} },
     botst() { return (this.ov && this.ov.bot) || null },
-    // 框架不同，版本区三行的含义不同（NapCat 有 WebUI，SnowLuma 只有 OneBot）
-    isSnow() { return ((this.ov && this.ov.backend) || '') === 'snowluma' },
+    // 单后端：版本区三行固定是框架 / QQ / OneBot 网关
     vers() {
       const v = this.ver
-      return this.isSnow
-        ? [['框架版本', v.napcat], ['QQ 版本', v.qq], ['OneBot 版本', v.webui]]
-        : [['NapCat 版本', v.napcat], ['QQ 版本', v.qq], ['WebUI 版本', v.webui]]
+      return [['框架版本', v.framework], ['QQ 版本', v.qq], ['OneBot 版本', v.webui]]
     },
     cpuPct() {
       const v = parseFloat((this.cpu.usage || {}).system)
@@ -483,7 +537,7 @@ const Overview = {
     async load(silent) {
       if (!silent) this.busy = true
       try {
-        this.ov = await call('qqbot.nc.overview')
+        this.ov = await call('qqbot.overview')
         this.err = (this.ov.errors || []).join('；')
       } catch (e) {
         this.err = errText(e)
@@ -574,24 +628,17 @@ const Overview = {
       </div>
     </div>
 
-    <div class="rcq-counters" v-if="isSnow" style="grid-template-columns:repeat(4,1fr)">
+    <div class="rcq-counters" style="grid-template-columns:repeat(4,1fr)">
       <div class="rcq-ct"><b>{{ cnt.groups || 0 }}</b><span>群聊</span></div>
       <div class="rcq-ct"><b>{{ cnt.friends || 0 }}</b><span>好友</span></div>
       <div class="rcq-ct"><b>{{ cnt.sessions || 0 }}</b><span>会话</span></div>
       <div class="rcq-ct"><b>{{ cnt.messages || 0 }}</b><span>消息</span></div>
     </div>
-    <div class="rcq-counters" v-else>
-      <div class="rcq-ct"><b>{{ cnt.configs || 0 }}</b><span>网络配置</span></div>
-      <div class="rcq-ct"><b>{{ cnt.httpServers || 0 }}</b><span>HTTP 服务器</span></div>
-      <div class="rcq-ct"><b>{{ cnt.httpClients || 0 }}</b><span>HTTP 客户端</span></div>
-      <div class="rcq-ct"><b>{{ cnt.wsServers || 0 }}</b><span>WS 服务器</span></div>
-      <div class="rcq-ct"><b>{{ cnt.wsClients || 0 }}</b><span>WS 客户端</span></div>
-    </div>
 
     <div class="rcq-pnl">
       <div class="rcq-ph"><b>RainCough Bot</b><span class="sp"></span>
         <span class="rcq-lamp" v-if="botst"><b :class="botst.onebot && botst.onebot.connected ? 'on' : 'off'"></b>
-          {{ botst.onebot && botst.onebot.connected ? (isSnow ? '已连 SnowLuma' : '已连 NapCat') : '未连接' }}</span>
+          {{ botst.onebot && botst.onebot.connected ? '已连 SnowLuma' : '未连接' }}</span>
         <span class="rcq-lamp" v-else><b class="off"></b>rcbot 未运行</span>
       </div>
       <div class="rcq-row2" style="margin-top:0">
@@ -608,37 +655,24 @@ const Overview = {
   </div>`,
 }
 
-// ------------------------------------------------------------------ QQ 账户（多实例）
+// ------------------------------------------------------------------ QQ 账户（SnowLuma 单后端）
 //
-// 一个 QQ 号 = 一个 NapCat 实例 = 一套 systemd 单元。
-// 端口：WebUI = 6099+index，OneBot = 6700+2*index（避开 rcbot 的 6710）。
+// 一个 QQ 号 = 一个 SnowLuma 容器（Docker）。框架没有二维码 API，
+// 登录只能在内嵌的 noVNC 远程桌面里完成 —— 所以这里不再有二维码图片、
+// 「刷新二维码」、后端切换下拉与快登按钮。
 
 const Accounts = {
   data() {
     return {
       S,
-      // 单账户：只有一个 QQ 号
       acc: null,
-      busy: '', err: '', qr: '', qrErr: '', qrBusy: false,
-      qrOpen: false, msg: '',
-      // 后端（napcat / snowluma）与内嵌远程桌面
-      be: null, novncUrl: '', novncPw: '', switching: false,
+      busy: '', err: '', vncBusy: false,
+      loginOpen: false, msg: '', vncErr: '',
+      novncUrl: '', novncPw: '',
     }
   },
   computed: {
     login() { return !!(this.acc && this.acc.login) },
-    // 当前是不是 SnowLuma（扫码要靠 noVNC 远程桌面，不是二维码图片）
-    isSL() { return (this.acc && this.acc.backend === 'snowluma') },
-    beKind() { return (this.be && this.be.kind) || (this.acc && this.acc.backend) || 'napcat' },
-    // 框架下拉项：后端会告诉我们哪个"没装"（比如 NapCat 已被卸载），
-    // 没装的就置灰，免得切过去报"服务不存在"
-    beOpts() {
-      const list = (this.be && this.be.options) || []
-      if (list.length) return list
-      return [{ value: 'napcat', label: 'NapCat（原生安装）' },
-              { value: 'snowluma', label: 'SnowLuma（Docker）' }]
-    },
-    napcatOk() { return (this.beOpts.find((o) => o.value === 'napcat') || {}).installed !== false },
     ready() { return !!(this.acc && this.acc.core_ready) },
     online() { return !!(this.acc && (this.acc.online || this.acc.connected)) },
     uin() { return (this.acc && this.acc.uin) || '' },
@@ -653,10 +687,6 @@ const Accounts = {
       if (!this.acc) return '未知'
       if (this.online && this.ready) return '已登录'
       if (this.acc.login) return '已登录（初始化中）'
-      if (this.acc.accepted) return '手机已确认，正在登录…'
-      // 两个后端的 state 词不一样：
-      //   NapCat   : active / inactive / failed
-      //   SnowLuma : running / exited / absent（容器状态）
       const st = this.acc.state || ''
       if (st === 'failed') return '启动失败'
       if (st === 'inactive' || st === 'exited') return '已停止'
@@ -671,9 +701,6 @@ const Accounts = {
     },
   },
   async mounted() {
-    // ★ 必须先把后端信息拉回来：框架下拉要用 options（哪个装没装），
-    //   不拉的话 beOpts 走兜底，"NapCat（未安装）"就不会出现。
-    await this.loadBackend()
     await this.load()
     this.timer = setInterval(() => this.load(true), 5000)
   },
@@ -684,62 +711,27 @@ const Accounts = {
       try {
         this.acc = await callData('qqbot.account.info')
         this.err = (this.acc && this.acc.error) || ''
-        // 登录中就自动刷新二维码区
-        if (this.qrOpen && this.acc && !this.acc.login) {
-          this.pollStatus(0)
-        }
+        if (this.loginOpen && this.acc && !this.acc.login) this.pollStatus(0)
       } catch (e) {
         this.err = errText(e)
       } finally {
         this.busy = ''
       }
     },
-    async loadBackend() {
-      try { this.be = await callData('qqbot.backend.get') } catch (e) { this.be = null }
-    },
-    // 下拉里只显示短名（"NapCat（原生安装）" → "NapCat"），没装的加后缀
-    optLabel(o) {
-      const short = String((o && o.label) || (o && o.value) || '').split('（')[0]
-      return (o && o.installed === false) ? short + '（未安装）' : short
-    },
     // noVNC 地址：主机名用当前页面的（后端不知道面板对外的 IP），
     // 端口与路径由后端给（含远程桌面密码，打开即自动连）
     buildNovnc(d) {
       if (!d || !d.novnc_path) return ''
-      let host = (this.be && this.be.snowluma && this.be.snowluma.public_host) || ''
-      if (!host) host = location.hostname
+      let host = location.hostname
       if (!host || host === 'localhost') host = '127.0.0.1'
       return location.protocol + '//' + host + ':' + (d.novnc_port || 6081) + d.novnc_path
     },
-    async switchBackend(k) {
-      if (k === this.beKind) return
-      const label = k === 'snowluma' ? 'SnowLuma（Docker）' : 'NapCat（原生）'
-      if (!confirm('切换到 ' + label + '？\n\n两套环境互不影响，随时可以再切回来。\n'
-        + '切换后 rcbot 会改连另一个 OneBot 端口。')) return
-      this.switching = true
-      try {
-        await callData('qqbot.backend.set', { kind: k })
-        toast('已切换到 ' + label, 'ok')
-        this.qrOpen = false
-        this.novncUrl = ''
-        await this.loadBackend()
-        await this.load(true)
-      } catch (e) {
-        toast(errText(e), 'err')
-      } finally {
-        this.switching = false
-      }
-    },
-    // 扫码 —— 两种后端完全不同的路径：
-    //   NapCat  : 调 API 拿二维码 URL，用 qrcode.mjs 画成 SVG
-    //   SnowLuma: 没有二维码 API，内嵌 noVNC 远程桌面，用户在桌面里扫
-    async showQr() {
-      this.qrBusy = true
-      this.qr = ''
-      this.qrErr = ''
+    async showLogin() {
+      this.vncBusy = true
+      this.vncErr = ''
       this.msg = ''
       this.novncUrl = ''
-      this.qrOpen = true
+      this.loginOpen = true
       try {
         const d = await callData('qqbot.account.qrcode', {})
         if (d && d.login) {
@@ -747,54 +739,31 @@ const Accounts = {
           await this.load(true)
           return
         }
-        if (d && d.mode === 'novnc') {
-          this.novncUrl = this.buildNovnc(d)
-          this.novncPw = d.novnc_password || ''
-          if (!this.novncUrl) {
-            this.qrErr = '远程桌面地址没拼出来（缺 noVNC 端口或密码）'
-          }
-          this.pollStatus(0)
-        } else if (d && d.qrcode) {
-          this.qr = makeQr(d.qrcode)
-          this.pollStatus(0)
-        } else {
-          this.qrErr = '二维码还没出来，稍后再点一次'
-        }
+        this.novncUrl = this.buildNovnc(d || {})
+        this.novncPw = (d && d.novnc_password) || ''
+        if (!this.novncUrl) this.vncErr = '远程桌面地址没拼出来（缺 noVNC 端口或路径）'
+        this.pollStatus(0)
       } catch (e) {
-        this.qrErr = errText(e)
+        this.vncErr = errText(e)
       } finally {
-        this.qrBusy = false
+        this.vncBusy = false
       }
     },
-    async refreshQr() {
-      try {
-        const d = await callData('qqbot.account.refresh_qrcode', {})
-        if (d && d.qrcode) this.qr = makeQr(d.qrcode)
-      } catch (e) {
-        this.qrErr = errText(e)
-      }
-    },
-    // 轮询登录状态 —— 后端只读 NapCat 的 CheckLoginStatus
     pollStatus(n) {
-      if (n > 100 || !this.qrOpen) return
+      if (n > 100 || !this.loginOpen) return
       setTimeout(async () => {
-        if (!this.qrOpen) return
+        if (!this.loginOpen) return
         try {
           const d = await callData('qqbot.account.status', {})
           if (d && d.done) {
             this.msg = '登录成功：' + (d.nick || d.uin) + '（' + d.uin + '）'
-            this.qr = ''
             toast('已登录 ' + d.uin, 'ok')
             await this.load(true)
-            setTimeout(() => { this.qrOpen = false }, 1200)
+            setTimeout(() => { this.loginOpen = false }, 1200)
             return
           }
-          if (d && d.accepted && !d.logged) {
-            this.msg = '手机已确认，正在登录 QQ…'
-          } else if (d && d.logged && !d.core_ready) {
-            this.msg = 'QQ 已登录，正在初始化 NapCat…'
-          }
           if (d && d.error) this.msg = d.error
+          else if (d && d.phase === 'waiting_qrcode') this.msg = '请在远程桌面里用手机 QQ 扫码…'
         } catch (e) {
           this.msg = errText(e)
         }
@@ -805,14 +774,12 @@ const Accounts = {
       this.busy = action
       try {
         const msg = {
-          start: '已启动', stop: '已停止', restart: '已重启',
-          quick_login: '已发起快登', logout: '已退出登录',
+          start: '已启动', stop: '已停止', restart: '已重启', logout: '已退出登录',
         }[action] || '已执行'
         if (action === 'logout' && !confirm('退出登录会清掉本机的登录态，下次要重新扫码。确定？')) return
         await call('qqbot.account.action', { action })
         toast(msg, 'ok')
-        this.qrOpen = false
-        this.qr = ''
+        this.loginOpen = false
         await this.load(true)
       } catch (e) {
         toast(errText(e), 'err')
@@ -820,11 +787,11 @@ const Accounts = {
         this.busy = ''
       }
     },
-    closeQr() {
-      this.qrOpen = false
-      this.qr = ''
+    closeLogin() {
+      this.loginOpen = false
       this.msg = ''
       this.novncUrl = ''
+      this.vncErr = ''
     },
   },
   template: `
@@ -834,16 +801,10 @@ const Accounts = {
     <div class="rcq-pnl">
       <div class="rcq-ph">
         <b>QQ 账户</b>
-        <span class="rcq-hint">单账户模式</span>
+        <span class="rcq-hint">SnowLuma · 单账户</span>
         <span class="sp"></span>
-        <span class="rcq-hint">框架</span>
-        <select class="input" style="width:auto;font-size:12px" :disabled="switching"
-          :value="beKind" @change="switchBackend($event.target.value)">
-          <option v-for="o in beOpts" :key="o.value" :value="o.value"
-            :disabled="o.installed === false">{{ optLabel(o) }}</option>
-        </select>
-        <button class="btn btn-sm btn-primary" :disabled="qrBusy" @click="showQr()">
-          {{ qrBusy ? '准备中…' : (login ? '重新登录' : '扫码登录') }}
+        <button class="btn btn-sm btn-primary" :disabled="vncBusy" @click="showLogin()">
+          {{ vncBusy ? '准备中…' : (login ? '重新登录' : '扫码登录') }}
         </button>
         <button class="btn btn-sm" :disabled="!!busy" @click="load()">刷新</button>
       </div>
@@ -861,89 +822,49 @@ const Accounts = {
       </div>
 
       <div class="rcq-iacts" style="margin-top:12px">
+        <button class="btn btn-sm" :disabled="!!busy" @click="act('start')">启动</button>
         <button class="btn btn-sm" :disabled="!!busy" @click="act('restart')">重启</button>
-        <button v-if="!isSL" class="btn btn-sm" :disabled="!!busy || !login"
-          @click="act('quick_login')">快速登录</button>
         <button class="btn btn-sm" :disabled="!!busy" @click="act('stop')">停止</button>
         <button class="btn btn-sm" :disabled="!!busy || !login" @click="act('logout')">退出登录</button>
       </div>
 
-      <!-- ============ 扫码区：两种后端完全不同的交互 ============ -->
-      <div v-if="qrOpen" class="rcq-scan">
-        <!-- SnowLuma：没有二维码 API，只能内嵌 noVNC 远程桌面 -->
-        <template v-if="isSL || novncUrl">
-          <div class="rcq-vncbar">
-            <b>远程桌面</b>
-            <span class="rcq-hint">在下面的画面里用手机 QQ 扫码登录</span>
-            <span class="sp"></span>
-            <a v-if="novncUrl" :href="novncUrl" target="_blank" rel="noopener"
-              class="btn btn-sm">新窗口打开</a>
-            <button class="btn btn-sm" @click="closeQr()">关闭</button>
-          </div>
-          <div v-if="novncUrl" class="rcq-vncwrap">
-            <iframe :src="novncUrl" class="rcq-vnc" allow="clipboard-read; clipboard-write"
-              referrerpolicy="no-referrer"></iframe>
-          </div>
-          <div v-else class="rcq-empty2">
-            {{ qrErr || (qrBusy ? '正在启动容器与远程桌面…' : '远程桌面还没准备好') }}
-          </div>
-          <div class="rcq-note" style="display:block;margin-top:8px">
-            画面是 SnowLuma 容器里的 QQ 桌面，可以直接用鼠标操作。
-            <br />
-            <b>如果二维码显示「已过期」，点画面里那个「刷新」按钮</b>；
-            首次启动要等 10~30 秒容器起来。
-            <br />
-            如果这里是空白，说明浏览器不允许内嵌 —— 点右上角「新窗口打开」。
-            <template v-if="novncPw">
-              <br />远程桌面密码：<code>{{ novncPw }}</code>（新窗口打开时可能要输）
-            </template>
-          </div>
-        </template>
-
-        <!-- NapCat：调 API 拿二维码，画成 SVG -->
-        <template v-else>
-          <div style="display:flex;gap:14px;align-items:flex-start">
-            <div>
-              <!-- ★ 必须用 v-html：makeQr 返回的是 SVG 字符串，
-                   塞进 <img src> 是渲染不出来的（img 的 src 要的是 URL）。 -->
-              <div v-if="qr" v-html="qr" class="rcq-qr" style="width:180px;height:180px"></div>
-              <div v-else class="rcq-empty"
-                style="width:180px;height:180px;display:flex;align-items:center;justify-content:center;border-radius:8px">
-                {{ qrBusy ? '正在获取二维码…' : (qrErr || '二维码还没出来') }}
-              </div>
-            </div>
-            <div style="flex:1;min-width:0">
-              <div class="rcq-note" style="display:block">
-                请用手机 QQ 扫描下面的二维码授权登录。<br />
-                登录成功后会自动识别出账号并连接机器人。
-              </div>
-              <div v-if="msg" style="margin-top:10px;font-size:12px">{{ msg }}</div>
-              <div v-if="qrErr" style="margin-top:10px;font-size:12px;color:var(--bad)">{{ qrErr }}</div>
-              <div style="margin-top:12px;display:flex;gap:8px">
-                <button class="btn btn-sm" :disabled="qrBusy" @click="refreshQr()">刷新二维码</button>
-                <button class="btn btn-sm" @click="closeQr()">关闭</button>
-              </div>
-            </div>
-          </div>
-        </template>
-
-        <div v-if="msg && (isSL || novncUrl)" style="margin-top:8px;font-size:12px">{{ msg }}</div>
+      <div v-if="loginOpen" class="rcq-scan">
+        <div class="rcq-vncbar">
+          <b>远程桌面</b>
+          <span class="rcq-hint">在下面的画面里用手机 QQ 扫码登录</span>
+          <span class="sp"></span>
+          <a v-if="novncUrl" :href="novncUrl" target="_blank" rel="noopener"
+            class="btn btn-sm">新窗口打开</a>
+          <button class="btn btn-sm" @click="closeLogin()">关闭</button>
+        </div>
+        <div v-if="novncUrl" class="rcq-vncwrap">
+          <iframe :src="novncUrl" class="rcq-vnc" allow="clipboard-read; clipboard-write"
+            referrerpolicy="no-referrer"></iframe>
+        </div>
+        <div v-else class="rcq-empty2">
+          {{ vncErr || (vncBusy ? '正在启动容器与远程桌面…' : '远程桌面还没准备好') }}
+        </div>
+        <div class="rcq-note" style="display:block;margin-top:8px">
+          画面是 SnowLuma 容器里的 QQ 桌面，可以直接用鼠标操作。
+          <br />
+          <b>如果二维码显示「已过期」，点画面里那个「刷新」按钮</b>；
+          首次启动要等 10~30 秒容器起来。
+          <br />
+          如果这里是空白，说明浏览器不允许内嵌 —— 点右上角「新窗口打开」。
+          <template v-if="novncPw">
+            <br />远程桌面密码：<code>{{ novncPw }}</code>（新窗口打开时可能要输）
+          </template>
+        </div>
+        <div v-if="msg" style="margin-top:8px;font-size:12px">{{ msg }}</div>
       </div>
 
       <div class="rcq-note" style="margin-top:14px">
         本插件是单账户模式：只管理一个 QQ 号。
         <br />
-        <template v-if="isSL">
-          <b>SnowLuma</b> 把 QQ 整包跑在 Docker 里，登录要在内嵌的远程桌面里扫码
-          （QQ 客户端自己画二维码，没有 API 能单独取出来）。
-        </template>
-        <template v-else>
-          登录用 <b>NapCat</b> 自带的二维码接口（和 QQ 客户端官方扫码一致）。
-        </template>
+        <b>SnowLuma</b> 把 QQ 整包跑在 Docker 里，登录要在内嵌的远程桌面里扫码
+        （QQ 客户端自己画二维码，没有 API 能单独取出来）。
         <br />
         换号时点「退出登录」清掉登录态，再重新扫码即可。
-        <template v-if="napcatOk">两套框架的开关在上面的「框架」下拉里，随时可以切回。</template>
-        <template v-else>本机只装了 SnowLuma（NapCat 已卸载），框架下拉里 NapCat 显示为不可选。</template>
       </div>
     </div>
   </div>`,
@@ -952,13 +873,14 @@ const Accounts = {
 // ------------------------------------------------------------------ 聊天记录
 // ------------------------------------------------------------------ 媒体库
 const MediaLib = {
+  components: { ThumbImg },
   data() {
     return {
-      S, items: [], stats: null,
-      kind: '', sender: '', kw: '',
+      S, items: [], stats: null, total: 0,
+      kind: '', sender: '', kw: '', sort: 'time', moreOpen: false,
       limit: 60, offset: 0, hasMore: false,
       busy: '', err: '', light: '', lightKind: '',
-      picked: {},
+      picked: {}, job: null, jobTimer: null,
     }
   },
   computed: {
@@ -975,11 +897,33 @@ const MediaLib = {
     pendingCount() {
       return this.items.filter((x) => x.transcode === 'pending').length
     },
+    jobPct() {
+      const j = this.job
+      if (!j || !j.total) return 0
+      return Math.min(100, Math.round((j.done / j.total) * 100))
+    },
   },
-  async mounted() { await this.load() },
+  async mounted() {
+    await this.load()
+    this.$nextTick(() => this.setupMore())
+  },
+  beforeUnmount() {
+    if (this._io) { this._io.disconnect(); this._io = null }
+    if (this.jobTimer) { clearInterval(this.jobTimer); this.jobTimer = null }
+  },
   methods: {
     fmtFull, fmtNum,
     mediaAlive,
+    setupMore() {
+      if (typeof IntersectionObserver === 'undefined') return
+      const el = this.$refs.moreEl
+      if (!el) return
+      if (this._io) this._io.disconnect()
+      this._io = new IntersectionObserver((es) => {
+        if (es.some((e) => e.isIntersecting) && this.hasMore && !this.busy) this.loadMore()
+      }, { rootMargin: '300px' })
+      this._io.observe(el)
+    },
     bytes(n) {
       n = Number(n) || 0
       if (n >= 1073741824) return (n / 1073741824).toFixed(2) + ' G'
@@ -998,21 +942,26 @@ const MediaLib = {
       this.busy = 'load'
       try {
         const d = await callData('qqbot.chat.media_list', {
-          kind: this.kind, sender: this.sender, kw: this.kw,
+          kind: this.kind, sender: this.sender, kw: this.kw, sort: this.sort,
           limit: this.limit, offset: append ? this.offset : 0,
+          with_stats: append ? 0 : 1,
         })
         const items = (d && d.items) || []
         this.items = append ? this.items.concat(items) : items
         this.stats = (d && d.stats) || this.stats
+        this.total = (d && d.total) || this.items.length
         this.offset = this.items.length
-        this.hasMore = items.length >= this.limit
+        this.hasMore = !!(d && d.has_more)
       } catch (e) {
         this.err = errText(e)
       } finally {
         this.busy = ''
+        this.$nextTick(() => this.setupMore())
       }
     },
     async reload() { this.offset = 0; this.picked = {}; await this.load(false) },
+    setKind(k) { this.kind = k; this.reload() },
+    clearFilters() { this.kind = ''; this.sender = ''; this.kw = ''; this.reload() },
     // 清理媒体副本（原「聊天记录」页的能力，合并到媒体库）
     async purgeAll() {
       if (!confirm('清理媒体副本？\n\n只删图片/语音/视频这些媒体文件，聊天记录文字一条不删。')) return
@@ -1041,17 +990,42 @@ const MediaLib = {
     },
     async transcode() {
       const ids = this.pickedIds.length ? this.pickedIds : null
-      if (!ids && !confirm('把媒体库里所有「浏览器放不了」的视频/语音转成可播放格式？\n\n视频编码转换比较慢，请勿中断面板。')) return
+      if (!ids && !confirm('把媒体库里所有「浏览器放不了」的视频/语音转成可播放格式？\n\n转换在后台进行，可以随时取消。')) return
       this.busy = 'transcode'
       try {
-        const r = await callData('qqbot.chat.media_transcode', ids ? { ids } : {})
-        toast('转码完成：成功 ' + (r.ok || 0) + '，失败 ' + (r.failed || 0), 'ok')
-        await this.reload()
+        const r = await callData('qqbot.chat.media_transcode', ids ? { ids, async: true } : { async: true })
+        if (r && r.job) {
+          this.job = { id: r.job, state: 'running', total: r.total || 0, done: 0, ok: 0, failed: 0 }
+          this.pollJob()
+        } else {
+          toast('转码完成：成功 ' + (r.ok || 0) + '，失败 ' + (r.failed || 0), 'ok')
+          await this.reload()
+        }
       } catch (e) {
         toast(errText(e), 'err')
       } finally {
         this.busy = ''
       }
+    },
+    pollJob() {
+      if (this.jobTimer) clearInterval(this.jobTimer)
+      this.jobTimer = setInterval(async () => {
+        if (!this.job) { clearInterval(this.jobTimer); this.jobTimer = null; return }
+        try {
+          const d = await callData('qqbot.chat.media_task', { id: this.job.id })
+          if (d) this.job = Object.assign({}, this.job, d)
+          if (this.job.state !== 'running') {
+            clearInterval(this.jobTimer); this.jobTimer = null
+            toast('转码' + (this.job.state === 'cancelled' ? '已取消' : '完成')
+              + '：成功 ' + this.job.ok + '，失败 ' + this.job.failed, 'ok')
+            setTimeout(() => { this.job = null; this.reload() }, 1200)
+          }
+        } catch (e) { /* 下一轮再试 */ }
+      }, 1200)
+    },
+    async cancelJob() {
+      if (!this.job) return
+      try { await callData('qqbot.chat.media_task', { id: this.job.id, cancel: true }) } catch (e) {}
     },
     async remove() {
       const ids = this.pickedIds
@@ -1096,68 +1070,78 @@ const MediaLib = {
     },
   },
   template: `
-  <div>
+  <div @click="moreOpen = false">
     <div v-if="err" class="rcq-pnl rcq-warn" style="font-size:12px">{{ err }}</div>
 
     <div class="rcq-pnl">
-      <div class="rcq-flex">
-        <div class="rcq-fld"><span class="k">媒体总数</span>
-          <span class="v">{{ fmtNum(totalFiles) }} 个</span></div>
-        <div class="rcq-fld"><span class="k">占用空间</span>
-          <span class="v">{{ bytes(totalBytes) }}</span></div>
-        <div class="rcq-fld" v-for="s in (stats || {}).items || []" :key="s.kind">
-          <span class="k">{{ kindLabel(s.kind) }}</span>
-          <span class="v">{{ s.count }} 个 · {{ bytes(s.bytes) }}</span></div>
-        <span class="sp" style="margin-left:auto"></span>
+      <div class="rcq-flex" style="gap:6px">
+        <button class="btn btn-sm" :class="kind === '' ? 'btn-primary' : ''" @click="setKind('')">
+          全部 {{ fmtNum(totalFiles) }} 个 · {{ bytes(totalBytes) }}</button>
+        <button v-for="s in (stats || {}).items || []" :key="s.kind" class="btn btn-sm"
+          :class="kind === s.kind ? 'btn-primary' : ''" @click="setKind(s.kind)">
+          {{ kindLabel(s.kind) }} {{ fmtNum(s.count) }} · {{ bytes(s.bytes) }}</button>
+        <span style="margin-left:auto"></span>
         <button class="btn btn-sm" :disabled="!!busy" @click="reindex">重建索引</button>
         <button class="btn btn-sm" :disabled="!!busy" @click="repair">修复引用</button>
-        <button class="btn btn-sm" :disabled="!!busy" @click="transcode">
-          {{ busy === 'transcode' ? '转码中…' : '转成可播放格式' }}
+        <button class="btn btn-sm" :disabled="!!busy || !!(job && job.state === 'running')" @click="transcode">
+          {{ (job && job.state === 'running') ? ('转码中 ' + job.done + '/' + job.total) : '转成可播放格式' }}
         </button>
-        <button class="btn btn-sm" :disabled="!!busy || !pickedIds.length" @click="remove">
-          删除选中{{ pickedIds.length ? '（' + pickedIds.length + '）' : '' }}
-        </button>
-        <button class="btn btn-sm" :disabled="!!busy" @click="purgeAll">
-          {{ busy === 'purge' ? '清理中…' : '清理媒体副本' }}
-        </button>
+        <div class="rcq-more">
+          <button class="btn btn-sm" @click.stop="moreOpen = !moreOpen">更多 ▾</button>
+          <div v-if="moreOpen" class="rcq-more-pop" @click.stop>
+            <button :disabled="!pickedIds.length" @click="remove(); moreOpen = false">
+              删除选中{{ pickedIds.length ? '（' + pickedIds.length + '）' : '' }}</button>
+            <button @click="purgeAll(); moreOpen = false">清理媒体副本</button>
+          </div>
+        </div>
       </div>
       <div class="rcq-note">
-        媒体库里存的是聊天记录里的图片 / 视频 / 语音副本。
-        QQ 的视频多是 HEVC、语音是 AMR，浏览器放不了 ——
-        点「转成可播放格式」会自动转成 H.264 视频与 mp3 语音。
+        点击上面的类型可以筛选；「转成可播放格式」在后台转码，可随时取消。
+        QQ 的视频多是 HEVC、语音是 AMR，浏览器放不了 —— 转完变成 H.264 / mp3。
       </div>
+    </div>
+
+    <div v-if="job" class="rcq-pnl">
+      <div class="rcq-flex">
+        <b>后台转码 {{ job.done }}/{{ job.total }}</b>
+        <span class="rcq-hint">成功 {{ job.ok }} · 失败 {{ job.failed }}</span>
+        <span style="margin-left:auto"></span>
+        <button v-if="job.state === 'running'" class="btn btn-sm" @click="cancelJob">取消</button>
+      </div>
+      <div class="rcq-bar2" style="margin-top:8px"><i :style="{ width: jobPct + '%' }"></i></div>
     </div>
 
     <div class="rcq-pnl">
-      <div class="rcq-flex">
-        <label class="rcq-fi" style="margin:0">
-          <span>类型</span>
-          <select class="input" v-model="kind" @change="reload()">
-            <option value="">全部</option>
-            <option value="image">图片</option>
-            <option value="video">视频</option>
-            <option value="record">语音</option>
-            <option value="face">表情</option>
-            <option value="file">文件</option>
-          </select>
-        </label>
-        <label class="rcq-fi" style="margin:0">
+      <div class="rcq-grid">
+        <label class="rcq-fi">
           <span>发送者</span>
-          <input class="input" v-model="sender" placeholder="QQ 号或昵称"
-            @keyup.enter="reload()" />
+          <input class="input" v-model="sender" placeholder="QQ 号或昵称" @keyup.enter="reload()" />
         </label>
-        <label class="rcq-fi" style="margin:0">
-          <span>关键词</span>
+        <label class="rcq-fi">
+          <span>文件名关键词</span>
           <input class="input" v-model="kw" placeholder="文件名" @keyup.enter="reload()" />
         </label>
-        <button class="btn btn-sm btn-primary" :disabled="!!busy" @click="reload">筛选</button>
-        <button class="btn btn-sm" @click="pickAll()">
-          {{ pickedIds.length === items.length && items.length ? '取消全选' : '全选本页' }}
-        </button>
+        <label class="rcq-fi">
+          <span>排序</span>
+          <select class="input" v-model="sort" @change="reload()">
+            <option value="time">按时间（新→旧）</option>
+            <option value="size">按大小（大→小）</option>
+            <option value="kind">按类型</option>
+          </select>
+        </label>
+        <div class="rcq-fld rcq-hit"><span class="k">命中</span>
+          <span class="v">{{ fmtNum(total) }} 个</span></div>
+        <div class="rcq-acts">
+          <button class="btn btn-sm btn-primary" :disabled="!!busy" @click="reload">筛选</button>
+          <button class="btn btn-sm" @click="clearFilters">清空</button>
+        </div>
       </div>
     </div>
 
-    <div v-if="!items.length" class="rcq-empty2">还没有媒体文件</div>
+    <div v-if="busy === 'load' && !items.length" class="rcq-mlib">
+      <div v-for="i in 12" :key="'sk' + i" class="rcq-mcard skel"><div class="th"></div><div class="meta"><div class="n"></div><div class="s"></div></div></div>
+    </div>
+    <div v-else-if="!items.length" class="rcq-empty2">还没有媒体文件</div>
     <div v-else class="rcq-mlib">
       <div v-for="m in items" :key="m.id" class="rcq-mcard"
         :class="{ on: picked[m.id], gone: !m.exists }">
@@ -1165,11 +1149,11 @@ const MediaLib = {
           <input type="checkbox" :checked="!!picked[m.id]" @change="toggle(m.id)" />
         </label>
         <div class="th" @click="m.exists ? open(m) : null">
-          <img v-if="m.exists && (m.kind === 'image' || m.kind === 'face')" :src="mediaUrl(m)"
-            loading="lazy" alt="" />
+          <thumb-img v-if="m.exists && (m.kind === 'image' || m.kind === 'face')" :rel="m.rel" :size="360" />
           <!-- preload="metadata"：只取 moov + 首帧，能显示缩略图又不会拉整个视频 -->
           <video v-else-if="m.exists && m.kind === 'video'" :src="mediaUrl(m)" preload="metadata"
             muted playsinline></video>
+          <span v-if="m.exists && m.kind === 'video'" class="vid-ic">▶</span>
           <div v-else class="ph">{{ kindIcon(m.kind) }}</div>
           <span v-if="m.transcode === 'pending'" class="rcq-badge warn">转码中</span>
           <span v-else-if="m.transcode === 'failed'" class="rcq-badge bad">格式不支持</span>
@@ -1184,7 +1168,18 @@ const MediaLib = {
         <span class="dl gone" v-else>文件已丢失</span>
       </div>
     </div>
-    <div v-if="hasMore" class="rcq-loadmore" @click="loadMore()">加载更多</div>
+    <div v-if="hasMore" ref="moreEl" class="rcq-loadmore" @click="loadMore()">
+      {{ busy ? '加载中…' : '加载更多' }}</div>
+
+    <div v-if="pickedIds.length" class="rcq-batch">
+      <b>已选 {{ pickedIds.length }} 项</b>
+      <button class="btn btn-sm" @click="pickAll()">
+        {{ pickedIds.length === items.length && items.length ? '取消全选' : '全选本页' }}</button>
+      <button class="btn btn-sm btn-primary" :disabled="!!busy || !!(job && job.state === 'running')"
+        @click="transcode">转码选中</button>
+      <button class="btn btn-sm btn-danger" :disabled="!!busy" @click="remove">删除</button>
+      <button class="btn btn-sm" @click="picked = {}">取消选择</button>
+    </div>
 
     <div v-if="light" class="rcq-light" @click="light = ''">
       <button class="x" @click.stop="light = ''">×</button>
@@ -1200,12 +1195,13 @@ const MediaLib = {
 
 // ------------------------------------------------------------------ 查询
 const Query = {
+  components: { ThumbImg },
   data() {
     return {
       S, items: [], senders: [], total: 0,
       sender: '', recalled: '', kind: '', kw: '',
       limit: 50, beforeId: 0, more: false,
-      busy: '', err: '', light: '', lightKind: '',
+      busy: '', err: '', light: '', lightKind: '', lastMs: 0,
       showSenders: false,
     }
   },
@@ -1243,12 +1239,23 @@ const Query = {
     },
   },
   async mounted() {
-    await this.loadSenders()
     await this.search(false)
+    this.$nextTick(() => this.setupMore())
   },
+  beforeUnmount() { if (this._io) { this._io.disconnect(); this._io = null } },
   methods: {
     fmtFull, fmtNum,
     mediaAlive,
+    setupMore() {
+      if (typeof IntersectionObserver === 'undefined') return
+      const el = this.$refs.moreEl
+      if (!el) return
+      if (this._io) this._io.disconnect()
+      this._io = new IntersectionObserver((es) => {
+        if (es.some((e) => e.isIntersecting) && this.more && !this.busy) this.loadMore()
+      }, { rootMargin: '300px' })
+      this._io.observe(el)
+    },
     bytes(n) {
       n = Number(n) || 0
       if (n >= 1048576) return (n / 1048576).toFixed(1) + ' M'
@@ -1259,14 +1266,22 @@ const Query = {
     kindLabel(k) {
       return { image: '图片', video: '视频', record: '语音', face: '表情', file: '文件' }[k] || (k || '其它')
     },
-    async loadSenders() {
+    async loadSenders(kw) {
       try {
-        const d = await callData('qqbot.chat.senders', {})
+        const d = await callData('qqbot.chat.senders', { kw: kw || '', limit: 20 })
         this.senders = (d && d.items) || []
       } catch (e) { /* 补全拿不到不影响查询 */ }
     },
+    // 补全改成「聚焦/输入时按前缀查 20 条」：原来一进页就拉 200 条 + 200 个头像
+    onSenderFocus() { this.showSenders = true; this.loadSenders(this.sender) },
+    onSenderInput() {
+      this.showSenders = true
+      clearTimeout(this._st)
+      this._st = setTimeout(() => this.loadSenders(this.sender), 250)
+    },
     async search(append) {
       this.busy = 'search'
+      const t0 = performance.now()
       try {
         const d = await callData('qqbot.chat.query', {
           sender: this.sender,
@@ -1278,13 +1293,15 @@ const Query = {
         })
         const items = (d && d.items) || []
         this.items = append ? this.items.concat(items) : items
-        this.total = (d && d.total) || this.items.length
+        this.total = (d && d.total !== undefined) ? d.total : this.items.length
         this.beforeId = items.length ? items[items.length - 1].id : 0
-        this.more = items.length >= this.limit
+        this.more = !!(d && d.has_more)
+        this.lastMs = Math.round(performance.now() - t0)
       } catch (e) {
         this.err = errText(e)
       } finally {
         this.busy = ''
+        this.$nextTick(() => this.setupMore())
       }
     },
     async reload() { this.beforeId = 0; await this.search(false) },
@@ -1317,11 +1334,11 @@ const Query = {
     <div v-if="err" class="rcq-pnl rcq-warn" style="font-size:12px">{{ err }}</div>
 
     <div class="rcq-pnl">
-      <div class="rcq-flex" style="align-items:flex-end;flex-wrap:wrap;gap:8px">
-        <label class="rcq-fi" style="margin:0;position:relative">
+      <div class="rcq-grid">
+        <label class="rcq-fi" style="position:relative">
           <span>QQ 用户</span>
           <input class="input" v-model="sender" placeholder="QQ 号或昵称"
-            @focus="showSenders = true" @keyup.enter="reload()" />
+            @focus="onSenderFocus" @input="onSenderInput" @keyup.enter="reload()" />
           <div v-if="showSenders && suggest.length" class="rcq-sugg">
             <div v-for="x in suggest" :key="x.sender_id" class="rcq-sugg-i"
               @click="pickSender(x)">
@@ -1352,10 +1369,12 @@ const Query = {
           <input class="input" v-model="kw" placeholder="消息内容" @keyup.enter="reload()" />
         </label>
 
-        <button class="btn btn-sm btn-primary" :disabled="!!busy" @click="reload">
-          {{ busy === 'search' ? '查询中…' : '查询' }}
-        </button>
-        <button class="btn btn-sm" v-if="filtersOn" @click="clearFilters">清空条件</button>
+        <div class="rcq-acts">
+          <button class="btn btn-sm" :disabled="!filtersOn" @click="clearFilters">清空条件</button>
+          <button class="btn btn-sm btn-primary" :disabled="!!busy" @click="reload">
+            {{ busy === 'search' ? '查询中…' : '查询' }}
+          </button>
+        </div>
       </div>
       <div class="rcq-note">
         各个条件可以叠加使用 —— 比如「查某个 QQ 号的、已撤回的视频」。
@@ -1363,13 +1382,22 @@ const Query = {
       </div>
     </div>
 
-    <div class="rcq-pnl" v-if="items.length">
+    <div class="rcq-pnl" v-if="items.length || total">
       <div class="rcq-flex">
-        <span class="rcq-hint">命中 {{ fmtNum(total) }} 条</span>
+        <b>命中 {{ fmtNum(total) }} 条</b>
+        <span class="rcq-hint" v-if="lastMs">耗时 {{ lastMs }}ms</span>
+        <span style="margin-left:auto"></span>
+        <span class="rcq-hint">已加载 {{ items.length }} 条</span>
       </div>
     </div>
 
-    <div v-if="!items.length && !busy" class="rcq-empty2">
+    <div v-if="busy === 'search' && !items.length" class="rcq-qres">
+      <div v-for="i in 6" :key="'qsk' + i" class="rcq-qrow skel">
+        <div class="hd"><span class="ava-sk"></span><span class="ln-sk w40"></span></div>
+        <div class="bd"><span class="ln-sk w80"></span><span class="ln-sk w60"></span></div>
+      </div>
+    </div>
+    <div v-else-if="!items.length" class="rcq-empty2">
       没有符合条件的消息
     </div>
 
@@ -1377,7 +1405,7 @@ const Query = {
       <div v-for="m in items" :key="m.id" class="rcq-qrow"
         :class="{ rec: m.recalled }">
         <div class="hd">
-          <img v-if="m.sender_avatar || m.sender_id" class="ava"
+          <img v-if="m.sender_avatar || m.sender_id" class="ava" loading="lazy"
             :src="m.sender_avatar || ('https://q1.qlogo.cn/g?b=qq&nk=' + m.sender_id + '&s=100')"
             alt="" />
           <b>{{ m.sender_name || m.sender_id }}</b>
@@ -1392,9 +1420,9 @@ const Query = {
           <span v-else-if="m.text" style="color:var(--f);font-style:italic">{{ m.text }}</span>
           <div class="rcq-media">
             <template v-for="md in (m.media || [])" :key="md.seg">
-              <img v-if="md.kind === 'image' && mediaAlive(md)" :src="mediaUrl(md)"
-                @click="openMedia(md)" style="max-width:150px;max-height:150px" />
-              <img v-else-if="md.kind === 'face' && mediaAlive(md)" :src="mediaUrl(md)"
+              <thumb-img v-if="md.kind === 'image' && mediaAlive(md)" :rel="md.rel" :size="320"
+                @click="openMedia(md)" style="max-width:150px;max-height:150px;cursor:zoom-in" />
+              <thumb-img v-else-if="md.kind === 'face' && mediaAlive(md)" :rel="md.rel" :size="64"
                 style="width:26px;height:26px" />
               <video v-else-if="md.kind === 'video' && mediaAlive(md)" controls preload="metadata"
                 :src="mediaUrl(md)" style="max-width:240px"></video>
@@ -1410,7 +1438,8 @@ const Query = {
         </div>
       </div>
     </div>
-    <div v-if="more" class="rcq-loadmore" @click="loadMore()">加载更多</div>
+    <div v-if="more" ref="moreEl" class="rcq-loadmore" @click="loadMore()">
+      {{ busy ? '加载中…' : '加载更多' }}</div>
 
     <div v-if="light" class="rcq-light" @click="light = ''">
       <button class="x" @click.stop="light = ''">×</button>
@@ -2288,7 +2317,7 @@ const Providers = {
   </div>`,
 }
 
-// ------------------------------------------------------------------ 运行日志（仿 NapCat 猫猫日志）
+// ------------------------------------------------------------------ 运行日志（SnowLuma 容器）
 
 const Logs = {
   data() {
@@ -2349,7 +2378,7 @@ const Logs = {
       try {
         await call('qqbot.account.logs.clear')
         this.items = []
-        toast('缓冲已清空', 'ok')
+        toast('已清空当前视图（容器日志由 Docker 管理）', 'ok')
       } catch (e) { toast(errText(e), 'err') }
     },
     download() {
@@ -2357,7 +2386,7 @@ const Logs = {
       const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' })
       const a = document.createElement('a')
       a.href = URL.createObjectURL(blob)
-      a.download = 'napcat-' + Date.now() + '.log'
+      a.download = 'snowluma-' + Date.now() + '.log'
       a.click()
       setTimeout(() => URL.revokeObjectURL(a.href), 3000)
     },
@@ -2372,7 +2401,7 @@ const Logs = {
         <button class="btn btn-sm" :class="mode === 'history' ? 'btn-primary' : ''" @click="switchMode('history')">历史日志</button>
         <span class="sp"></span>
         <span class="rcq-lamp"><b :class="connected ? 'on' : 'off'"></b>
-          {{ mode === 'live' ? (connected ? 'SSE 已连接' : 'SSE 断开') : (source === 'journal' ? 'journalctl' : 'NapCat 缓冲') }}</span>
+          {{ connected ? '容器在线' : '容器离线' }} · docker logs</span>
       </div>
       <div class="rcq-flex">
         <span class="rcq-hint">日志级别</span>
@@ -2410,8 +2439,8 @@ const Logs = {
       </div>
     </div>
     <div class="rcq-note">
-      实时日志订阅 NapCat 的 SSE 通道（不依赖 systemd，非 root 也能看）；历史日志读
-      <code>journalctl -u napcat</code>，读不到时会回落到实时缓冲。
+      日志来自 <code>docker logs snowluma</code>（容器日志本身带历史，每 2 秒刷新一次）。
+      容器没起来时这里会是空的。
     </div>
   </div>`,
 }
@@ -2432,6 +2461,7 @@ const Settings = {
     ws() { return this.feats.web_search || {} },
     vis() { return this.feats.vision || {} },
     rp() { return this.feats.random_pick || {} },
+    sl() { return this.feats.sl_status || {} },
   },
   async mounted() { await this.load() },
   methods: {
@@ -2499,6 +2529,11 @@ const Settings = {
               enabled: this.rp.enabled !== false,
               scope: this.rp.scope || 'enabled_groups',
             },
+            sl_status: {
+              enabled: this.sl.enabled !== false,
+              keyword: String(this.sl.keyword || '#sl').trim() || '#sl',
+              cooldown: Math.max(1, Number(this.sl.cooldown) || 10),
+            },
           },
         })
         toast('能力开关已保存', 'ok')
@@ -2512,11 +2547,6 @@ const Settings = {
           config: {
             api: this.conn.config.api,
             timeout: Number(this.conn.config.timeout) || 90,
-            napcat: {
-              base: this.conn.config.napcat.base,
-              token: this.conn.config.napcat.token,
-              unit: this.conn.config.napcat.unit,
-            },
           },
         })
         toast('连接设置已保存', 'ok')
@@ -2666,6 +2696,26 @@ const Settings = {
           </div>
         </div>
 
+        <div class="rcq-sec">
+          <div class="switch-row">
+            <label>允许 #sl 状态指令
+              <div class="rcq-note">
+                任意群聊 / 私聊里发 <b>#sl</b>，机器人回一条 SnowLuma 状态
+                （容器、QQ 登录、OneBot 连接、消息档案条数）。
+                关掉后 #sl 只是普通消息，走正常的 @ / 唤醒规则。
+              </div>
+            </label>
+            <label class="switch"><input type="checkbox" v-model="sl.enabled" /><span class="slider"></span></label>
+          </div>
+          <div class="rcq-form" style="margin-top:6px">
+            <label class="rcq-fi"><span>触发关键词</span>
+              <input class="input" v-model="sl.keyword" placeholder="#sl" /></label>
+            <label class="rcq-fi"><span>冷却（秒）</span>
+              <input class="input rcq-num" type="number" min="1" max="600" v-model="sl.cooldown" /></label>
+          </div>
+          <div class="rcq-note">同一会话在冷却时间内只回一次，避免群里刷屏。</div>
+        </div>
+
         <div class="rcq-flex" style="margin-top:12px">
           <button class="btn btn-primary btn-sm" :disabled="!!busy" @click="saveFeat">保存</button>
         </div>
@@ -2695,18 +2745,14 @@ const Settings = {
 
       <!-- 连接 -->
       <div v-if="tab === 'conn' && conn">
-        <div class="rcq-ph" style="margin-bottom:10px"><b>NapCat（协议端）</b><span class="sp"></span>
-          <span class="rcq-lamp"><b :class="conn.napcat && conn.napcat.ok ? 'on' : 'off'"></b>
-            {{ conn.napcat && conn.napcat.ok ? '已连通' : '连不上' }}</span></div>
-        <div class="rcq-form">
-          <label class="rcq-fi wide"><span>WebUI 地址</span>
-            <input class="input" v-model="conn.config.napcat.base" placeholder="http://127.0.0.1:6099" /></label>
-          <label class="rcq-fi"><span>WebUI Token</span>
-            <input class="input" type="password" v-model="conn.config.napcat.token" /></label>
-          <label class="rcq-fi"><span>systemd 单元名（读历史日志）</span>
-            <input class="input" v-model="conn.config.napcat.unit" placeholder="napcat" /></label>
+        <div class="rcq-ph" style="margin-bottom:10px"><b>SnowLuma（协议端）</b><span class="sp"></span>
+          <span class="rcq-lamp"><b :class="conn.snowluma && conn.snowluma.ok ? 'on' : 'off'"></b>
+            {{ conn.snowluma && conn.snowluma.ok ? '容器在运行' : '容器未运行' }}</span></div>
+        <div class="rcq-note" v-if="conn.snowluma && conn.snowluma.error">{{ conn.snowluma.error }}</div>
+        <div class="rcq-note">
+          QQ 跑在 Docker 容器 <code>snowluma</code> 里（OneBot WS 3001 / HTTP 3000 / noVNC 6081）。
+          容器没起就去「QQ 账户」点「启动」或「扫码登录」。
         </div>
-        <div class="rcq-note" v-if="conn.napcat && conn.napcat.error">{{ conn.napcat.error }}</div>
 
         <div class="rcq-sec">
           <div class="rcq-ph" style="margin-bottom:10px"><b>rcbot（机器人）</b><span class="sp"></span>
@@ -2733,9 +2779,9 @@ const Settings = {
 // ------------------------------------------------------------------ 框架
 
 const TABS = [
-  // ★ 「消息」是整屏页（fixed overlay），进去后隐藏插件自己的选项卡 ——
-  //   仿 QQ 的第一印象就是"没有外层壳"，这里必须让位。
-  { id: 'im', label: '消息', comp: IM, fullscreen: true },
+  // 「消息」不再整屏铺满：和其它页签一样嵌在插件页里，
+  // 顶部选项卡始终保留，用户随时能切走。
+  { id: 'im', label: '消息', comp: IM },
   { id: 'overview', label: '概览', comp: Overview },
   { id: 'account', label: 'QQ 账户', comp: Accounts },
   { id: 'query', label: '查询', comp: Query },
@@ -2758,8 +2804,7 @@ const App = {
   },
   computed: {
     cur() { return (this.TABS.find((t) => t.id === this.tab) || this.TABS[0]).comp },
-    isFull() { const t = this.TABS.find((x) => x.id === this.tab); return !!(t && t.fullscreen) },
-    ncOn() { return !!(this.conn && this.conn.napcat && this.conn.napcat.ok) },
+    slOn() { return !!(this.conn && this.conn.snowluma && this.conn.snowluma.ok) },
     rbOn() { return !!(this.conn && this.conn.rcbot && this.conn.rcbot.ok) },
   },
   async mounted() { await this.check() },
@@ -2781,12 +2826,12 @@ const App = {
     },
   },
   template: `
-  <div class="rcq">
-    <div class="rcq-bar" v-if="!isFull">
+  <div class="rcq" :class="{ 'rcq-im-mode': tab === 'im' }">
+    <div class="rcq-bar">
       <div class="rcq-tab" v-for="t in TABS" :key="t.id" :class="{ on: tab === t.id }"
         @click="go(t.id)">{{ t.label }}</div>
       <div class="rcq-bar-r">
-        <span class="rcq-lamp"><b :class="ncOn ? 'on' : 'off'"></b>NapCat</span>
+        <span class="rcq-lamp"><b :class="slOn ? 'on' : 'off'"></b>SnowLuma</span>
         <span class="rcq-lamp"><b :class="rbOn ? 'on' : 'off'"></b>Bot</span>
         <button class="btn btn-sm" @click="refresh">刷新</button>
       </div>

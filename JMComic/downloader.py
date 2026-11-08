@@ -277,10 +277,13 @@ class Downloader(object):
         aid = str(aid)
         with self._lock:
             t = self._tasks.get(aid)
-            if not t:
-                return 'not_found'
-            if t.status == 'downloading':
+            if t and t.status == 'downloading':
                 return 'already'
+        if t is None:
+            # 没有任务记录但盘上有残留（旧管理器下的 / 任务被移除过）：
+            # 直接当成一次新任务，_run 会跳过已存在的页，等于"接着下"。
+            # 原来返回 not_found，界面上点「继续」毫无反应。
+            return self.start(aid)
         return self.start(aid, t.name, t.author, t.workers)
 
     def remove(self, aid, delete_files=False):
@@ -340,6 +343,13 @@ class Downloader(object):
                 t.name = album.name or ''
             if not t.author:
                 t.author = album.author or ''
+            # 顺手把标签记进 metadata.json：不然下完以后详情页从盘上读，
+            # 标签/简介是空的（专辑详情缓存 6 小时就过期了）。
+            try:
+                self.M.remember_meta(aid, album.name or '', album.author or '',
+                                     list(album.tags or []))
+            except Exception:
+                pass
             chapters = list(album.episode_list or [])
             if not chapters:
                 raise RuntimeError('该本子没有章节')

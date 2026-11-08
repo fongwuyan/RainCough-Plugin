@@ -2,8 +2,8 @@
 """媒体副本：下载、落盘、格式转码。
 
 为什么必须**同步**下载（不能等用户点开才取）：
-  · NapCat 给的 url 是 QQ CDN 临时地址，会过期
-  · file 是 NapCat 本地缓存路径，会被它自己清掉
+  · OneBot 给的 url 是 QQ CDN 临时地址，会过期
+  · file 是协议端本地缓存路径，会被它自己清掉
   → 消息到达那一刻不下手，事后就永远拿不到了
 
 落盘路径：<media_dir>/<账号uin>/<日期>/<msg_id>_<段序号>.<ext>
@@ -13,7 +13,7 @@
   · 语音：QQ 给的是 AMR-NB，浏览器不支持 → 转 mp3
   · 视频：QQ 短视频大量是 HEVC Main10，浏览器不支持 → 转 H.264+AAC+faststart
     （转码是重活，走后台任务，不阻塞消息入库）
-  · 图片/视频后缀按**魔数与真实容器**判定，不信 NapCat 给的后缀
+  · 图片/视频后缀按**魔数与真实容器**判定，不信协议端给的后缀
 
 清单项结构：
   {kind, seg, rel, bytes, mime, local, name, playable, transcode}
@@ -148,7 +148,7 @@ async def save_media(segs, ob, root, account_uin, msg_id, ts, dl=None,
             except Exception:
                 data = None
         if data is None and path and ob is not None:
-            # 让 NapCat 落一份到本地再读
+            # 让协议端落一份到本地再读
             data = await _via_onebot(ob, t, path)
 
         if not data:
@@ -157,7 +157,7 @@ async def save_media(segs, ob, root, account_uin, msg_id, ts, dl=None,
                         'transcode': '', 'name': name})
             continue
 
-        # ---- 按真实内容定后缀（不信 NapCat 给的）----
+        # ---- 按真实内容定后缀（不信协议端给的）----
         mime = ''
         if t == 'image':
             e2, m2 = ffmpeg.sniff_image(data)
@@ -346,7 +346,7 @@ async def _save_media_update(account_id, msg_id, entry):
 
 
 async def _via_onebot(ob, t, path):
-    """让 NapCat 把媒体落到本地缓存再读。"""
+    """让协议端把媒体落到本地缓存再读。"""
     action = {'image': 'get_image', 'record': 'get_record', 'video': 'get_video'}.get(t)
     if not action or ob is None:
         return None

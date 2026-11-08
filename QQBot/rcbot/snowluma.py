@@ -1,21 +1,19 @@
 # -*- coding: utf-8 -*-
-"""SnowLuma 后端：用 Docker 容器跑 QQ（替代 NapCat 的原生安装）。
+"""SnowLuma 后端：用 Docker 容器跑 QQ（插件唯一支持的 QQ 框架）。
 
-SnowLuma 与 NapCat 的形态差异（决定了这里的实现方式）：
+形态：QQ + Xvfb + noVNC 全在容器里，宿主机只需要 Docker。
+  · 控制   docker start / stop / restart（不是 systemd）
+  · 日志   docker logs
+  · 扫码   没有二维码 API，只能开 noVNC 远程桌面用手机 QQ 扫
+  · 账号   问 OneBot 的 get_login_info（HTTP 3000）
+  · 协议   OneBot 11 / WebSocket 3001（正向 WS，rcbot 连它）
 
-| 维度 | NapCat（原生） | SnowLuma（Docker） |
-|---|---|---|
-| QQ 进程 | 宿主机上的 /opt/napcat/QQ/qq + Xvfb | **容器内**（镜像自带 QQ + Xvfb + VNC） |
-| 控制 | systemctl start/stop/restart | docker start/stop/restart |
-| 日志 | journalctl -u napcat.service | docker logs |
-| 扫码 | WebUI API 给二维码 URL，面板里画出来 | **只能通过 noVNC 远程桌面**扫（没有二维码 API） |
-| 账号信息 | /api/QQLogin/CheckLoginStatus + GetQQLoginInfo | OneBot `get_login_info`（HTTP 3000） |
-| OneBot | WebSocket 6700 | WebSocket 3001（HTTP 3000） |
-
-所以这里做三件事：
+所以这里做四件事：
   1. 容器的生命周期（起/停/重启/日志）
   2. 从容器日志里取 noVNC 的远程桌面密码，拼出可直接扫码的 URL
-  3. 用 OneBot 的 get_login_info 判断登录态与账号信息
+  3. 固化 onebot.json 的 accessToken，并打开 reportSelfMessage
+     （不开的话机器人自己发的消息不上报事件流，消息页就看不到自己说过的话）
+  4. 用 OneBot 的 get_login_info 判断登录态与账号信息
 
 ★ SnowLuma 的 OneBot 实例是"QQ 登录后才起来"的（hook 注入成功才拉 OneBotInstance），
   所以 **3000 端口能正常回 get_login_info = 已登录**，不用再猜状态机。
@@ -149,20 +147,20 @@ def create():
     return rc == 0, o
 
 
-# 令牌是否已经固化过（进程级缓存，避免每次调接口都 docker exec）
-_TOKEN_FIXED = {"done": False}
+# onebot.json 是否已经固化过（进程级缓存，避免每次调接口都 docker exec）
+_ONEBOT_FIXED = {"done": False}
 
 # x11vnc 是否已经切成共享模式（同上，进程级）
 _VNC_SHARED = {"done": False}
 
 
 def _boot_fix():
-    """容器起来后做一次初始化：把 OneBot 的 accessToken 固定成 rcsnow。
+    """容器起来后做一次初始化：固化 onebot.json 的 token 与自发消息上报。
 
-    SnowLuma 首次启动会生成**随机** token 写进配置，rcbot 侧没法预先知道。
+    SnowLuma 首次启动会生成**随机** token，且 reportSelfMessage 默认 false。
     改完必须重启容器才生效 —— 所以这一步只在真的改了的时候重启。
     """
-    if _TOKEN_FIXED["done"]:
+    if _ONEBOT_FIXED["done"]:
         return
     # 等容器里的 node 与配置文件就绪
     for _ in range(15):
@@ -172,14 +170,14 @@ def _boot_fix():
             break
         time.sleep(2)
     ok, out = ensure_onebot_config()
-    if ok and "TOKEN_SET" in (out or ""):
+    if ok and "CONFIG_SET" in (out or ""):
         sh("docker restart %s" % CONTAINER, timeout=180)
         time.sleep(8)
-        _TOKEN_FIXED["done"] = True
+        _ONEBOT_FIXED["done"] = True
         return
     # 已经是目标值 / 暂时改不了：标记完成，避免每次都重启
     if ok:
-        _TOKEN_FIXED["done"] = True
+        _ONEBOT_FIXED["done"] = True
 
 
 def _vnc_shared():
@@ -348,44 +346,86 @@ def onebot_alive():
 
 
 def ensure_onebot_config():
-    """把 OneBot 的 accessToken 固定成 ONEBOT_TOKEN。
+    """固化容器里所有 OneBot 配置：token / 自发消息上报 / 内置状态指令。
+
+    三件事：
+      · accessToken 首次启动随机生成，rcbot 没法预知 → 固定成 ONEBOT_TOKEN
+      · reportSelfMessage 镜像默认 false，机器人自己发的消息不进事件流，
+        消息页里就只剩别人说的话 → 打开
+      · statusCommand 是框架自带的 #sl 指令，默认开着。插件侧的 rcbot
+        也实现了 #sl（面板设置页有开关，任意群/私聊都回），两边同时开
+        会一条 #sl 收到两条状态 → 关掉框架侧的，由 rcbot 统一响应
+
+    ★ 容器里不只有 onebot.json：QQ 登录成功后 SnowLuma 会另存一份
+      onebot_<uin>.json 并**优先用它**（实测只改 onebot.json 完全不生效）。
+      所以必须遍历 /app/data/config/onebot*.json 逐个改。
 
     ★ 不用 sed —— JSON 里带引号，经 shell → docker exec → sh 三层转义后
-      正则几乎必然被吃掉（实测 grep 得到 0）。改成把 python 脚本 base64 传进去，
-      容器里解码后执行，绕开所有转义问题。
+      正则几乎必然被吃掉。改成把 python 脚本 base64 传进去，容器里解码执行。
     """
     if not exists():
         return False, "容器不存在"
 
-    # 先看当前值
-    rc, cur = sh("docker exec %s cat /app/data/config/onebot.json 2>/dev/null" % CONTAINER,
-                 timeout=30)
-    if rc != 0 or not (cur or "").strip():
-        return False, "读不到配置"
-    if (cur or "").count(ONEBOT_TOKEN) >= 2:
-        return True, "TOKEN_ALREADY"
+    rc, listing = sh(
+        "docker exec %s sh -c \"ls /app/data/config/onebot*.json 2>/dev/null\"" % CONTAINER,
+        timeout=20)
+    files = [x.strip() for x in (listing or "").splitlines()
+             if x.strip().startswith("/") and x.strip().endswith(".json")]
+    if not files:
+        return False, "找不到 onebot 配置"
+
+    # 宿主机先逐份解析，全都达标就别白改一遍（改了要重启容器才生效）
+    need_fix = False
+    for path in files:
+        rc, cur = sh("docker exec %s cat %s 2>/dev/null" % (CONTAINER, path), timeout=30)
+        if rc != 0 or not (cur or "").strip():
+            need_fix = True
+            continue
+        try:
+            d = json.loads(cur)
+            servers = []
+            for key in ("httpServers", "wsServers"):
+                servers += ((d.get("networks") or {}).get(key) or [])
+            if not servers or any(
+                    x.get("accessToken") != ONEBOT_TOKEN
+                    or x.get("reportSelfMessage") is not True for x in servers):
+                need_fix = True
+            sc = d.get("statusCommand")
+            if isinstance(sc, dict) and sc.get("enabled") is not False:
+                need_fix = True
+        except Exception:
+            need_fix = True
+    if not need_fix:
+        return True, "CONFIG_OK"
 
     script = (
-        "import json,sys\n"
-        "p='/app/data/config/onebot.json'\n"
-        "d=json.load(open(p,encoding='utf-8'))\n"
+        "import json,glob\n"
         "n=0\n"
-        "for k in ('httpServers','wsServers'):\n"
-        "    for x in (d.get('networks') or {}).get(k) or []:\n"
-        "        if x.get('accessToken')!='%s':\n"
-        "            x['accessToken']='%s';n+=1\n"
-        "json.dump(d,open(p,'w',encoding='utf-8'),ensure_ascii=False,indent=2)\n"
+        "for p in glob.glob('/app/data/config/onebot*.json'):\n"
+        "    try:\n"
+        "        d=json.load(open(p,encoding='utf-8'))\n"
+        "    except Exception:\n"
+        "        continue\n"
+        "    for k in ('httpServers','wsServers'):\n"
+        "        for x in (d.get('networks') or {}).get(k) or []:\n"
+        "            if x.get('accessToken')!='%s':\n"
+        "                x['accessToken']='%s';n+=1\n"
+        "            if x.get('reportSelfMessage') is not True:\n"
+        "                x['reportSelfMessage']=True;n+=1\n"
+        "    sc=d.get('statusCommand')\n"
+        "    if isinstance(sc,dict) and sc.get('enabled') is not False:\n"
+        "        sc['enabled']=False;n+=1\n"
+        "    json.dump(d,open(p,'w',encoding='utf-8'),ensure_ascii=False,indent=2)\n"
         "print('CHANGED' if n else 'NOCHANGE')\n"
     ) % (ONEBOT_TOKEN, ONEBOT_TOKEN)
     import base64
     b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
-    # 容器里用 python3（镜像是 debian，带 python3）；没有就退回 node
     cmd = ("docker exec %s sh -c \"echo %s | base64 -d | python3 -\"" % (CONTAINER, b64))
     rc, o = sh(cmd, timeout=60)
     if "CHANGED" in (o or ""):
-        return True, "TOKEN_SET"
+        return True, "CONFIG_SET"
     if "NOCHANGE" in (o or ""):
-        return True, "TOKEN_ALREADY"
+        return True, "CONFIG_OK"
     return False, (o or "")[:200]
 
 

@@ -9,7 +9,7 @@
     **HEVC Main10（H.265 10bit）**，Chrome/Firefox 都不支持 → 黑屏/转圈。
     另一个坑：mp4 的 moov atom 在文件尾（非 faststart）时，
     浏览器必须把整个文件下完才能起播，看起来就是「播不出来」。
-  · **图片**：NapCat 给的后缀不可信（标 .jpg 的其实是 png/webp），
+  · **图片**：OneBot 给的后缀不可信（标 .jpg 的其实是 png/webp），
     面板按后缀发 MIME，png 被当 jpg 发出去，某些浏览器会拒绝渲染。
 
 所以这里做三件事：

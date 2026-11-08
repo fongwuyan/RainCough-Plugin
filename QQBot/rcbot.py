@@ -3,7 +3,7 @@
 """rcbot —— RainCough 自研 QQ 机器人核心。
 
 只做五件事：模型提供商、人格、会话管理、上下文压缩、运行日志。
-QQ 收发走 NapCat 的 OneBot 11 正向 WS（默认 ws://127.0.0.1:6700）。
+QQ 收发走 SnowLuma 的 OneBot 11 正向 WS（默认 ws://127.0.0.1:3001）。
 
 2026-11-01：支持多 QQ 号 —— 每个号一条 OneBot 连接，由 accounts.py 编排。
 """

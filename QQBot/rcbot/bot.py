@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """消息处理。
 
-★ 2026-11-01 改造：事件处理拆成三条互相独立的路径（这是最容易做错的地方）
+★ 2026-11-01 改造：事件处理拆成几条互相独立的路径（这是最容易做错的地方）
 
   路径 A 记录 —— 无条件全量落 chat_logs。
           不过滤黑白名单 / @ / 前缀 / 限流，群里别人聊天也记。
           用户要求"别只记机器人回话的那些"，这条路径是唯一保障。
+          ★ 2026-11-07：机器人自己发的消息也要记（message_sent 事件 /
+            发送动作兜底），否则「消息」页只能看到别人说的话。
   路径 B 应答 —— 沿用改造前的全部触发过滤，行为不变。
   路径 C 撤回 —— notice 事件按 msg_id 给已存的记录打标，原文保留。
+  路径 D 指令 —— #sl 回 SnowLuma 状态，走独立开关与冷却，绕开 B 的 @/前缀门槛。
 
-  三者互不阻塞：记录功能坏了不能让机器人哑掉，应答策略调整不影响已存档内容。
+  四者互不阻塞：记录功能坏了不能让机器人哑掉，应答策略调整不影响已存档内容。
 """
 import asyncio
 import base64
@@ -20,7 +23,8 @@ import time
 
 import aiohttp
 
-from . import cards, chats, compress, config, group_avatar, llm, logbuf, media, profile, store
+from . import (cards, chats, compress, config, group_avatar, llm, logbuf,
+               media, profile, slstatus, store)
 
 MAX_REPLY_CHARS = 3000
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
@@ -233,7 +237,7 @@ async def _fetch_image(src, ob=None, timeout=15):
         with open(path, 'rb') as f:
             return f.read(MAX_IMAGE_BYTES + 1)
 
-    # url 过期时，让 NapCat 把图落到本地缓存再读
+    # url 过期时，让 OneBot 把图落到本地缓存再读
     if ob is not None and path:
         try:
             r = await ob.call('get_image', {'file': path}, timeout=timeout)
@@ -376,7 +380,7 @@ class Bot:
         """notice 事件里的撤回：按 msg_id 打标，原文保留。
 
         OneBot 的撤回事件只带 message_id 不带原文
-        （实测 napcat.mjs:85979-85988 反编译的类定义），
+        （实测协议端反编译出的类定义），
         所以内容必须在消息到达时就存下来 —— 这是路径 A 的存在理由之一。
         """
         nt = ev.get('notice_type') or ''
@@ -394,8 +398,13 @@ class Bot:
 
     # ---------------- 路径 A：记录（全量）
 
-    async def _record(self, ev, account_id, acct_cfg):
-        """无条件记录一条消息。不抛异常 —— 记录失败不该影响机器人应答。"""
+    async def _record(self, ev, account_id, acct_cfg, is_self=False):
+        """无条件记录一条消息。不抛异常 —— 记录失败不该影响机器人应答。
+
+        is_self=True 表示这是机器人自己发出的消息（message_sent 事件，或
+        事件里 user_id 就是 self_id）。以前这类消息被直接丢掉，于是「消息」
+        页只能看到别人说的话；现在记为 role='assistant'。
+        """
         try:
             cfg = config.load()
             ccfg = cfg.get('chat') or {}
@@ -404,25 +413,33 @@ class Bot:
             mtype = ev.get('message_type') or ''
             if mtype not in ('group', 'private'):
                 return
-            self_id = str(ev.get('self_id') or '')
+            self_id = str(ev.get('self_id') or getattr(self.ob, 'self_id', '') or '')
             uid = str(ev.get('user_id') or '')
             gid = str(ev.get('group_id') or '')
             if not uid:
                 return
-            # 机器人自己发的消息不在事件流里（reportSelfMessage=false），
-            # 那边由发送路径自记。这里跳过自己发的，避免重复。
-            if uid == self_id:
-                return
 
             segs = ev.get('message')
             sender = ev.get('sender') or {}
-            # 名字：群名片 > 昵称 > QQ 号；头像按 QQ 号从 qlogo 取
-            uid, nick, avatar = profile.sender_profile(sender)
             target = gid if mtype == 'group' else uid
             ts = int(ev.get('time') or time.time())
             msg_id = str(ev.get('message_id') or '')
+            role = 'assistant' if is_self else 'user'
 
-            # 媒体副本：必须同步下载（临时 URL 会过期）
+            if is_self:
+                # 自己发的：sender 必须是机器人自己。
+                # 以前 _record_own 把「用户昵称」当成 sender_name 传进来，
+                # 生产库里才会出现机器人消息署名叫「风悟言(负责:公会官网+全能)」。
+                sender_id = self_id or str(acct_cfg.get('uin') or '') or uid
+                nick = str(acct_cfg.get('nick') or '') or '机器人'
+                avatar = profile.avatar_url(sender_id)
+            else:
+                # 名字：群名片 > 昵称 > QQ 号；头像按 QQ 号从 qlogo 取
+                uid, nick, avatar = profile.sender_profile(sender)
+                sender_id = uid
+
+            # 媒体副本：必须同步下载（临时 URL 会过期）。自发消息同样要存，
+            # 不然自己发的图/语音在消息页里是空的。
             media_list = []
             if ccfg.get('media_enabled', True):
                 mcfg = cfg.get('media') or {}
@@ -435,8 +452,10 @@ class Bot:
                     keep_silk=bool(mcfg.get('keep_silk_source', True)),
                     account_id=account_id)
 
-            await chats.record(account_id, mtype, target, 'user', segs,
-                               sender_id=uid, sender_name=nick, msg_id=msg_id,
+            # chats.record 内按 (账号, msg_id, role) 去重：
+            # message_sent 事件与 _record_own 兜底会同时看到同一条消息。
+            await chats.record(account_id, mtype, target, role, segs,
+                               sender_id=sender_id, sender_name=nick, msg_id=msg_id,
                                created_at=ts, media=media_list,
                                sender_avatar=avatar)
         except Exception as e:
@@ -452,15 +471,82 @@ class Bot:
         if post == 'notice':
             await self._handle_recall(ev, account_id)
             return
+
+        # ★ 自发消息：OneBot 把机器人自己发的消息报成 message_sent。
+        #   SnowLuma 的 reportSelfMessage 打开后就会来这种事件；把它归一成
+        #   message + __self__ 标记，让路径 A 照常记录（role=assistant）。
+        if post == 'message_sent':
+            ev = dict(ev)
+            ev['post_type'] = 'message'
+            ev['__self__'] = True
+            post = 'message'
         if post != 'message':
             return
 
+        self_id = str(ev.get('self_id') or getattr(self.ob, 'self_id', '') or '')
+        uid = str(ev.get('user_id') or '')
+        is_self = bool(ev.get('__self__')) or bool(uid and uid == self_id)
+
         # 路径 A：先无条件记录，再考虑要不要应答。
         # 顺序很重要 —— 记录要早于任何过滤，否则又变成"只记要回复的"。
-        await self._record(ev, account_id, acct_cfg)
+        await self._record(ev, account_id, acct_cfg, is_self=is_self)
+
+        # 自己发的消息到此为止：不应答、不触发指令，否则会自己回自己无限循环。
+        if is_self:
+            return
+
+        # 路径 D：#sl 状态指令（独立于 B 的 @/前缀/限流门槛）
+        if await self._handle_sl(ev, account_id, acct_cfg):
+            return
 
         # 路径 B：应答（原有逻辑）
         await self._maybe_reply(ev, account_id, acct_cfg)
+
+    async def _handle_sl(self, ev, account_id='', acct_cfg=None):
+        """任意群/私聊发 #sl → 回一条 SnowLuma 状态。返回 True 表示已处理。
+
+        ★ 为什么不塞进 _maybe_reply：那里有「群里必须 @」「唤醒前缀」
+          「限流」「会话停用」等一堆门槛，装了指令却经常不回，很难排查。
+          指令走自己的开关与冷却，命中后直接 return，不再让 LLM 多嘴回一句。
+        """
+        try:
+            cfg = config.load()
+            sl = (cfg.get('features') or {}).get('sl_status') or {}
+            if not sl.get('enabled', True):
+                return False
+            keyword = str(sl.get('keyword') or '#sl').strip().lower()
+            if not keyword:
+                return False
+            text, _, _ = _seg_text(ev.get('message'))
+            if str(text or '').strip().lower() != keyword:
+                return False
+
+            mtype = ev.get('message_type') or ''
+            if mtype not in ('group', 'private'):
+                return False
+            gid = str(ev.get('group_id') or '')
+            uid = str(ev.get('user_id') or '')
+            target = gid if mtype == 'group' else uid
+            if not target or self.ob is None:
+                return False
+
+            # 冷却：同一会话 cooldown 秒内只回一次，防止群里刷屏
+            cooldown = max(1, int(sl.get('cooldown') or 10))
+            key = 'sl:%s:%s:%s' % (account_id, mtype, target)
+            if not self.rl.allow(key, cooldown, 1):
+                logbuf.debug('bot', '#sl 冷却中：%s' % key)
+                return True
+
+            reply = await slstatus.build(self)
+            self_id = str(ev.get('self_id') or getattr(self.ob, 'self_id', '') or '')
+            r = await self.ob.send_text(mtype, target, reply)
+            await self._record_own(account_id, acct_cfg or {}, mtype, target,
+                                   reply, r, self_id)
+            logbuf.info('bot', '#sl 已回复（%s:%s）' % (mtype, target))
+            return True
+        except Exception as e:
+            logbuf.warn('bot', '#sl 处理失败：%s' % str(e)[:200])
+            return True   # 失败了也别再让 LLM 接着回一句不相干的话
 
     async def on_connected(self, ob=None, account_id=''):
         """OneBot 连上后回调：拉一次群列表/好友列表缓存名字。
@@ -486,6 +572,8 @@ class Bot:
             logbuf.debug('bot', '同步群头像失败：%s' % str(e)[:120])
 
     async def _maybe_reply(self, ev, account_id, acct_cfg):
+        if ev.get('__self__'):
+            return        # 自己发的消息永不触发应答
         cfg = config.load()
         bot = config.resolve_bot_cfg(cfg, acct_cfg)
         if not bot.get('enabled', True):
@@ -645,7 +733,7 @@ class Bot:
                 # reportSelfMessage=false → 事件流里没有自己的消息，只能发送时自记。
                 # 长回复分片，每片一个 message_id → 逐片记，否则撤回匹配不上。
                 await self._record_own(account_id, acct_cfg, mtype, gid or uid,
-                                        chunk, r, nick)
+                                        chunk, r, self_id)
             except Exception as e:
                 logbuf.error('bot', '发送失败：%s' % str(e)[:200])
                 break
@@ -663,8 +751,14 @@ class Bot:
         n = await chats.mark_recalled('', mid, by='self', kind='', target='')
         return {'recalled': True, 'updated': n}
 
-    async def _record_own(self, account_id, acct_cfg, mtype, target, text, resp, nick):
-        """记录机器人自己发出的消息。"""
+    async def _record_own(self, account_id, acct_cfg, mtype, target, text, resp,
+                          self_id=''):
+        """发送成功后兜底记一条自己的消息。
+
+        reportSelfMessage 关掉时事件流里没有自发消息，只能靠这里补；
+        打开后 message_sent 也会记一条 —— chats.record 按 msg_id 去重，
+        两条路径不会写重。
+        """
         try:
             cfg = config.load()
             ccfg = cfg.get('chat') or {}
@@ -673,10 +767,16 @@ class Bot:
             data = (resp or {}).get('data') or {}
             msg_id = str(data.get('message_id') or '')
             segs = [{'type': 'text', 'data': {'text': text}}]
+            sid = str(self_id or (data.get('sender') or {}).get('user_id')
+                      or getattr(self.ob, 'self_id', '')
+                      or (acct_cfg or {}).get('uin') or '')
+            # ★ 署名必须是机器人自己。以前这里传的是「用户昵称」，
+            #   消息页里自己发的消息会顶着对方的名片，看着像别人说的。
+            nick = str((acct_cfg or {}).get('nick') or '') or '机器人'
             await chats.record(account_id, mtype, target, 'assistant', segs,
-                               sender_id=str((data.get('sender') or {}).get('user_id') or ''),
-                               sender_name=nick or '机器人', msg_id=msg_id,
-                               created_at=int(time.time()), media=[])
+                               sender_id=sid, sender_name=nick, msg_id=msg_id,
+                               created_at=int(time.time()), media=[],
+                               sender_avatar=profile.avatar_url(sid))
         except Exception as e:
             logbuf.debug('chat', '记录自身消息失败：%s' % str(e)[:120])
 

@@ -18,7 +18,7 @@ from deploy import Api, PRESETS  # noqa: E402
 IFACES = [
     ('qqbot.health', {}),
     ('qqbot.conn.get', {}),
-    ('qqbot.nc.overview', {}),
+    ('qqbot.overview', {}),
     # 单账户
     ('qqbot.account.info', {}),
     ('qqbot.account.qrcode', {}),
@@ -35,8 +35,6 @@ IFACES = [
     ('qqbot.chat.senders', {}),
     ('qqbot.chat.media_list', {}),
     ('qqbot.chat.media_reindex', {}),
-    # 后端切换
-    ('qqbot.backend.get', {}),
 ]
 
 

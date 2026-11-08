@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""OneBot 11 正向 WS 客户端：连 NapCat、收事件、调 API。
+"""OneBot 11 正向 WS 客户端：连 SnowLuma、收事件、调 API。
 
 一个实例 = 一条连接 = 一个 QQ 号（2026-11-01 多账号改造）。
 多账号的编排在 accounts.py，这里保持"只管自己那条连接"的职责。

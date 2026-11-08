@@ -67,24 +67,38 @@ docker logs "$NAME" 2>&1 | grep -Ei '临时密码|initial credentials' | tail -1
 echo
 echo "=== 6. 固定 OneBot 令牌 ==="
 # SnowLuma 首次启动会生成随机 accessToken，rcbot 侧没法预先知道 ——
-# 这里改成固定值，rcbot 才能稳定连上 WS。
+# 这里改成固定值；同时打开 reportSelfMessage，否则机器人自己发的消息
+# 不进事件流，消息页就看不到自己说过的话。
+# ★ 容器里不只有 onebot.json：QQ 登录后 SnowLuma 会另存 onebot_<uin>.json 并优先用它。
+#   只改 onebot.json 实测完全不生效，必须逐份改。同时关掉框架自带的 #sl
+#   （statusCommand），否则和 rcbot 侧的状态指令会一条触发回两条。
 docker exec snowluma node -e "
-const fs=require('fs');const p='/app/data/config/onebot.json';
-let d={};try{d=JSON.parse(fs.readFileSync(p,'utf8'))}catch(e){}
-d.networks=d.networks||{};
-let changed=false;
-for (const k of ['httpServers','wsServers']) {
-  for (const x of (d.networks[k]||[])) {
-    if (x.accessToken!=='rcsnow'){x.accessToken='rcsnow';changed=true;}
+const fs=require('fs');const dir='/app/data/config';
+const files=fs.readdirSync(dir).filter(f=>/^onebot.*\.json$/.test(f));
+let n=0;
+for (const f of files) {
+  const p=dir+'/'+f;
+  let d; try{d=JSON.parse(fs.readFileSync(p,'utf8'))}catch(e){continue}
+  d.networks=d.networks||{};
+  let ch=false;
+  for (const k of ['httpServers','wsServers']) {
+    for (const x of (d.networks[k]||[])) {
+      if (x.accessToken!=='rcsnow'){x.accessToken='rcsnow';ch=true;n++}
+      if (x.reportSelfMessage!==true){x.reportSelfMessage=true;ch=true;n++}
+    }
   }
+  if (d.statusCommand && d.statusCommand.enabled!==false){d.statusCommand.enabled=false;ch=true;n++}
+  if (ch) fs.writeFileSync(p,JSON.stringify(d,null,2));
 }
-if (changed) fs.writeFileSync(p,JSON.stringify(d,null,2));
-console.log(changed?'TOKEN_SET':'TOKEN_ALREADY');
+console.log(n?'CONFIG_SET':'CONFIG_OK');
 " 2>&1 | tail -2
 echo "  校验: $(docker exec snowluma node -e "
-const d=JSON.parse(require('fs').readFileSync('/app/data/config/onebot.json','utf8'));
-const w=(d.networks.wsServers||[]).map(x=>x.port+':'+x.accessToken).join(',');
-process.stdout.write(w||'(none)');
+const fs=require('fs');const dir='/app/data/config';
+process.stdout.write(fs.readdirSync(dir).filter(f=>/^onebot.*\.json$/.test(f)).map(f=>{
+  const d=JSON.parse(fs.readFileSync(dir+'/'+f,'utf8'));
+  const w=(d.networks.wsServers||[]).map(x=>x.port+':'+x.accessToken+':self='+x.reportSelfMessage).join(',');
+  return f+'['+w+',statusCommand='+((d.statusCommand||{}).enabled)+']';
+}).join(' | '));
 ")"
 echo "  重启容器让配置生效…"
 docker restart snowluma >/dev/null 2>&1
