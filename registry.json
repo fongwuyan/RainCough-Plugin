@@ -1,7 +1,23 @@
 {
   "name": "RainCough 插件集(v4)",
-  "updated": "2026-11-07 03:35:57",
+  "updated": "2026-11-14 17:43:23",
   "plugins": [
+    {
+      "name": "AccountPool",
+      "label": "号池管理台",
+      "version": "0.1.0",
+      "path": "AccountPool",
+      "author": "RainCough",
+      "description": "自研 Go Gateway：账号池、OpenAI/Anthropic/Gemini 兼容、LAN API",
+      "lang": "python",
+      "interfaces": [
+        "accountpool.status",
+        "accountpool.request",
+        "accountpool.settings.save",
+        "accountpool.gateway.restart",
+        "accountpool.gateway.log"
+      ]
+    },
     {
       "name": "JMComic",
       "label": "JMComic",
