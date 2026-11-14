@@ -6,6 +6,7 @@ import atexit
 import json
 import os
 import platform
+import signal
 import subprocess
 import sys
 import threading
@@ -113,6 +114,14 @@ def _start_locked():
     if not os.path.exists(binary):
         raise rc.RCError(5001, "Gateway 未编译：缺少 %s" % binary)
     os.makedirs(DATA_DIR, exist_ok=True)
+    # 插件被 SIGKILL 时 atexit 不一定执行，先清理上次遗留的网关。
+    try:
+        pid = int(open(PID_FILE, "r", encoding="utf-8").read().strip())
+        os.kill(pid, signal.SIGTERM)
+        time.sleep(0.3)
+        os.kill(pid, signal.SIGKILL)
+    except Exception:
+        pass
     token = _admin_token()
     settings = _settings()
     args = [binary, "-data", DATA_DIR, "-admin-addr", ADMIN_ADDR,
@@ -121,6 +130,11 @@ def _start_locked():
     log = open(LOG_FILE, "ab", buffering=0)
     _proc = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT,
                              cwd=PLUGIN_DIR, env=dict(os.environ, ACCOUNT_POOL_ADMIN_TOKEN=token))
+    try:
+        with open(PID_FILE, "w", encoding="utf-8") as f:
+            f.write(str(_proc.pid))
+    except Exception:
+        pass
     for _ in range(50):
         if _health(0.5):
             return
@@ -232,12 +246,23 @@ def _shutdown():
             _proc.terminate()
         except Exception:
             pass
+    try:
+        os.remove(PID_FILE)
+    except Exception:
+        pass
 
 
 atexit.register(_shutdown)
 
 
+def _on_signal(signum, frame):
+    _shutdown()
+    raise SystemExit(0)
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
     rc.serve(
         endpoint=os.environ.get("RC_ENDPOINT", ""),
         name="AccountPool",
