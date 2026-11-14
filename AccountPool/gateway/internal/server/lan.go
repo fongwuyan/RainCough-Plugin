@@ -110,6 +110,9 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		failed[sel.Account.ID] = true
 		lastErr = "上游请求失败"
 	}
+	if s.crossServe(w, r, body, "openai", req.Model, tok, start) {
+		return
+	}
 	if lastErr == "" {
 		lastErr = "没有可用账号"
 	}
@@ -209,6 +212,9 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 		s.Pool.MarkOK(sel.Account.ID)
 		s.recordUsage(tok.ID, sel, req.Model, p, c, t, time.Since(start).Milliseconds(), 200, "")
 		s.Pool.Release(sel.Account.ID)
+		return
+	}
+	if s.crossServe(w, r, body, "anthropic", req.Model, tok, start) {
 		return
 	}
 	writeErr(w, http.StatusBadGateway, "没有可用的 Anthropic 账号")
@@ -331,6 +337,9 @@ func (s *Server) gemini(w http.ResponseWriter, r *http.Request) {
 		s.Pool.MarkOK(sel.Account.ID)
 		s.recordUsage(tok.ID, sel, modelName, p, c, t, time.Since(start).Milliseconds(), 200, "")
 		s.Pool.Release(sel.Account.ID)
+		return
+	}
+	if s.crossServe(w, r, body, "gemini", modelName, tok, start) {
 		return
 	}
 	writeErr(w, http.StatusBadGateway, "没有可用的 Gemini 账号")
