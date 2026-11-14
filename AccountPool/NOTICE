@@ -1,0 +1,10 @@
+AccountPool — RainCough 号池管理台
+Copyright 2026 RainCough contributors
+
+This product includes software developed at RainCough.
+
+The Go Gateway is an original implementation; no third-party project source
+code is copied into this repository. Runtime dependencies are limited to the
+Go standard library.
+
+Licensed under the Apache License, Version 2.0. See LICENSE.

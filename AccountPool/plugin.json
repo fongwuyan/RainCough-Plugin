@@ -1,0 +1,62 @@
+{
+  "name": "AccountPool",
+  "label": "号池管理台",
+  "version": "0.1.0",
+  "description": "自研 Go Gateway：账号池、OpenAI/Anthropic/Gemini 兼容、LAN API",
+  "author": "RainCough",
+  "icon": "",
+  "frontend": {
+    "entry": "assets/plugin.js",
+    "vue": "3.5",
+    "pages": [
+      {
+        "path": "",
+        "title": "号池管理台"
+      }
+    ]
+  },
+  "backend": {
+    "lang": "python",
+    "exec": [
+      "python3",
+      "backend/server_v4.py"
+    ],
+    "capabilities": [
+      "invoke",
+      "heartbeat",
+      "log.tail"
+    ]
+  },
+  "interfaces": [
+    {
+      "id": "accountpool.status",
+      "visibility": "all",
+      "version": "1",
+      "description": "网关状态"
+    },
+    {
+      "id": "accountpool.request",
+      "visibility": "main",
+      "version": "1",
+      "description": "管理 API 转发（仅 /admin/v1/）"
+    },
+    {
+      "id": "accountpool.settings.save",
+      "visibility": "main",
+      "version": "1",
+      "description": "保存 LAN 设置"
+    },
+    {
+      "id": "accountpool.gateway.restart",
+      "visibility": "main",
+      "version": "1",
+      "description": "重启网关"
+    },
+    {
+      "id": "accountpool.gateway.log",
+      "visibility": "main",
+      "version": "1",
+      "description": "网关日志"
+    }
+  ]
+}

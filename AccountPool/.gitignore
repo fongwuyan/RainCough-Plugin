@@ -1,0 +1,5 @@
+data/
+*.pyc
+__pycache__/
+gateway/accountpool
+gateway/accountpool.exe
