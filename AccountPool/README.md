@@ -10,7 +10,7 @@
 
 ## 当前版本
 
-`0.5.0`：Gateway 核心、OpenAI/Anthropic/Gemini 入口、跨协议流式转换、账号日/月额度、下游 Token 模型白名单、Vue 管理页面。
+`0.5.1`：Gateway 核心、OpenAI/Anthropic/Gemini 入口、跨协议流式转换、账号日/月额度、下游 Token 模型白名单、Vue 管理页面。
 
 ### 协议与 Provider
 

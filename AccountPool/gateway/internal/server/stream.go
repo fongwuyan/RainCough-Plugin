@@ -212,7 +212,10 @@ func (s *Server) streamCanonical(w http.ResponseWriter, r *http.Request, sel *po
 		}
 	})
 	em.End(usage)
-	return usage, err == nil
+	_ = err
+	em.End(usage)
+	// 已经向下游写了 200/SSE，不能再换账号重试（否则会向同一响应写第二份流）。
+	return usage, true
 }
 
 func parseProviderResponse(typ string, raw []byte) canonicalResp {
