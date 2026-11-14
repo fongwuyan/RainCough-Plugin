@@ -52,7 +52,7 @@ try:
     s, d = req(ADMIN + "/admin/v1/providers", "POST", {"name": "mock", "type": "openai", "base_url": "http://127.0.0.1:%d/v1" % MOCK_PORT, "api_key": "sk-test", "models": ["mock-1"]}, TOKEN)
     print("provider", s, d)
     pid = d["provider"]["id"]
-    s, d = req(ADMIN + "/admin/v1/accounts", "POST", {"provider_id": pid, "label": "mock-account", "api_key": "sk-test"}, TOKEN)
+    s, d = req(ADMIN + "/admin/v1/accounts", "POST", {"provider_id": pid, "label": "mock-account", "api_key": "sk-test", "daily_quota": 1}, TOKEN)
     print("account", s, d)
     s, d = req(ADMIN + "/admin/v1/tokens", "POST", {"name": "lan", "rpm": 0, "daily_quota": 0}, TOKEN)
     print("token", s, d)
@@ -61,6 +61,10 @@ try:
     print("models", s, d)
     s, d = req(LAN + "/v1/chat/completions", "POST", {"model": "mock-1", "messages": [{"role": "user", "content": "ping"}]}, lan_token)
     print("chat", s, d)
+    s, d = req(LAN + "/v1/chat/completions", "POST", {"model": "mock-1", "messages": [{"role": "user", "content": "ping"}]}, lan_token)
+    print("quota-second", s, d)
+    s, d = req(ADMIN + "/admin/v1/accounts", token=TOKEN)
+    print("account-used", d["accounts"][0]["used_count"], d["accounts"][0]["daily_quota"])
     s, d = req(ADMIN + "/admin/v1/usage", token=TOKEN)
     print("usage", s, len(d.get("usage", [])))
 finally:

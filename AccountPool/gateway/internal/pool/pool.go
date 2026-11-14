@@ -39,7 +39,11 @@ func (p *Pool) Select(modelName string, exclude map[string]bool, types ...string
 
 	candidates := make([]Selection, 0)
 	for _, acc := range snap.Accounts {
+		acc.NormalizeQuota()
 		if !acc.Enabled || acc.Status == "disabled" || exclude[acc.ID] {
+			continue
+		}
+		if acc.QuotaExceeded() {
 			continue
 		}
 		if acc.CooldownUntil > now {
@@ -116,11 +120,15 @@ func (p *Pool) MarkOK(accountID string) {
 	_ = p.store.Update(func(d *model.Data) error {
 		for i := range d.Accounts {
 			if d.Accounts[i].ID == accountID {
-				d.Accounts[i].Status = "ok"
-				d.Accounts[i].CooldownUntil = 0
-				d.Accounts[i].LastError = ""
-				d.Accounts[i].LastUsed = model.Now()
-				d.Accounts[i].UpdatedAt = model.Now()
+				a := &d.Accounts[i]
+				a.NormalizeQuota()
+				a.UsedCount++
+				a.UsedMonthCount++
+				a.Status = "ok"
+				a.CooldownUntil = 0
+				a.LastError = ""
+				a.LastUsed = model.Now()
+				a.UpdatedAt = model.Now()
 			}
 		}
 		return nil

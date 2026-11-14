@@ -24,6 +24,12 @@ type Account struct {
 	Weight         int    `json:"weight"`
 	Priority       int    `json:"priority"`
 	MaxConcurrency int    `json:"max_concurrency"`
+	DailyQuota     int    `json:"daily_quota"`
+	UsedDay        string `json:"used_day,omitempty"`
+	UsedCount      int    `json:"used_count"`
+	MonthlyQuota   int    `json:"monthly_quota"`
+	UsedMonth      string `json:"used_month,omitempty"`
+	UsedMonthCount int    `json:"used_month_count"`
 	Enabled        bool   `json:"enabled"`
 	Status         string `json:"status"` // unknown, ok, cooldown, disabled
 	CooldownUntil  int64  `json:"cooldown_until"`
@@ -79,3 +85,28 @@ func NewData() Data {
 func Now() int64 { return time.Now().Unix() }
 
 func Today() string { return time.Now().Format("2006-01-02") }
+
+func ThisMonth() string { return time.Now().Format("2006-01") }
+
+func (a *Account) NormalizeQuota() {
+	today := Today()
+	if a.UsedDay != today {
+		a.UsedDay = today
+		a.UsedCount = 0
+	}
+	month := ThisMonth()
+	if a.UsedMonth != month {
+		a.UsedMonth = month
+		a.UsedMonthCount = 0
+	}
+}
+
+func (a Account) QuotaExceeded() bool {
+	if a.DailyQuota > 0 && a.UsedDay == Today() && a.UsedCount >= a.DailyQuota {
+		return true
+	}
+	if a.MonthlyQuota > 0 && a.UsedMonth == ThisMonth() && a.UsedMonthCount >= a.MonthlyQuota {
+		return true
+	}
+	return false
+}

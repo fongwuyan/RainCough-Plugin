@@ -234,6 +234,12 @@ func (s *Server) syncProvider(w http.ResponseWriter, id string) {
 	case "gemini":
 		req, err = http.NewRequest(http.MethodGet,
 			strings.TrimRight(target.BaseURL, "/")+"/v1beta/models?key="+url.QueryEscape(key), nil)
+	case "azure":
+		req, err = http.NewRequest(http.MethodGet,
+			strings.TrimRight(target.BaseURL, "/")+"/openai/models?api-version=2024-10-21", nil)
+		if err == nil {
+			req.Header.Set("api-key", key)
+		}
 	case "ollama":
 		req, err = http.NewRequest(http.MethodGet, strings.TrimRight(target.BaseURL, "/")+"/api/tags", nil)
 		if err == nil && key != "" {
@@ -325,6 +331,8 @@ type accountIn struct {
 	Weight         int    `json:"weight"`
 	Priority       int    `json:"priority"`
 	MaxConcurrency int    `json:"max_concurrency"`
+	DailyQuota     int    `json:"daily_quota"`
+	MonthlyQuota   int    `json:"monthly_quota"`
 	Enabled        *bool  `json:"enabled"`
 }
 
@@ -393,6 +401,12 @@ func (s *Server) accounts(w http.ResponseWriter, r *http.Request) {
 			a.Priority = in.Priority
 			if in.MaxConcurrency > 0 {
 				a.MaxConcurrency = in.MaxConcurrency
+			}
+			if in.DailyQuota >= 0 {
+				a.DailyQuota = in.DailyQuota
+			}
+			if in.MonthlyQuota >= 0 {
+				a.MonthlyQuota = in.MonthlyQuota
 			}
 			if in.Enabled != nil {
 				a.Enabled = *in.Enabled
@@ -572,6 +586,8 @@ func viewAccount(a model.Account) map[string]interface{} {
 	return map[string]interface{}{
 		"id": a.ID, "provider_id": a.ProviderID, "label": a.Label,
 		"weight": a.Weight, "priority": a.Priority, "max_concurrency": a.MaxConcurrency,
+		"daily_quota": a.DailyQuota, "used_day": a.UsedDay, "used_count": a.UsedCount,
+		"monthly_quota": a.MonthlyQuota, "used_month": a.UsedMonth, "used_month_count": a.UsedMonthCount,
 		"enabled": a.Enabled, "status": a.Status, "cooldown_until": a.CooldownUntil,
 		"last_error": a.LastError, "last_used": a.LastUsed, "has_key": a.KeyEnc != "",
 		"created_at": a.CreatedAt, "updated_at": a.UpdatedAt,

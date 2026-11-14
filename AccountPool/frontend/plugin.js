@@ -47,9 +47,9 @@ const TEMPLATE = `
         </div>
       </div>
       <div class="section-title" style="margin-top:16px;">账号</div>
-      <div style="overflow:auto;"><table class="table"><thead><tr><th>标签</th><th>Provider</th><th>状态</th><th>权重/优先级</th><th>启用</th><th>错误</th></tr></thead><tbody>
-        <tr v-for="a in accounts" :key="a.id"><td>{{ a.label }}</td><td class="mono">{{ a.provider_id }}</td><td>{{ a.status }}</td><td>{{ a.weight }}/{{ a.priority }}</td><td>{{ a.enabled ? '启用' : '停用' }}</td><td>{{ a.last_error }}</td></tr>
-        <tr v-if="!accounts.length"><td colspan="6" class="hint">暂无账号</td></tr>
+      <div style="overflow:auto;"><table class="table"><thead><tr><th>标签</th><th>Provider</th><th>状态</th><th>权重/优先级</th><th>额度（日/月）</th><th>启用</th><th>错误</th></tr></thead><tbody>
+        <tr v-for="a in accounts" :key="a.id"><td>{{ a.label }}</td><td class="mono">{{ a.provider_id }}</td><td>{{ a.status }}</td><td>{{ a.weight }}/{{ a.priority }}</td><td>{{ a.used_count }}/{{ a.daily_quota || '∞' }} · {{ a.used_month_count }}/{{ a.monthly_quota || '∞' }}</td><td>{{ a.enabled ? '启用' : '停用' }}</td><td>{{ a.last_error }}</td></tr>
+        <tr v-if="!accounts.length"><td colspan="7" class="hint">暂无账号</td></tr>
       </tbody></table></div>
       <div class="card" style="padding:12px;margin-top:10px;">
         <div class="section-title">新增账号 / Key</div>
@@ -59,6 +59,8 @@ const TEMPLATE = `
           <input class="input" v-model="af.api_key" placeholder="API Key" style="flex:1;min-width:220px;">
           <input class="input" v-model.number="af.weight" placeholder="权重" style="width:70px;">
           <input class="input" v-model.number="af.priority" placeholder="优先级" style="width:80px;">
+          <input class="input" v-model.number="af.daily_quota" placeholder="日额度 0=不限" style="width:130px;">
+          <input class="input" v-model.number="af.monthly_quota" placeholder="月额度 0=不限" style="width:130px;">
           <button class="btn btn-primary" @click="addAccount">保存账号</button>
         </div>
       </div>
@@ -75,6 +77,7 @@ const TEMPLATE = `
           <input class="input" v-model="tf.name" placeholder="Token 名称" style="width:180px;">
           <input class="input" v-model.number="tf.rpm" placeholder="RPM（0=不限）" style="width:130px;">
           <input class="input" v-model.number="tf.daily_quota" placeholder="日请求额度（0=不限）" style="width:180px;">
+          <input class="input" v-model="tf.allowed_models" placeholder="允许模型，逗号分隔，空=全部" style="flex:1;min-width:220px;">
           <button class="btn btn-primary" @click="addToken">创建 Token</button>
         </div>
         <div v-if="newToken" class="hint" style="margin-top:8px;">新 Token（只显示一次）：<code>{{ newToken }}</code></div>
@@ -109,8 +112,8 @@ function mount(container, ctx) {
         notice: '', newToken: '', log: '', lanAddr: '127.0.0.1:18900', lanEnabled: false,
         types: TYPES,
         pf: { name: '', type: 'openai', base_url: '', api_key: '', models: '' },
-        af: { provider_id: '', label: '', api_key: '', weight: 1, priority: 0 },
-        tf: { name: '', rpm: 0, daily_quota: 0 },
+        af: { provider_id: '', label: '', api_key: '', weight: 1, priority: 0, daily_quota: 0, monthly_quota: 0 },
+        tf: { name: '', rpm: 0, daily_quota: 0, allowed_models: '' },
       }
     },
     computed: {
@@ -153,16 +156,20 @@ function mount(container, ctx) {
           await call('POST', '/admin/v1/accounts', {
             provider_id: this.af.provider_id, label: this.af.label.trim(), api_key: this.af.api_key.trim(),
             weight: this.af.weight || 1, priority: this.af.priority || 0,
+            daily_quota: this.af.daily_quota || 0, monthly_quota: this.af.monthly_quota || 0,
           })
-          this.af = { provider_id: '', label: '', api_key: '', weight: 1, priority: 0 }
+          this.af = { provider_id: '', label: '', api_key: '', weight: 1, priority: 0, daily_quota: 0, monthly_quota: 0 }
           await this.load()
         } catch (e) { this.notice = (e && e.message) || String(e) }
       },
       async addToken() {
         try {
-          const d = await call('POST', '/admin/v1/tokens', { name: this.tf.name.trim(), rpm: this.tf.rpm || 0, daily_quota: this.tf.daily_quota || 0 })
+          const d = await call('POST', '/admin/v1/tokens', {
+            name: this.tf.name.trim(), rpm: this.tf.rpm || 0, daily_quota: this.tf.daily_quota || 0,
+            allowed_models: this.tf.allowed_models.split(',').map(x => x.trim()).filter(Boolean),
+          })
           this.newToken = d.token || ''
-          this.tf = { name: '', rpm: 0, daily_quota: 0 }
+          this.tf = { name: '', rpm: 0, daily_quota: 0, allowed_models: '' }
           await this.load()
         } catch (e) { this.notice = (e && e.message) || String(e) }
       },

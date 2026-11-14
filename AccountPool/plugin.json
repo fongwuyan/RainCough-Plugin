@@ -1,7 +1,7 @@
 {
   "name": "AccountPool",
   "label": "号池管理台",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "自研 Go Gateway：账号池、OpenAI/Anthropic/Gemini 兼容、LAN API",
   "author": "RainCough",
   "icon": "",

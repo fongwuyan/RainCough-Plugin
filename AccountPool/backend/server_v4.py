@@ -27,7 +27,7 @@ LOG_FILE = os.path.join(DATA_DIR, "gateway.log")
 
 ADMIN_ADDR = "127.0.0.1:18901"
 DEFAULT_LAN_ADDR = "127.0.0.1:18900"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 _lock = threading.RLock()
 _proc = None
