@@ -26,7 +26,7 @@ func New(s *store.Store) *Pool {
 	return &Pool{store: s, rr: map[string]int{}, load: map[string]int{}}
 }
 
-func (p *Pool) Select(modelName string, exclude map[string]bool) (*Selection, error) {
+func (p *Pool) Select(modelName string, exclude map[string]bool, types ...string) (*Selection, error) {
 	snap := p.store.Snapshot()
 	now := model.Now()
 
@@ -50,6 +50,9 @@ func (p *Pool) Select(modelName string, exclude map[string]bool) (*Selection, er
 			continue
 		}
 		if len(pr.Models) > 0 && !contains(pr.Models, modelName) {
+			continue
+		}
+		if len(types) > 0 && !contains(types, pr.Type) {
 			continue
 		}
 		if acc.KeyEnc == "" {

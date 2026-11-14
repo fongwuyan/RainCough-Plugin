@@ -132,7 +132,7 @@ function mount(container, ctx) {
         <div class="hint">默认只监听回环。开启局域网会允许同网段设备使用下游 Token 访问。</div>
         <div class="flex" style="gap:8px;margin-top:8px;flex-wrap:wrap;">
           <input class="input" id="s-lan" value="${esc(s.lan_addr || '127.0.0.1:18900')}" style="width:220px;">
-          <label class="hint"><input type="checkbox" id="s-enable"> 允许局域网访问</label>
+          <label class="hint"><input type="checkbox" id="s-enable" ${s.lan_enabled ? 'checked' : ''}> 允许局域网访问</label>
           <button class="btn btn-primary" data-act="save-lan">保存并重启</button>
         </div>
       </div>

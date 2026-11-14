@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"accountpool/internal/model"
 	"accountpool/internal/pool"
@@ -23,6 +24,7 @@ type Server struct {
 	Version    string
 	Client     *http.Client
 	rpm        map[string]*rpmWindow
+	rpmMu      sync.Mutex
 }
 
 type rpmWindow struct {

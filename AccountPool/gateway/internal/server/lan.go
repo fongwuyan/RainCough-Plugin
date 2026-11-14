@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -22,8 +23,12 @@ func (s *Server) LANHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", s.lanModels)
 	mux.HandleFunc("/v1/chat/completions", s.chatCompletions)
+	mux.HandleFunc("/v1/messages", s.messages)
+	mux.HandleFunc("/v1beta/", s.gemini)
 	return mux
 }
+
+var openAITypes = []string{"openai", "azure", "ollama", "vllm", "custom", "deepseek", "zhipu", "moonshot", "qwen"}
 
 func (s *Server) lanModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -87,7 +92,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	failed := map[string]bool{}
 	var lastErr string
 	for attempt := 0; attempt < 3; attempt++ {
-		sel, err := s.Pool.Select(req.Model, failed)
+		sel, err := s.Pool.Select(req.Model, failed, openAITypes...)
 		if err != nil {
 			lastErr = err.Error()
 			break
@@ -111,16 +116,310 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	writeErr(w, http.StatusBadGateway, lastErr)
 }
 
+func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "读取请求失败")
+		return
+	}
+	var req struct {
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
+	}
+	if json.Unmarshal(body, &req) != nil || req.Model == "" {
+		writeErr(w, http.StatusBadRequest, "model 必填")
+		return
+	}
+	tok, err := s.authenticate(r)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if !tokenAllows(*tok, req.Model) {
+		writeErr(w, http.StatusForbidden, "该令牌不允许使用此模型")
+		return
+	}
+	start := time.Now()
+	failed := map[string]bool{}
+	for attempt := 0; attempt < 3; attempt++ {
+		sel, err := s.Pool.Select(req.Model, failed, "anthropic")
+		if err != nil {
+			break
+		}
+		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
+			anthropicMessagesURL(sel.Provider.BaseURL), bytes.NewReader(body))
+		if err != nil {
+			s.Pool.Release(sel.Account.ID)
+			break
+		}
+		upReq.Header.Set("Content-Type", "application/json")
+		upReq.Header.Set("x-api-key", sel.Key)
+		upReq.Header.Set("anthropic-version", "2023-06-01")
+		resp, err := s.Client.Do(upReq)
+		if err != nil {
+			s.Pool.Cooldown(sel.Account.ID, 60, trimErr(err.Error()))
+			s.record(tok.ID, sel, "", 0, time.Since(start).Milliseconds(), 502, trimErr(err.Error()))
+			s.Pool.Release(sel.Account.ID)
+			failed[sel.Account.ID] = true
+			continue
+		}
+		if resp.StatusCode >= 400 {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			s.Pool.Cooldown(sel.Account.ID, nativeCooldown(resp.StatusCode), "HTTP "+fmt.Sprint(resp.StatusCode))
+			s.record(tok.ID, sel, req.Model, 0, time.Since(start).Milliseconds(), resp.StatusCode, string(raw))
+			s.Pool.Release(sel.Account.ID)
+			failed[sel.Account.ID] = true
+			continue
+		}
+		if req.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			buf := make([]byte, 32<<10)
+			for {
+				n, err := resp.Body.Read(buf)
+				if n > 0 {
+					_, _ = w.Write(buf[:n])
+					if flusher != nil {
+						flusher.Flush()
+					}
+				}
+				if err != nil {
+					break
+				}
+			}
+			resp.Body.Close()
+			s.Pool.MarkOK(sel.Account.ID)
+			s.record(tok.ID, sel, req.Model, 0, time.Since(start).Milliseconds(), 200, "")
+			s.Pool.Release(sel.Account.ID)
+			return
+		}
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+		resp.Body.Close()
+		w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(raw)
+		p, c, t := parseUsageAnthropic(raw)
+		s.Pool.MarkOK(sel.Account.ID)
+		s.recordUsage(tok.ID, sel, req.Model, p, c, t, time.Since(start).Milliseconds(), 200, "")
+		s.Pool.Release(sel.Account.ID)
+		return
+	}
+	writeErr(w, http.StatusBadGateway, "没有可用的 Anthropic 账号")
+}
+
+func (s *Server) gemini(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/v1beta/")
+	if r.Method == http.MethodGet && strings.HasPrefix(rest, "models") {
+		tok, err := s.authenticate(r)
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		d := s.Store.Snapshot()
+		out := make([]map[string]interface{}, 0)
+		seen := map[string]bool{}
+		for _, p := range d.Providers {
+			if !p.Enabled || p.Type != "gemini" {
+				continue
+			}
+			for _, m := range p.Models {
+				if m == "" || seen[m] || !tokenAllows(*tok, m) {
+					continue
+				}
+				seen[m] = true
+				out = append(out, map[string]interface{}{
+					"name": "models/" + m, "displayName": m,
+					"supportedGenerationMethods": []string{"generateContent", "streamGenerateContent"},
+				})
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"models": out})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !strings.Contains(rest, ":generateContent") && !strings.Contains(rest, ":streamGenerateContent") {
+		writeErr(w, http.StatusNotFound, "not found")
+		return
+	}
+	modelName := strings.TrimPrefix(strings.SplitN(rest, ":", 2)[0], "models/")
+	stream := strings.Contains(rest, ":streamGenerateContent")
+	body, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "读取请求失败")
+		return
+	}
+	tok, err := s.authenticate(r)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if !tokenAllows(*tok, modelName) {
+		writeErr(w, http.StatusForbidden, "该令牌不允许使用此模型")
+		return
+	}
+	start := time.Now()
+	failed := map[string]bool{}
+	for attempt := 0; attempt < 3; attempt++ {
+		sel, err := s.Pool.Select(modelName, failed, "gemini")
+		if err != nil {
+			break
+		}
+		u := geminiURL(sel.Provider.BaseURL, rest, sel.Key, stream)
+		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, u, bytes.NewReader(body))
+		if err != nil {
+			s.Pool.Release(sel.Account.ID)
+			break
+		}
+		upReq.Header.Set("Content-Type", "application/json")
+		resp, err := s.Client.Do(upReq)
+		if err != nil {
+			s.Pool.Cooldown(sel.Account.ID, 60, trimErr(err.Error()))
+			s.record(tok.ID, sel, modelName, 0, time.Since(start).Milliseconds(), 502, trimErr(err.Error()))
+			s.Pool.Release(sel.Account.ID)
+			failed[sel.Account.ID] = true
+			continue
+		}
+		if resp.StatusCode >= 400 {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			s.Pool.Cooldown(sel.Account.ID, nativeCooldown(resp.StatusCode), "HTTP "+fmt.Sprint(resp.StatusCode))
+			s.record(tok.ID, sel, modelName, 0, time.Since(start).Milliseconds(), resp.StatusCode, string(raw))
+			s.Pool.Release(sel.Account.ID)
+			failed[sel.Account.ID] = true
+			continue
+		}
+		if stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			buf := make([]byte, 32<<10)
+			for {
+				n, err := resp.Body.Read(buf)
+				if n > 0 {
+					_, _ = w.Write(buf[:n])
+					if flusher != nil {
+						flusher.Flush()
+					}
+				}
+				if err != nil {
+					break
+				}
+			}
+			resp.Body.Close()
+			s.Pool.MarkOK(sel.Account.ID)
+			s.record(tok.ID, sel, modelName, 0, time.Since(start).Milliseconds(), 200, "")
+			s.Pool.Release(sel.Account.ID)
+			return
+		}
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+		resp.Body.Close()
+		w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+		w.WriteHeader(resp.StatusCode)
+		_, _ = w.Write(raw)
+		p, c, t := parseUsageGemini(raw)
+		s.Pool.MarkOK(sel.Account.ID)
+		s.recordUsage(tok.ID, sel, modelName, p, c, t, time.Since(start).Milliseconds(), 200, "")
+		s.Pool.Release(sel.Account.ID)
+		return
+	}
+	writeErr(w, http.StatusBadGateway, "没有可用的 Gemini 账号")
+}
+
+func anthropicMessagesURL(base string) string {
+	b := strings.TrimRight(base, "/")
+	if strings.HasSuffix(b, "/v1/messages") {
+		return b
+	}
+	if strings.HasSuffix(b, "/v1") {
+		return b + "/messages"
+	}
+	return b + "/v1/messages"
+}
+
+func geminiURL(base, rest, key string, stream bool) string {
+	b := strings.TrimRight(base, "/")
+	var u string
+	if strings.HasSuffix(b, "/v1beta") {
+		u = b + "/" + rest
+	} else {
+		u = b + "/v1beta/" + rest
+	}
+	u += "?key=" + url.QueryEscape(key)
+	if stream {
+		u += "&alt=sse"
+	}
+	return u
+}
+
+func nativeCooldown(status int) int64 {
+	switch status {
+	case 401, 403:
+		return 300
+	case 429:
+		return 60
+	default:
+		if status >= 500 {
+			return 30
+		}
+		return 0
+	}
+}
+
+func parseUsageAnthropic(raw []byte) (int, int, int) {
+	var v struct {
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(raw, &v) != nil {
+		return 0, 0, 0
+	}
+	return v.Usage.InputTokens, v.Usage.OutputTokens, v.Usage.InputTokens + v.Usage.OutputTokens
+}
+
+func parseUsageGemini(raw []byte) (int, int, int) {
+	var v struct {
+		UsageMetadata struct {
+			PromptTokenCount     int `json:"promptTokenCount"`
+			CandidatesTokenCount int `json:"candidatesTokenCount"`
+			TotalTokenCount      int `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
+	}
+	if json.Unmarshal(raw, &v) != nil {
+		return 0, 0, 0
+	}
+	return v.UsageMetadata.PromptTokenCount, v.UsageMetadata.CandidatesTokenCount, v.UsageMetadata.TotalTokenCount
+}
+
 func (s *Server) tryUpstream(w http.ResponseWriter, r *http.Request, body []byte, stream bool,
 	sel *pool.Selection, tok *model.Token, start time.Time) bool {
 	url := chatURL(sel.Provider.BaseURL)
+	if sel.Provider.Type == "azure" {
+		url = strings.TrimRight(sel.Provider.BaseURL, "/") + "/chat/completions?api-version=2024-10-21"
+	}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		s.Pool.Cooldown(sel.Account.ID, 30, err.Error())
 		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+sel.Key)
+	if sel.Provider.Type == "azure" {
+		req.Header.Set("api-key", sel.Key)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+sel.Key)
+	}
 	req.Header.Set("Accept", "text/event-stream, application/json")
 	if v := r.Header.Get("OpenAI-Beta"); v != "" {
 		req.Header.Set("OpenAI-Beta", v)
@@ -206,12 +505,21 @@ func (p poolSelection) ModelForUsage() string { return "" }
 
 func (s *Server) authenticate(r *http.Request) (*model.Token, error) {
 	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if !strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-		return nil, errors.New("缺少 Bearer Token")
+	plain := ""
+	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+		plain = strings.TrimSpace(auth[7:])
 	}
-	plain := strings.TrimSpace(auth[7:])
 	if plain == "" {
-		return nil, errors.New("缺少 Token")
+		plain = strings.TrimSpace(r.Header.Get("x-api-key"))
+	}
+	if plain == "" {
+		plain = strings.TrimSpace(r.Header.Get("x-goog-api-key"))
+	}
+	if plain == "" {
+		plain = strings.TrimSpace(r.URL.Query().Get("key"))
+	}
+	if plain == "" {
+		return nil, errors.New("缺少 Token（Bearer / x-api-key / key）")
 	}
 	hash := hashToken(plain)
 	d := s.Store.Snapshot()
@@ -262,6 +570,8 @@ func (s *Server) authenticate(r *http.Request) (*model.Token, error) {
 }
 
 func (s *Server) allowRPM(tokenID string, limit int) bool {
+	s.rpmMu.Lock()
+	defer s.rpmMu.Unlock()
 	minute := time.Now().Unix() / 60
 	w := s.rpm[tokenID]
 	if w == nil || w.minute != minute {

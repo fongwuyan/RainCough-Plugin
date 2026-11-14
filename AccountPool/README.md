@@ -10,7 +10,24 @@
 
 ## 当前版本
 
-`0.1.0`：Gateway 核心、OpenAI 兼容上游、账号池、下游 Token、管理页面。
+`0.2.0`：Gateway 核心、OpenAI/Anthropic/Gemini 入口、账号池、下游 Token、管理页面。
+
+### 协议与 Provider
+
+下游原生入口：
+
+- OpenAI：`/v1/models`、`/v1/chat/completions`
+- Anthropic：`/v1/messages`
+- Gemini：`/v1beta/models`、`/v1beta/models/{model}:generateContent`、`:streamGenerateContent`
+
+上游 Provider：
+
+- OpenAI 兼容：OpenAI、DeepSeek、智谱、Moonshot、通义、Ollama、vLLM、自定义
+- Azure OpenAI
+- Anthropic 原生
+- Gemini 原生
+
+当前版本按“同协议直通”工作：OpenAI 客户端配 OpenAI 兼容 Provider，Anthropic 客户端配 Anthropic Provider，Gemini 客户端配 Gemini Provider。跨协议转换（例如 OpenAI 客户端调用 Anthropic Provider）在后续版本补充。
 
 ## 目录
 

@@ -26,7 +26,7 @@ LOG_FILE = os.path.join(DATA_DIR, "gateway.log")
 
 ADMIN_ADDR = "127.0.0.1:18901"
 DEFAULT_LAN_ADDR = "127.0.0.1:18900"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 _lock = threading.RLock()
 _proc = None
@@ -164,6 +164,7 @@ def status(params):
     ensure_gateway()
     d = _admin("GET", "/admin/v1/status")
     d["lan_addr"] = _settings().get("lan_addr", DEFAULT_LAN_ADDR)
+    d["lan_enabled"] = _settings().get("lan_enabled", False)
     d["binary"] = _binary()
     return d
 
