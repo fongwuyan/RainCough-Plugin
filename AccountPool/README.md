@@ -10,7 +10,7 @@
 
 ## 当前版本
 
-`0.4.0`：Gateway 核心、OpenAI/Anthropic/Gemini 入口、跨协议转换、账号日/月额度、下游 Token 模型白名单、Vue 管理页面。
+`0.5.0`：Gateway 核心、OpenAI/Anthropic/Gemini 入口、跨协议流式转换、账号日/月额度、下游 Token 模型白名单、Vue 管理页面。
 
 ### 协议与 Provider
 
@@ -27,7 +27,7 @@
 - Anthropic 原生
 - Gemini 原生
 
-当前版本按“同协议直通 + 跨协议转换”工作：OpenAI 客户端可调用 Anthropic/Gemini Provider，Anthropic/Gemini 客户端也可调用 OpenAI 兼容 Provider。跨协议请求会先缓冲上游完整响应，再按下游协议输出；原生匹配时保持原协议直通。
+当前版本按“同协议直通 + 跨协议流式转换”工作：OpenAI 客户端可调用 Anthropic/Gemini Provider，Anthropic/Gemini 客户端也可调用 OpenAI 兼容 Provider。跨协议请求解析上游 SSE 后逐段转换；上游返回完整 JSON 时自动回退为缓冲输出。
 
 ## 目录
 

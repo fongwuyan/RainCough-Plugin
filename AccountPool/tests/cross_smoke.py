@@ -14,6 +14,32 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0")); req = json.loads(self.rfile.read(n) or b"{}")
+        stream = bool(req.get("stream")) or "streamGenerateContent" in self.path
+        if stream and self.path.startswith("/v1/messages"):
+            body = (
+                'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":3}}}\n\n'
+                'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+                'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"anthropic-pong"}}\n\n'
+                'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n'
+                'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+            ).encode()
+            self.send_response(200); self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+        if stream and self.path.startswith("/v1beta/"):
+            body = (
+                'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"gemini-pong"}]}}]}\n\n'
+                'data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5}}\n\n'
+            ).encode()
+            self.send_response(200); self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+        if stream:
+            body = (
+                'data: {"choices":[{"delta":{"content":"openai-pong"}}]}\n\n'
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n'
+                'data: [DONE]\n\n'
+            ).encode()
+            self.send_response(200); self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
         if self.path.startswith("/v1/messages"):
             out = {"id":"msg_mock","type":"message","role":"assistant","model":"claude-mock",
                    "content":[{"type":"text","text":"anthropic-pong"}],"stop_reason":"end_turn",

@@ -395,6 +395,9 @@ func (s *Server) crossServe(w http.ResponseWriter, r *http.Request, body []byte,
 	if req.Model == "" {
 		return false
 	}
+	if req.Stream {
+		return s.crossStream(w, r, proto, req, tok, start)
+	}
 	failed := map[string]bool{}
 	for attempt := 0; attempt < 3; attempt++ {
 		sel, err := s.Pool.Select(req.Model, failed)
