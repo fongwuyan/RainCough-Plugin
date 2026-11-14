@@ -76,6 +76,19 @@ try:
     print("anthropic-down/gemini-up:", s, d.get("content")[0]["text"] if isinstance(d, dict) and d.get("content") else d)
     s, d = req(LAN + "/v1beta/models/claude-mock:generateContent?key=" + token, "POST", {"contents": [{"parts": [{"text": "ping"}]}]})
     print("gemini-down/anthropic-up:", s, d.get("candidates")[0]["content"]["parts"][0]["text"] if isinstance(d, dict) and d.get("candidates") else d)
+
+    def raw(url, body, headers):
+        r = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers={"Content-Type": "application/json", **headers})
+        with urllib.request.urlopen(r, timeout=10) as resp:
+            return resp.read().decode()
+    print("openai stream (anthropic up):", "anthropic-pong" in raw(LAN + "/v1/chat/completions",
+        {"model": "claude-mock", "stream": True, "messages": [{"role": "user", "content": "ping"}]},
+        {"Authorization": "Bearer " + token}))
+    print("anthropic stream (gemini up):", "message_stop" in raw(LAN + "/v1/messages",
+        {"model": "gemini-mock", "stream": True, "max_tokens": 32, "messages": [{"role": "user", "content": "ping"}]},
+        {"x-api-key": token}))
+    print("gemini stream (openai up):", "openai-pong" in raw(LAN + "/v1beta/models/mock-1:streamGenerateContent?key=" + token,
+        {"contents": [{"parts": [{"text": "ping"}]}]}, {}))
 finally:
     proc.terminate()
     try: proc.wait(timeout=5)
