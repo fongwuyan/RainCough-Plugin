@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集(v4)",
-  "updated": "2026-11-16 01:12:00",
+  "updated": "2026-11-16 01:18:00",
   "plugins": [
     {
       "name": "AccountPool",
@@ -678,87 +678,24 @@
       ],
       "environment": {
         "level": "apply",
-        "check": [
-          {
-            "id": "snowluma",
-            "label": "SnowLuma 容器在运行",
-            "required": true,
-            "run": "docker inspect -f '{{.State.Status}}' snowluma 2>/dev/null || echo absent",
-            "expect": "^running$",
-            "hint": "SnowLuma 容器未运行或不存在 —— 去「QQ 账户」点「启动」或「扫码登录」拉起它"
-          },
-          {
-            "id": "onebot",
-            "label": "QQ 已登录（OneBot get_login_info）",
-            "required": true,
-            "run": "curl -s -m 5 -X POST http://127.0.0.1:3000/get_login_info -H 'Authorization: Bearer rcsnow' -H 'Content-Type: application/json' -d '{}' | grep -q '\"user_id\"' || { echo 'QQ 未登录或 OneBot 未就绪'; exit 1; }; echo logged_in",
-            "expect": "^logged_in$",
-            "hint": "容器在跑但 QQ 没登录 —— 打开「QQ 账户」里的远程桌面扫码（登录态失效时重扫即可）"
-          },
-          {
-            "id": "deps",
-            "label": "rcbot Python 依赖",
-            "required": true,
-            "run": "/opt/rcbot/venv/bin/python -c 'import aiohttp, aiosqlite, PIL'",
-            "hint": "rcbot 的 venv 缺失或缺依赖"
-          },
-          {
-            "id": "runtime",
-            "label": "rcbot 运行时与部署一致且服务在跑",
-            "required": true,
-            "run": "for f in rcbot.py rcbot/*.py; do t=\"/opt/rcbot/$f\"; [ -f \"$t\" ] || { echo \"缺少 $t\"; exit 1; }; [ -r \"$t\" ] || { echo \"无法读取 $t(面板权限不足, 无法比对版本)\"; exit 2; }; cmp -s \"$f\" \"$t\" || { echo \"$f 与已部署版本不一致\"; exit 1; }; done; systemctl is-active --quiet rcbot || { echo \"rcbot 服务未运行\"; exit 1; }; echo same",
-            "hint": "机器人本体未部署、版本落后，或服务没在跑"
-          },
+        "ports": [
           {
             "id": "port6710",
             "label": "rcbot HTTP 端口",
-            "type": "port",
             "port": 6710,
-            "bind": "127.0.0.1",
-            "owner": {
-              "unit": "rcbot.service"
-            },
-            "required": true
-          },
-          {
-            "id": "mediadir",
-            "label": "媒体目录可写",
-            "required": true,
-            "run": "d=/opt/rcbot/media; mkdir -p \"$d\" 2>/dev/null || { echo '建不了媒体目录'; exit 1; }; [ -w \"$d\" ] || { echo '媒体目录不可写'; exit 1; }; echo writable",
-            "hint": "rcbot 存聊天记录媒体副本的目录，磁盘满或权限不对会记不下媒体"
-          },
-          {
-            "id": "silk",
-            "label": "语音转码器（可选，缺了语音只能下载不能播放）",
-            "required": false,
-            "run": "[ -x /opt/rcbot/bin/silk_v3_decoder ] || { echo '没有 silk_v3_decoder，语音无法转码'; exit 1; }; echo ok",
-            "hint": "在「环境准备」里执行「编译 silk_v3_decoder」即可补上"
+            "bind": "127.0.0.1"
           }
         ],
-        "apply": [
+        "auto": [
+          "deps",
+          "runtime",
+          "silk"
+        ],
+        "manual": [
           {
-            "id": "deps",
-            "label": "创建 venv 并安装 rcbot 依赖",
-            "check": "deps",
-            "needs": "root",
-            "timeout": 900,
-            "run": "set -e\nexport DEBIAN_FRONTEND=noninteractive\nif [ ! -x /opt/rcbot/venv/bin/python ]; then\n  python3 -m venv /opt/rcbot/venv 2>/dev/null || { apt-get update -qq && apt-get install -y -qq python3-venv; python3 -m venv /opt/rcbot/venv; }\nfi\n/opt/rcbot/venv/bin/pip install -q --upgrade pip\n/opt/rcbot/venv/bin/pip install -q 'aiohttp>=3.11' 'aiosqlite>=0.17' 'pillow>=9'"
-          },
-          {
-            "id": "runtime",
-            "label": "部署 rcbot 运行时并注册 systemd 服务",
-            "check": "runtime",
-            "needs": "root",
-            "timeout": 180,
-            "run": "set -e\ninstall -d -m 0755 /opt/rcbot /opt/rcbot/data /opt/rcbot/logs /opt/rcbot/rcbot\nrm -f /opt/rcbot/rcbot/*.py\ncp -rf rcbot/. /opt/rcbot/rcbot/\ninstall -m 0644 rcbot.py /opt/rcbot/rcbot.py\n# 源码要可读: 非 root 的面板也要能比对版本, 否则检查只会说\"读不到\"\nchmod 0644 /opt/rcbot/rcbot/*.py\ncat > /etc/systemd/system/rcbot.service <<'RCBOT_UNIT'\n[Unit]\nDescription=RainCough Bot (rcbot)\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory=/opt/rcbot\nExecStart=/opt/rcbot/venv/bin/python /opt/rcbot/rcbot.py\nRestart=always\nRestartSec=5\nEnvironment=PYTHONUNBUFFERED=1\nEnvironment=RCBOT_LOG_LEVEL=INFO\n\n[Install]\nWantedBy=multi-user.target\nRCBOT_UNIT\nsystemctl daemon-reload\nsystemctl enable rcbot\nsystemctl restart rcbot"
-          },
-          {
-            "id": "silk",
-            "label": "编译 silk_v3_decoder（QQ 语音 SILK → mp3，浏览器才能播放）",
-            "check": "silk",
-            "needs": "root",
-            "timeout": 900,
-            "run": "set -e\n# QQ 语音是 SILK，浏览器放不了；ffmpeg 没有 silk 解码器（实测 5.1.9），apt 也没有。\n# 这里编译一份 silk_v3_decoder，rcbot 用它把语音转成 mp3。\nmkdir -p /opt/rcbot/bin\nif [ -x /opt/rcbot/bin/silk_v3_decoder ]; then echo already; exit 0; fi\ncommand -v git >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq git build-essential cmake; }\ncommand -v cmake >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq build-essential cmake; }\ntmp=$(mktemp -d)\ncd \"$tmp\"\ngit clone --depth 1 https://github.com/foyoux/pilk.git 2>/dev/null || {\n  git clone --depth 1 https://github.com/xiangyuecn/Silk.git . 2>/dev/null || {\n    echo '拉不到 silk_v3_decoder 源码'; exit 1; }\n}\nif [ -d silk ]; then cd silk; fi\nif [ -f CMakeLists.txt ]; then\n  cmake -B build -DCMAKE_BUILD_TYPE=Release >/dev/null\n  cmake --build build -j2 >/dev/null\n  find . -name 'silk_v3_decoder' -type f -perm -u+x | head -1 | xargs -r -I{} cp {} /opt/rcbot/bin/silk_v3_decoder\nelif [ -f Makefile ]; then\n  make -s >/dev/null\n  cp silk_v3_decoder /opt/rcbot/bin/silk_v3_decoder 2>/dev/null || true\nfi\nchmod +x /opt/rcbot/bin/silk_v3_decoder\n[ -x /opt/rcbot/bin/silk_v3_decoder ] || { echo '编译没出可执行文件'; exit 1; }\necho ok"
+            "id": "snowluma",
+            "label": "SnowLuma 容器与 QQ 登录（面板「QQ 账户」扫码）",
+            "guide": ""
           }
         ]
       }
