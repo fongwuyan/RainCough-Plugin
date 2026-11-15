@@ -45,3 +45,4 @@ __pycache__/
 */.rc.endpoint
 */.runtime.log
 */.create-*.xml
+.local-backup-*/

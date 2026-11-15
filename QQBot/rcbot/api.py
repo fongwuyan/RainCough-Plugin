@@ -6,14 +6,18 @@
   /api/chat/*     全量聊天记录（会话、消息、导出、统计、清理）
 """
 import asyncio
+import hashlib
 import json
 import os
+import random as _random
+import re
 import time
 import uuid
+from collections import deque
 
 from aiohttp import web
 
-from . import cards, chats, compress, config, forward, group_avatar, llm, logbuf, media, profile, search, store
+from . import cards, chats, compress, config, forward, group_avatar, llm, logbuf, media, memory, panel, profile, search, store, tools
 from .bot import attach_images, strip_emoji, strip_meta_leak, truncate_chars
 
 # ---------------- 媒体转码任务（异步）
@@ -75,6 +79,89 @@ async def _run_transcode_job(jid, ids):
 _RND_CACHE = {}
 _RND_TTL = 300      # 5 分钟过期
 _RND_MAX = 50
+# 最近抽过的消息，避免连续翻到同一条
+_RND_RECENT = deque(maxlen=30)
+# 抽过的文本指纹（同文反复出现的不再挑）
+_RND_SEEN = deque(maxlen=200)
+# 每个会话的抽取状态：{sid: {last, count}}
+_RND_GROUP = {}
+
+
+def _pick_weighted(rows):
+    """从候选消息里按权重抽一条。
+
+    权重 = 长度合适度 × 内容可接话度 × 新鲜度 × 群公平度
+    目的：像人翻聊天记录，挑「有话可接」的，而不是纯随机翻到 `[图片]` 或一句"嗯"。
+    """
+    now = int(time.time())
+    recent_ids = set(_RND_RECENT)
+    seen_hashes = {h for h, _t in _RND_SEEN}
+    scored = []
+    for r in rows:
+        if r.get('id') in recent_ids:
+            continue
+        text = str(r.get('text') or '').strip()
+        n = len(text)
+        if n < 4 or n > 500:
+            continue
+        if text.startswith('[引用]'):
+            continue
+        h = hashlib.sha1(text.encode('utf-8')).hexdigest()[:16]
+        if h in seen_hashes:
+            continue
+        # 长度：8–60 字最像一句可接的话
+        if 8 <= n <= 60:
+            ls = 1.0
+        elif n < 8:
+            ls = 0.45
+        elif n <= 120:
+            ls = 0.85
+        else:
+            ls = max(0.2, 120.0 / n)
+        # 内容信号：问句更好接；命令/@/链接/纯符号降权
+        cs = 1.0
+        if text.endswith(('?', '？')):
+            cs += 0.45
+        if any(c in text for c in '。！？!?…'):
+            cs += 0.15
+        if text.startswith(('@', '/', '#')):
+            cs -= 0.35
+        if text.startswith('['):
+            cs -= 0.5
+        if re.search(r'https?://', text) and n < 40:
+            cs -= 0.4
+        if not re.search(r'[\u4e00-\u9fffA-Za-z]', text):
+            cs = 0.1
+        cs = max(0.05, cs)
+        # 新鲜度：半衰期 10 天，老消息保底 0.2
+        age_days = max(0.0, (now - (r.get('created_at') or now)) / 86400.0)
+        rs = max(0.2, 0.5 ** (age_days / 10.0))
+        # 群公平：刚抽过的群暂时降权，抽得多的群也降权
+        st = _RND_GROUP.get(r.get('session_id')) or {}
+        last = int(st.get('last') or 0)
+        cnt = int(st.get('count') or 0)
+        if now - last > 3600:
+            cnt = 0
+        gs = 1.0 if now - last > 1800 else 0.35
+        gf = 1.0 / (1.0 + cnt * 0.15)
+        scored.append((max(0.001, ls * cs * rs * gs * gf), r, h))
+    if not scored:
+        return None
+    total = sum(x[0] for x in scored)
+    x = _random.random() * total
+    for w, r, h in scored:
+        x -= w
+        if x <= 0:
+            sid = r.get('session_id') or ''
+            st = _RND_GROUP.setdefault(sid, {'last': 0, 'count': 0})
+            st['last'] = now
+            st['count'] = int(st.get('count') or 0) + 1
+            _RND_RECENT.append(r.get('id'))
+            _RND_SEEN.append((h, now))
+            return r
+    pick = scored[-1][1]
+    _RND_RECENT.append(pick.get('id'))
+    return pick
 
 
 def _put_random(token, item):
@@ -85,6 +172,21 @@ def _put_random(token, item):
         for k in sorted(_RND_CACHE, key=lambda x: _RND_CACHE[x].get('at') or 0)[:10]:
             _RND_CACHE.pop(k, None)
     _RND_CACHE[token] = item
+
+
+def _peek_random(token):
+    """只看不消费：发送失败时还能重试。"""
+    item = _RND_CACHE.get(token)
+    if not item:
+        return None
+    if int(time.time()) - (item.get('at') or 0) > _RND_TTL:
+        _RND_CACHE.pop(token, None)
+        return None
+    return item
+
+
+def _consume_random(token):
+    _RND_CACHE.pop(token, None)
 
 
 def _take_random(token):
@@ -613,8 +715,13 @@ def make_app(mgr, bot):
         acct = config.default_account(cfg) or {}
 
         sql = ("SELECT id, account_id, session_id, kind, target_id, sender_id,"
-               " sender_name, text, created_at FROM chat_logs"
-               " WHERE role='user' AND text<>'' AND recalled=0")
+               " sender_name, text, created_at, msg_id FROM chat_logs"
+               " WHERE role='user' AND text<>'' AND recalled=0"
+               # 纯媒体占位符没法接话，排除
+               " AND text NOT IN ('[图片]','[语音]','[视频]','[表情]','[文件]')"
+               " AND text NOT LIKE '[文件:%'"
+               " AND text NOT LIKE '%一条消息被撤回%'"
+               " AND length(trim(text))>=2")
         args = []
         if scope == 'session' and sid:
             sql += ' AND session_id=?'
@@ -626,35 +733,67 @@ def make_app(mgr, bot):
                         " (SELECT id FROM sessions WHERE enabled=1 AND kind='group')")
             else:
                 sql += " AND session_id IN (SELECT id FROM sessions WHERE kind='group')"
-        sql += ' ORDER BY RANDOM() LIMIT 1'
+        if rp.get('respect_need_at'):
+            bot_cfg = config.resolve_bot_cfg(cfg, {})
+            if bot_cfg.get('group_need_at', True):
+                prefixes = [p for p in (bot_cfg.get('wake_prefix') or []) if p]
+                cond = ("segs LIKE '%\"type\": \"at\"%'"
+                        " OR segs LIKE '%\"type\":\"at\"%'")
+                if prefixes:
+                    cond += ' OR text LIKE ?'
+                    args.append(prefixes[0] + '%')
+                sql += ' AND (' + cond + ')'
+        # 取最近 2000 条做候选池，真正抽哪条交给加权算法
+        sql += ' ORDER BY created_at DESC LIMIT 2000'
         cur = await store._db.execute(sql, args)
-        row = await cur.fetchone()
-        if not row:
+        rows = [dict(r) for r in await cur.fetchall()]
+        picked = _pick_weighted(rows)
+        if not picked:
             if scope == 'enabled_groups':
                 return bad('没有已启用的群聊可挑 —— 先去「会话管理」把要用的群启用')
             return bad('没有可挑的消息')
-        picked = dict(row)
 
         sess = await store.get_session(picked['session_id']) or {}
-        persona = config.get_persona(cfg, sess.get('persona_id'), acct)
-        chain = config.provider_chain(cfg, sess.get('provider_id'), acct)
+        # 角色卡片：提供商 / 模型 / 温度 / 输出长度
+        card = cards.find(cfg, sess.get('persona_id') or cfg.get('default_card')
+                          or cfg.get('default_persona') or '')
+        style = (card or {}).get('style') or {}
+        cmodel = (card or {}).get('model') or {}
+        pid = (sess.get('provider_id') or acct.get('provider_id')
+               or cmodel.get('provider_id') or '')
+        chain = config.provider_chain(cfg, pid, acct)
+        if cmodel.get('model') and chain:
+            _pid = cmodel.get('provider_id') or pid
+            chain = [dict(p, model=cmodel['model']) if str(p.get('id')) == str(_pid) else p
+                     for p in chain]
         if not chain:
             return bad('没有可用的模型提供商')
+        persona = config.get_persona(cfg, sess.get('persona_id'), acct, picked['text'])
         system = (persona or {}).get('prompt') or ''
-        # 被挑中的那条当作用户输入；再给一句"这是随机挑的"的提示，
-        # 让模型知道自己在接哪一句
-        msgs = [{'role': 'user',
-                 'content': picked['text']}]
+        try:
+            ms = await memory.build_prompt(card, picked['text'])
+            if ms:
+                system = ms
+        except Exception:
+            pass
+        ctx = cfg.get('context') or {}
+        try:
+            mt = int(style.get('max_tokens') or 0) or int(ctx.get('max_output_tokens') or 4096)
+        except Exception:
+            mt = 4096
+        try:
+            temp = float(style.get('temperature')) if style.get('temperature') is not None else 0.8
+        except Exception:
+            temp = 0.8
+        # 被挑中的那条当作用户输入
+        msgs = [{'role': 'user', 'content': picked['text']}]
         try:
             reply, used = await llm.chat_chain(
-                chain, msgs, system=system,
-                max_tokens=int((cfg.get('context') or {}).get('max_output_tokens') or 4096))
+                chain, msgs, system=system, max_tokens=mt, temperature=temp)
         except Exception as e:
             return bad(e)
-        card = cards.find(cfg, sess.get('persona_id')
-                          or cfg.get('default_card') or cfg.get('default_persona') or '')
         try:
-            mc = int(((card or {}).get('style') or {}).get('max_chars') or 0)
+            mc = int(style.get('max_chars') or 0)
         except Exception:
             mc = 0
         reply = strip_meta_leak(reply)
@@ -673,6 +812,7 @@ def make_app(mgr, bot):
             'target_id': picked.get('target_id') or '',
             'sender_id': picked.get('sender_id') or '',
             'sender_name': picked.get('sender_name') or '',
+            'msg_id': picked.get('msg_id') or '',
             'reply': reply,
             'at': int(time.time()),
         })
@@ -701,7 +841,7 @@ def make_app(mgr, bot):
         """
         b = await _body(request)
         token = str(b.get('token') or '').strip()
-        item = _take_random(token)
+        item = _peek_random(token)
         if not item:
             return bad('这次的结果已过期，请重新挑一条')
         kind = item.get('kind') or 'group'
@@ -719,9 +859,11 @@ def make_app(mgr, bot):
         # 群里 @ 一下被挑中消息的说话人，让对方知道在回他
         mention = item.get('sender_id') if kind == 'group' else None
         try:
-            r = await ob.send_text(kind, target, text, mention=mention or None)
+            r = await ob.send_text(kind, target, text, mention=mention or None,
+                                   quote=item.get('msg_id') or None)
         except Exception as e:
             return bad('发送失败：%s' % str(e)[:200])
+        _consume_random(token)
         # 机器人自己的发言进聊天档案 + 喂模型的上下文
         data = (r or {}).get('data') or {}
         msg_id = str(data.get('message_id') or '')
@@ -806,16 +948,34 @@ def make_app(mgr, bot):
         if not sess:
             return bad('会话不存在', 404)
         acct = config.find_account(cfg, (sess or {}).get('account_id')) or {}
-        persona = config.get_persona(cfg, (sess or {}).get('persona_id'), acct)
+        persona = config.get_persona(cfg, (sess or {}).get('persona_id'), acct, text)
         provider = config.get_provider(cfg, (sess or {}).get('provider_id'), acct)
         chain = config.provider_chain(cfg, (sess or {}).get('provider_id'), acct)
         if not provider or not chain:
             return bad('没有可用的模型提供商')
         system = (persona or {}).get('prompt') or ''
+        card = cards.find(cfg, (sess or {}).get('persona_id') or cfg.get('default_card')
+                          or cfg.get('default_persona') or '')
+        try:
+            ms = await memory.build_prompt(card, text)
+            if ms:
+                system = ms
+        except Exception:
+            pass
         await store.add_message(sid, 'user', text, name='测试')
         tools, runner = llm.web_tools(cfg)
         try:
             sys2, messages, meta = await compress.build_context(cfg, sid, system, provider)
+            try:
+                exs = await memory.pick_examples(card, text, 2)
+                if exs:
+                    few = []
+                    for e in reversed(exs):
+                        few = [{'role': 'user', 'content': e['user']},
+                               {'role': 'assistant', 'content': e['assistant']}] + few
+                    messages = few + messages
+            except Exception:
+                pass
             vis = (cfg.get('features') or {}).get('vision') or {}
             if b.get('images') and vis.get('enabled'):
                 n = await attach_images(messages, b.get('images'),
@@ -1125,6 +1285,299 @@ def make_app(mgr, bot):
         """修复媒体引用（转码后消息里还指向旧文件名）。"""
         return ok(await chats.repair_media_refs())
 
+    # ---------------- 工具链
+
+    async def tools_get(request):
+        cfg = config.load()
+        t = cfg.get('tools') or {}
+        ws = tools.usage()
+        ws['max_mb'] = int((t.get('workspace') or {}).get('max_mb') or 20)
+        return ok({'tools': tools.public_list(cfg), 'workspace': ws,
+                   'enabled': tools.enabled_map(cfg)})
+
+    async def tools_save(request):
+        b = await _body(request)
+        cfg = config.load()
+        t = cfg.get('tools') or {}
+        if isinstance(b.get('enabled'), dict):
+            t['enabled'] = {k: bool(v) for k, v in b['enabled'].items()}
+        if isinstance(b.get('workspace'), dict) and 'max_mb' in b['workspace']:
+            ws = t.get('workspace') or {}
+            try:
+                ws['max_mb'] = max(1, min(1024, int(b['workspace']['max_mb'] or 20)))
+            except Exception:
+                ws['max_mb'] = 20
+            t['workspace'] = ws
+        cfg['tools'] = t
+        config.save(cfg)
+        return ok({'status': True})
+
+    async def tools_stats(request):
+        return ok(tools.stats())
+
+    async def tools_test(request):
+        b = await _body(request)
+        tid = str(b.get('id') or '')
+        if not tid:
+            return bad('缺少工具 id')
+        try:
+            res = await tools.run_manual(tid, b.get('args') or {})
+        except Exception as e:
+            return bad(str(e)[:240])
+        return ok({'result': res})
+
+    async def tools_fs(request):
+        if request.method == 'GET':
+            try:
+                return ok(tools.list_dir(request.query.get('path') or ''))
+            except Exception as e:
+                return bad(str(e)[:200])
+        b = await _body(request)
+        act = str(b.get('action') or '')
+        path = str(b.get('path') or '')
+        try:
+            if act == 'list':
+                r = tools.list_dir(path)
+            elif act == 'read':
+                r = tools.read_text(path)
+            elif act == 'write':
+                r = tools.write_text(path, b.get('content') or '')
+            elif act == 'mkdir':
+                r = tools.mkdir(path)
+            elif act == 'delete':
+                r = tools.delete(path)
+            else:
+                return bad('未知操作')
+        except Exception as e:
+            return bad(str(e)[:240])
+        return ok(r)
+
+    # ---------------- 用户面板（菜单 / 文本库 / 图片库）
+
+    async def panel_get(request):
+        cfg = config.load()
+        sec = cfg.get('panel') or {}
+        # 老配置补齐「运势等级」字段并落盘，前端与 bot 读到的是同一份
+        if panel.ensure_defaults(sec):
+            panel.save_section(sec)
+        images = {}
+        for p in (sec.get('image_pools') or []):
+            pid = str(p.get('id') or '')
+            d = panel.images_dir(pid)
+            try:
+                names = sorted(os.listdir(d))
+            except Exception:
+                names = []
+            out = []
+            for n in names:
+                fp = os.path.join(d, n)
+                if os.path.isfile(fp):
+                    out.append({'name': n, 'abs': fp,
+                                'size': os.path.getsize(fp)})
+            images[pid] = out
+        bt = (cfg.get('features') or {}).get('web_search') or {}
+        tools = [{'id': 'web_search', 'name': '联网搜索', 'builtin': True,
+                  'desc': '按关键词搜索网页（AI 调用）',
+                  'enabled': bool(bt.get('enabled'))}]
+        return ok({'panel': sec, 'images': images, 'builtin_tools': tools,
+                   'workspace': ''})
+
+    async def panel_save(request):
+        b = await _body(request)
+        sec = b.get('panel') if isinstance(b.get('panel'), dict) else b
+        if not isinstance(sec, dict) or not sec:
+            return bad('缺少面板配置')
+        panel.ensure_defaults(sec)
+        panel.save_section(sec)
+        return ok({'status': True})
+
+    async def panel_preview(request):
+        b = await _body(request)
+        sec = config.load().get('panel') or {}
+        mode = str(b.get('mode') or 'menu')
+        if mode == 'menu':
+            return ok({'text': panel.render_menu(sec, int(b.get('page') or 0))})
+        name = str(b.get('id') or b.get('name') or '')
+        item = next((x for x in panel._items(sec) if x.get('id') == name), None) \
+            or panel.match_item(sec, name)
+        if not item:
+            return bad('功能项不存在')
+        image = ''
+        text, image_path = await panel.build_reply(
+            sec, item, str(b.get('uid') or '10000'),
+            str(b.get('nick') or '测试用户'), b.get('date') or None)
+        if image_path and os.path.isfile(image_path):
+            image = image_path
+        return ok({'text': text, 'image': image})
+
+    async def panel_generate(request):
+        b = await _body(request)
+        pid = str(b.get('pool_id') or '')
+        if not pid:
+            return bad('缺少 pool_id')
+        try:
+            n = await panel.generate_into_pool(pid, b.get('count'))
+        except Exception as e:
+            return bad(str(e)[:240])
+        return ok({'added': n})
+
+    async def panel_image_upload(request):
+        b = await _body(request)
+        pid = str(b.get('pool_id') or '')
+        raw = str(b.get('data') or '')
+        if not pid or not raw:
+            return bad('缺少参数')
+        if raw.startswith('data:') and ',' in raw:
+            raw = raw.split(',', 1)[1]
+        try:
+            data = base64.b64decode(raw)
+        except Exception:
+            return bad('图片数据不合法')
+        if len(data) > 12 * 1024 * 1024:
+            return bad('图片超过 12MB')
+        name = panel.append_image(pid, b.get('name') or 'image.jpg', data)
+        cfg = config.load()
+        sec = cfg.get('panel') or {}
+        for p in (sec.get('image_pools') or []):
+            if p.get('id') == pid:
+                p.setdefault('items', []).append(name)
+                break
+        panel.save_section(sec)
+        return ok({'name': name,
+                   'path': os.path.join(panel.images_dir(pid), name)})
+
+    # ---------------- 记忆库
+    async def memory_map(request):
+        q = request.query
+        cid = (q.get('card_id') or '').strip()
+        cfg = config.load()
+        if not cid:
+            cid = cfg.get('default_card') or cfg.get('default_persona') or ''
+        card = cards.find(cfg, cid)
+        if not card:
+            return bad('卡片不存在', 404)
+        acct = config.default_account(cfg) or {}
+        await memory.ensure_seeded(card, acct.get('id') or '')
+        return ok(await memory.map_data(cid, q.get('scope_type') or '',
+                                        q.get('scope_id') or ''))
+
+    async def memory_item(request):
+        it = await memory.get_item((request.query.get('id') or '').strip())
+        if not it:
+            return bad('记忆不存在', 404)
+        return ok(it)
+
+    async def memory_save(request):
+        b = await _body(request)
+        item = b.get('item') or b
+        if not item.get('content'):
+            return bad('缺少内容')
+        iid = await memory.save_item(item)
+        return ok({'id': iid})
+
+    async def memory_delete(request):
+        b = await _body(request)
+        iid = str(b.get('id') or '').strip()
+        if not iid:
+            return bad('缺少 id')
+        await memory.delete_item(iid, hard=bool(b.get('hard')))
+        return ok({'deleted': iid})
+
+    async def memory_pin(request):
+        b = await _body(request)
+        iid = str(b.get('id') or '').strip()
+        if not iid:
+            return bad('缺少 id')
+        cur = await store._db.execute('UPDATE memory_items SET pinned=? WHERE id=?',
+                                      (1 if b.get('pinned') else 0, iid))
+        await store._db.commit()
+        return ok({'id': iid, 'pinned': bool(b.get('pinned')), 'updated': cur.rowcount})
+
+    async def memory_seed(request):
+        b = await _body(request)
+        cfg = config.load()
+        cid = str(b.get('card_id') or cfg.get('default_card') or '')
+        card = cards.find(cfg, cid)
+        if not card:
+            return bad('卡片不存在', 404)
+        acct = config.default_account(cfg) or {}
+        n = await memory.ensure_seeded(card, acct.get('id') or '')
+        return ok({'card_id': cid, 'seeded': n})
+
+    async def memory_tile(request):
+        q = request.query
+        cid = (q.get('card_id') or '').strip()
+        if not cid:
+            return bad('缺少 card_id')
+        try:
+            tx, ty = int(q.get('tx') or 0), int(q.get('ty') or 0)
+        except Exception:
+            tx, ty = 0, 0
+        return ok({'items': await memory.tile(cid, tx, ty,
+                                              scope_type=q.get('scope_type') or '',
+                                              scope_id=q.get('scope_id') or '')})
+
+    async def memory_search(request):
+        q = request.query
+        cid = (q.get('card_id') or '').strip()
+        if not cid:
+            return bad('缺少 card_id')
+        return ok({'items': await memory.search(cid, q.get('q') or '',
+                                                scope_type=q.get('scope_type') or '',
+                                                scope_id=q.get('scope_id') or '')})
+
+    async def memory_triggers(request):
+        cid = (request.query.get('card_id') or '').strip()
+        if not cid:
+            return bad('缺少 card_id')
+        return ok({'items': await memory.list_trigger_items(cid)})
+
+    async def memory_bulk(request):
+        b = await _body(request)
+        cid = str(b.get('card_id') or '').strip()
+        items = b.get('items') or []
+        if not cid or not isinstance(items, list):
+            return bad('缺少 card_id 或 items')
+        replace_type = str(b.get('replace_type') or '').strip()
+        if replace_type:
+            await store._db.execute(
+                'UPDATE memory_items SET archived=1,updated_at=? WHERE card_id=? AND type=? AND archived=0',
+                (int(time.time()), cid, replace_type))
+            await store._db.commit()
+        n = 0
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            it = dict(it)
+            it['card_id'] = cid
+            await memory.save_item(it)
+            n += 1
+        return ok({'saved': n})
+
+    async def memory_consolidate(request):
+        b = await _body(request)
+        cid = str(b.get('card_id') or '').strip()
+        if not cid:
+            return bad('缺少 card_id')
+        return ok(await memory.consolidate(cid))
+
+    async def memory_stats(request):
+        cid = (request.query.get('card_id') or '').strip()
+        return ok(await memory.stats(cid))
+
+    app.router.add_get('/api/memory/map', memory_map)
+    app.router.add_get('/api/memory/item', memory_item)
+    app.router.add_post('/api/memory/save', memory_save)
+    app.router.add_post('/api/memory/delete', memory_delete)
+    app.router.add_post('/api/memory/pin', memory_pin)
+    app.router.add_post('/api/memory/seed', memory_seed)
+    app.router.add_get('/api/memory/stats', memory_stats)
+    app.router.add_get('/api/memory/search', memory_search)
+    app.router.add_get('/api/memory/tile', memory_tile)
+    app.router.add_post('/api/memory/consolidate', memory_consolidate)
+    app.router.add_post('/api/memory/bulk', memory_bulk)
+    app.router.add_get('/api/memory/triggers', memory_triggers)
+
     app.router.add_get('/api/status', status)
     app.router.add_get('/api/config', get_config)
     app.router.add_post('/api/config', post_config)
@@ -1176,6 +1629,16 @@ def make_app(mgr, bot):
     app.router.add_get('/api/chat/media/stats', chat_media_stats)
     app.router.add_get('/api/chat/thumb', chat_thumb)
     app.router.add_route('*', '/api/chat/media/task', chat_media_task)
+    # 用户面板
+    app.router.add_route('*', '/api/panel', lambda r: panel_get(r) if r.method == 'GET' else panel_save(r))
+    app.router.add_post('/api/panel/preview', panel_preview)
+    app.router.add_post('/api/panel/generate', panel_generate)
+    app.router.add_post('/api/panel/image', panel_image_upload)
+    # 工具链
+    app.router.add_route('*', '/api/tools', lambda r: tools_get(r) if r.method == 'GET' else tools_save(r))
+    app.router.add_post('/api/tools/test', tools_test)
+    app.router.add_get('/api/tools/stats', tools_stats)
+    app.router.add_route('*', '/api/tools/fs', tools_fs)
     app.router.add_post('/api/chat/media/delete', chat_media_delete)
     app.router.add_post('/api/chat/media/transcode', chat_media_transcode)
     app.router.add_post('/api/chat/media/reindex', chat_media_reindex)

@@ -63,15 +63,17 @@ FIELDS = {
     'bubble': {},
     'stickers': [],
     'voice_id': '',
-    'greetings': [],
-    'examples': [],
-    'lorebook': [],
     'taboos': [],
-    'knowledge': [],
+    # 开场白 / 示例对话 / 世界书已并入记忆库（memory_items），卡片不再保存
+    # 关键词必回：[{match, reply, mode: contains|exact, require_at, enabled}]
+    'keywords': [],
     'prompt': '',
     'model': {},              # {provider_id, model}
     'style': {'temperature': 0.8, 'max_tokens': 512, 'max_chars': 0,
-              'allow_emoji': False, 'color': ''},
+              'allow_emoji': False, 'color': '',
+              # 分段回复：auto=长就分；single=一条；multi=尽量分多条短句
+              'reply_mode': 'auto', 'part_chars': 30, 'max_parts': 3,
+              'part_delay': 0.35},
     'context': {'keep_rounds': 20, 'compress_at': 20000},
     'proactive': {'enabled': False, 'rate': 0, 'window': ''},
     'tools': {'web_search': False, 'vision': False},
@@ -119,6 +121,23 @@ def normalize(card):
         else:
             c[k] = v if v is not None else dflt
     c['schema'] = SCHEMA
+    # 关键词必回：清洗成固定结构
+    kws = []
+    for x in (c.get('keywords') or []):
+        if not isinstance(x, dict):
+            continue
+        m = _as_str(x.get('match'), 100).strip()
+        r = _as_str(x.get('reply'), 2000)
+        if not m or not r:
+            continue
+        kws.append({
+            'match': m,
+            'reply': r,
+            'mode': 'exact' if str(x.get('mode') or '').lower() == 'exact' else 'contains',
+            'require_at': x.get('require_at') is not False,
+            'enabled': x.get('enabled') is not False,
+        })
+    c['keywords'] = kws
     c['id'] = _as_str(src.get('id'), 64)
     c['name'] = _as_str(src.get('name'), 80)
     c['tagline'] = _as_str(src.get('tagline'), 200)
@@ -154,13 +173,13 @@ def from_persona(p):
     return c
 
 
-def to_persona(c):
+def to_persona(c, text=''):
     """角色卡片 → 旧人格形状（给还在用 personas 的老代码路径）。"""
     c = _as_dict(c)
     return {
         'id': c.get('id') or '',
         'name': c.get('name') or '',
-        'prompt': system_prompt(c),
+        'prompt': system_prompt(c, text),
     }
 
 
@@ -231,11 +250,58 @@ def clone(cfg, cid, new_name=''):
     return save(cfg, c)
 
 
-def system_prompt(c):
+MAX_LORE_ENTRIES = 6
+MAX_LORE_CHARS = 5000
+
+
+def pick_lore(c, text=''):
+    """按当前消息命中的关键词挑世界书条目，限制总长度。
+
+    设定集可以有十万字，但每次回复只注入命中的几条（外加 always 条），
+    否则上下文会直接爆掉。
+    """
+    text = str(text or '')
+    low = text.lower()
+    always = []
+    matched = []
+    for lb in (c.get('lorebook') or []):
+        if not isinstance(lb, dict):
+            continue
+        content = str(lb.get('content') or '').strip()
+        if not content:
+            continue
+        if lb.get('always'):
+            always.append(lb)
+            continue
+        keys = [str(k).strip() for k in (lb.get('keys') or []) if str(k).strip()]
+        if not keys:
+            continue
+        hits = [k for k in keys if k.lower() in low]
+        if hits:
+            matched.append((max(len(k) for k in hits), lb))
+    matched.sort(key=lambda x: -x[0])
+    out = []
+    budget = MAX_LORE_CHARS
+    for lb in always + [x[1] for x in matched]:
+        if len(out) >= MAX_LORE_ENTRIES:
+            break
+        content = str(lb.get('content') or '').strip()
+        if len(content) > budget:
+            content = content[:budget]
+        if not content:
+            break
+        out.append(lb)
+        budget -= len(content)
+        if budget <= 0:
+            break
+    return out
+
+
+def system_prompt(c, text=''):
     """由卡片推导系统提示词。
 
-    = 主体 prompt + 风格约束 + 世界书（整体作为背景，不做关键词命中，
-      命中逻辑放在调用方，避免每次拼串都跑一遍匹配）。
+    = 主体 prompt + 风格约束 + 命中的世界书 + 禁则。
+    世界书按关键词注入（不再整本塞进去），支持十万字设定集。
     """
     c = normalize(c)
     parts = []
@@ -255,13 +321,11 @@ def system_prompt(c):
     kr = ctx.get('keep_rounds')
     if kr:
         parts.append('最多参考最近 %s 轮对话的上下文。' % kr)
-    for lb in (c.get('lorebook') or []):
-        if not isinstance(lb, dict):
-            continue
+    for lb in pick_lore(c, text):
         keys = lb.get('keys') or []
         content = lb.get('content') or ''
-        if content:
-            parts.append('背景设定%s：%s' % (('（' + '、'.join(keys) + '）') if keys else '', content))
+        parts.append('背景设定%s：%s' % (('（' + '、'.join(str(k) for k in keys) + '）')
+                                     if keys else '', content))
     taboos = [str(x) for x in (c.get('taboos') or []) if str(x).strip()]
     if taboos:
         parts.append('不要做这些事：' + '、'.join(taboos))

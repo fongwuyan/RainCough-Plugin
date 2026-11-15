@@ -19,15 +19,62 @@ import base64
 import io
 import os
 import re
+import shutil
+import tempfile
 import time
 
 import aiohttp
 
-from . import (cards, chats, compress, config, group_avatar, llm, logbuf,
-               media, profile, slstatus, store)
+from . import (cards, chats, compress, config, group_avatar, litematic as lt, llm, memory,
+               logbuf, media, panel, profile, slstatus, store, tools)
 
 MAX_REPLY_CHARS = 3000
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
+
+_SPLIT_PUNCT = re.compile(r'(?<=[。！？!?…\n])')
+
+
+def split_short(text, part_chars=30, max_parts=3, mode='auto'):
+    """把一条回复切成若干条短消息（模仿真人一条条发）。
+
+    mode: auto=超过 part_chars 才切；single=不切；multi=尽量切多条。
+    每段优先不超过 part_chars，超出 max_parts 的合并进最后一段。
+    """
+    text = (text or '').strip()
+    if not text:
+        return []
+    try:
+        part_chars = max(8, min(200, int(part_chars or 30)))
+        max_parts = max(1, min(10, int(max_parts or 3)))
+    except Exception:
+        part_chars, max_parts = 30, 3
+    mode = str(mode or 'auto').lower()
+    if mode == 'single':
+        return [text]
+    if len(text) <= part_chars and mode != 'multi':
+        return [text]
+    segs = [s for s in _SPLIT_PUNCT.split(text) if s]
+    parts = []
+    cur = ''
+    for s in segs:
+        while len(s) > part_chars:
+            if cur:
+                parts.append(cur)
+                cur = ''
+            parts.append(s[:part_chars])
+            s = s[part_chars:]
+        if len(cur) + len(s) <= part_chars:
+            cur += s
+        else:
+            if cur:
+                parts.append(cur)
+            cur = s
+    if cur:
+        parts.append(cur)
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) > max_parts:
+        parts = parts[:max_parts - 1] + [''.join(parts[max_parts - 1:])]
+    return parts
 MAX_IMAGE_SIDE = 1536   # 长边；文字截图要看清，太小会糊
 
 
@@ -340,7 +387,7 @@ class Bot:
     # ---------------- 引用消息：reply 段只给 id，得再查一次
 
     async def _resolve_quote(self, segs):
-        """取出被引用消息的文本、发送者、图片。
+        """取出被引用消息的文本、发送者、图片、发送者 QQ。
 
         用户「引用一张图再问这是什么」时，图片不在当前消息段里，
         只有一个 reply(id)，不查就永远看不到图。
@@ -351,19 +398,36 @@ class Bot:
                 rid = str((s.get('data') or {}).get('id') or '')
                 break
         if not rid:
-            return '', '', []
+            return '', '', [], ''
         try:
             mid = int(rid) if rid.isdigit() else rid
             r = await self.ob.call('get_msg', {'message_id': mid}, timeout=12)
             d = r.get('data') or {}
             qtext, _, qimgs = _seg_text(d.get('message'))
             sender = d.get('sender') or {}
-            who = (sender.get('card') or sender.get('nickname')
-                   or str(sender.get('user_id') or ''))
-            return qtext, who, qimgs
+            sid = str(sender.get('user_id') or '')
+            who = (sender.get('card') or sender.get('nickname') or sid)
+            return qtext, who, qimgs, sid
         except Exception as e:
             logbuf.debug('bot', '取引用消息失败（%s）：%s' % (rid, str(e)[:100]))
-            return '', '', []
+            return '', '', [], ''
+
+    async def _quoted_is_bot(self, ev, self_id):
+        """当前消息是否引用了机器人自己的消息。"""
+        try:
+            for s in ev.get('message') or []:
+                if isinstance(s, dict) and s.get('type') == 'reply':
+                    rid = str((s.get('data') or {}).get('id') or '')
+                    if not rid:
+                        return False
+                    mid = int(rid) if rid.isdigit() else rid
+                    r = await self.ob.call('get_msg', {'message_id': mid}, timeout=8)
+                    d = r.get('data') or {}
+                    sender = str((d.get('sender') or {}).get('user_id') or '')
+                    return bool(sender and sender == str(self_id))
+        except Exception as e:
+            logbuf.debug('bot', '判断引用是否机器人失败：%s' % str(e)[:100])
+        return False
 
     # ---------------- 入口：按账号分发
 
@@ -469,6 +533,9 @@ class Bot:
 
         # 路径 C：撤回（notice）
         if post == 'notice':
+            if ev.get('notice_type') == 'group_upload':
+                if await self._handle_litematic(ev, account_id, acct_cfg):
+                    return
             await self._handle_recall(ev, account_id)
             return
 
@@ -497,6 +564,18 @@ class Bot:
 
         # 路径 D：#sl 状态指令（独立于 B 的 @/前缀/限流门槛）
         if await self._handle_sl(ev, account_id, acct_cfg):
+            return
+
+        # 路径 E：用户面板（菜单 / 功能项，走独立开关与冷却）
+        if await self._handle_panel(ev, account_id, acct_cfg):
+            return
+
+        # 路径 F：投影解析（开关指令 / 自动解析 .litematic）
+        if await self._handle_litematic(ev, account_id, acct_cfg):
+            return
+
+        # 路径 G：角色卡片的关键词必回
+        if await self._handle_keywords(ev, account_id, acct_cfg):
             return
 
         # 路径 B：应答（原有逻辑）
@@ -548,6 +627,403 @@ class Bot:
             logbuf.warn('bot', '#sl 处理失败：%s' % str(e)[:200])
             return True   # 失败了也别再让 LLM 接着回一句不相干的话
 
+    # ---------------- 用户面板（菜单 / 功能项）
+
+    async def _handle_panel(self, ev, account_id='', acct_cfg=None):
+        """@机器人 菜单 / 功能名 / 数字 → 固定回复。
+
+        独立于 AI 总开关：AI 关掉后面板照常可用。
+        群聊必须 @；私聊直接发即可。
+        """
+        try:
+            cfg = config.load()
+            if not ((cfg.get('features') or {}).get('panel') or {}).get('enabled', True):
+                return False
+            sec = cfg.get('panel') or {}
+            if not sec.get('enabled', True):
+                return False
+            bot = config.resolve_bot_cfg(cfg, acct_cfg)
+            if not bot.get('enabled', True):
+                return False
+            mtype = ev.get('message_type') or ''
+            if mtype not in ('group', 'private'):
+                return False
+            gid = str(ev.get('group_id') or '')
+            uid = str(ev.get('user_id') or '')
+            target = gid if mtype == 'group' else uid
+            self_id = str(ev.get('self_id') or getattr(self.ob, 'self_id', '') or '')
+            if not target or self.ob is None or (uid and uid == self_id):
+                return False
+
+            text, ats, _ = _seg_text(ev.get('message'))
+            text = str(text or '').strip()
+            if mtype == 'group':
+                # 面板规则：群里必须 @ 机器人；引用机器人的消息也算（可在设置里关）
+                if self_id not in ats:
+                    if not bot.get('reply_when_quoted', True) \
+                            or not await self._quoted_is_bot(ev, self_id):
+                        return False
+                for p in (bot.get('wake_prefix') or []):
+                    if p and text.startswith(p):
+                        text = text[len(p):].strip()
+                        break
+            if not text:
+                return False
+
+            low = text.lower()
+            triggers = [str(t).strip().lower() for t in (sec.get('triggers') or [])
+                        if str(t).strip()]
+            key = '%s:%s:%s' % (account_id, mtype, target)
+
+            if low in ('更多', 'more', '下一页'):
+                hit = panel._MENU.get(key)
+                page = (hit[2] + 1) if hit and time.time() <= hit[0] else 0
+                panel.remember_menu(key, sec, page)
+                await self._send_panel(mtype, target, panel.render_menu(sec, page),
+                                       '', account_id, acct_cfg, ev)
+                return True
+
+            if low in triggers:
+                panel.remember_menu(key, sec, 0)
+                await self._send_panel(mtype, target, panel.render_menu(sec, 0),
+                                       '', account_id, acct_cfg, ev)
+                return True
+
+            item = None
+            if low.isdigit():
+                iid, _page = panel.resolve_number(key, low)
+                if iid:
+                    item = next((x for x in panel._items(sec) if x.get('id') == iid), None)
+            if item is None:
+                item = panel.match_item(sec, text)
+            if item is None:
+                return False
+
+            if not panel.cooldown_ok('panel:%s:%s:%s' % (account_id, item.get('id'), uid),
+                                     item.get('cooldown') or 0):
+                logbuf.debug('bot', '面板功能冷却中：%s' % item.get('id'))
+                return True
+
+            nick = ((ev.get('sender') or {}).get('card')
+                    or (ev.get('sender') or {}).get('nickname') or uid)
+            rtext, image = await panel.build_reply(sec, item, uid, nick)
+            if not rtext:
+                rtext = '这个功能还没配置内容。'
+            await self._send_panel(mtype, target, rtext, image, account_id, acct_cfg, ev)
+            logbuf.info('bot', '面板功能 %s ← %s' % (item.get('id'), uid))
+            return True
+        except Exception as e:
+            logbuf.warn('bot', '面板处理失败：%s' % str(e)[:200])
+            return False
+
+    async def _send_panel(self, mtype, target, text, image, account_id, acct_cfg, ev):
+        self_id = str(ev.get('self_id') or getattr(self.ob, 'self_id', '') or '')
+        try:
+            bot_cfg = config.resolve_bot_cfg(config.load(), acct_cfg)
+        except Exception:
+            bot_cfg = {}
+        quote = str(ev.get('message_id') or '') if bot_cfg.get('reply_with_quote', True) else ''
+        segs = []
+        if quote:
+            segs.append({'type': 'reply', 'data': {'id': quote}})
+        segs.append({'type': 'text', 'data': {'text': text}})
+        img_file = ''
+        if image and os.path.isfile(image):
+            try:
+                with open(image, 'rb') as f:
+                    raw = f.read(MAX_IMAGE_BYTES)
+                # 图站原图可能几 MB，发之前压到长边 1536 的 JPEG，发送更稳更快
+                try:
+                    norm, _mime = _normalize_image(raw)
+                    if norm:
+                        raw = norm
+                except Exception:
+                    pass
+                img_file = 'base64://' + base64.b64encode(raw).decode()
+                segs.append({'type': 'image', 'data': {'file': img_file}})
+            except Exception as e:
+                logbuf.warn('bot', '读取面板图片失败：%s' % str(e)[:120])
+        # 文案和图片合成**一条**消息发送
+        r = None
+        try:
+            r = await self.ob.send_segments(mtype, target, segs)
+        except Exception as e:
+            logbuf.warn('bot', '图文合并发送失败，退回分两条：%s' % str(e)[:160])
+            r = await self.ob.send_text(mtype, target, text)
+            if img_file:
+                try:
+                    await self.ob.send_image(mtype, target, img_file)
+                except Exception as e2:
+                    logbuf.warn('bot', '面板图片发送失败：%s' % str(e2)[:160])
+        await self._record_own(account_id, acct_cfg or {}, mtype, target,
+                               text + ('\n[图片]' if img_file else ''), r, self_id)
+
+    # ---------------- 投影解析（.litematic）
+
+    def _litematic_files(self, ev):
+        out = []
+        for s in (ev.get('message') or []):
+            if not isinstance(s, dict):
+                continue
+            if s.get('type') not in ('file', 'offline_file'):
+                continue
+            d = s.get('data') or {}
+            name = str(d.get('name') or d.get('file') or '')
+            if name.lower().endswith('.litematic'):
+                out.append(d)
+        return out
+
+    async def _download_litematic(self, data, max_mb):
+        name = str(data.get('name') or 'x.litematic')
+        url = str(data.get('url') or '')
+        fid = data.get('file_id') or data.get('file') or ''
+        if not url and fid:
+            try:
+                r = await self.ob.call('get_file', {'file_id': str(fid),
+                                                    'file': str(data.get('file') or '')},
+                                       timeout=60)
+                d = (r.get('data') or {})
+                url = str(d.get('url') or '')
+                local = str(d.get('file') or '')
+                if not url and local and os.path.isfile(local):
+                    tmp = os.path.join(tempfile.gettempdir(),
+                                       'litematic-%d.litematic' % int(time.time() * 1000))
+                    shutil.copyfile(local, tmp)
+                    return tmp
+            except Exception as e:
+                logbuf.debug('bot', 'get_file 失败：%s' % str(e)[:100])
+        if not url:
+            logbuf.warn('bot', '投影文件没有下载地址：%s' % name)
+            return ''
+        limit = max_mb * 1024 * 1024
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as sess:
+                async with sess.get(url) as resp:
+                    if resp.status >= 400:
+                        logbuf.warn('bot', '下载投影 HTTP %s' % resp.status)
+                        return ''
+                    buf = bytearray()
+                    async for chunk in resp.content.iter_chunked(262144):
+                        buf.extend(chunk)
+                        if len(buf) > limit:
+                            logbuf.warn('bot', '投影超过 %dMB' % max_mb)
+                            return ''
+            tmp = os.path.join(tempfile.gettempdir(),
+                               'litematic-%d.litematic' % int(time.time() * 1000))
+            with open(tmp, 'wb') as f:
+                f.write(buf)
+            return tmp
+        except Exception as e:
+            logbuf.warn('bot', '下载投影失败：%s' % str(e)[:160])
+            return ''
+
+    async def _handle_litematic(self, ev, account_id='', acct_cfg=None):
+        """开关指令 + 已开启会话里的 .litematic 自动解析。"""
+        try:
+            cfg = config.load()
+            lc = cfg.get('litematic') or {}
+            max_mb = int(lc.get('max_mb') or 50)
+            enabled = set(lc.get('enabled_chats') or [])
+            mtype = ev.get('message_type') or ''
+            uid = str(ev.get('user_id') or '')
+            text = ''
+            ats = []
+            files = []
+            if ev.get('post_type') == 'notice':
+                if ev.get('notice_type') not in ('group_upload', 'offline_file'):
+                    return False
+                gid = str(ev.get('group_id') or '')
+                mtype = 'group' if gid else 'private'
+                target = gid or str(ev.get('user_id') or '')
+                f = ev.get('file') or {}
+                if str(f.get('name') or '').lower().endswith('.litematic'):
+                    files = [f]
+            else:
+                if mtype not in ('group', 'private'):
+                    return False
+                target = str(ev.get('group_id') or '') if mtype == 'group' else uid
+                text, ats, _ = _seg_text(ev.get('message'))
+                files = self._litematic_files(ev)
+            if not target:
+                return False
+            key = '%s:%s:%s' % (account_id, mtype, target)
+            low = str(text or '').strip().lower()
+
+            # 开关指令：群聊必须 @
+            if low and ('投影' in low or '解析' in low) and \
+                    any(w in low for w in ('开启', '打开', '关闭', '禁用')):
+                bot = config.resolve_bot_cfg(cfg, acct_cfg)
+                if mtype == 'group':
+                    self_id = str(ev.get('self_id') or getattr(self.ob, 'self_id', '') or '')
+                    if self_id not in ats:
+                        return False
+                    for pfx in (bot.get('wake_prefix') or []):
+                        if pfx and low.startswith(pfx):
+                            low = low[len(pfx):].strip()
+                            break
+                on = any(w in low for w in ('开启', '打开'))
+                if on:
+                    enabled.add(key)
+                else:
+                    enabled.discard(key)
+                cfg['litematic'] = {'enabled_chats': sorted(enabled), 'max_mb': max_mb}
+                config.save(cfg)
+                msg = ('投影解析已开启：本会话发送 .litematic 会自动解析' if on
+                       else '投影解析已关闭')
+                await self._send_panel(mtype, target, msg, '', account_id, acct_cfg, ev)
+                logbuf.info('bot', '投影解析%s：%s' % ('开启' if on else '关闭', key))
+                return True
+
+            if not files or key not in enabled:
+                return False
+            data = files[0]
+            name = str(data.get('name') or '投影.litematic')
+            size = int(data.get('size') or data.get('file_size') or 0)
+            if size and size > max_mb * 1024 * 1024:
+                await self._send_panel(mtype, target,
+                                       '文件超过 %dMB，解析不了' % max_mb, '',
+                                       account_id, acct_cfg, ev)
+                return True
+            path = await self._download_litematic(data, max_mb)
+            if not path:
+                await self._send_panel(mtype, target,
+                                       '下载失败：拿不到文件（可能已过期）', '',
+                                       account_id, acct_cfg, ev)
+                return True
+            img = ''
+            try:
+                summary, img = await asyncio.to_thread(lt.build_report, path, name)
+            except Exception as e:
+                logbuf.warn('bot', '投影解析失败：%s' % str(e)[:160])
+                await self._send_panel(mtype, target,
+                                       '解析失败：%s' % str(e)[:120], '',
+                                       account_id, acct_cfg, ev)
+                return True
+            finally:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+            try:
+                await self._send_panel(mtype, target, summary, img, account_id, acct_cfg, ev)
+            finally:
+                try:
+                    if img:
+                        os.remove(img)
+                except Exception:
+                    pass
+            logbuf.info('bot', '投影解析完成：%s' % name)
+            return True
+        except Exception as e:
+            logbuf.warn('bot', '投影解析处理异常：%s' % str(e)[:200])
+            return False
+
+    # ---------------- 角色卡片：关键词必回
+
+    async def _handle_keywords(self, ev, account_id='', acct_cfg=None):
+        try:
+            cfg = config.load()
+            mtype = ev.get('message_type') or ''
+            if mtype not in ('group', 'private'):
+                return False
+            uid = str(ev.get('user_id') or '')
+            gid = str(ev.get('group_id') or '')
+            target = gid if mtype == 'group' else uid
+            self_id = str(ev.get('self_id') or getattr(self.ob, 'self_id', '') or '')
+            if not target or not uid or uid == self_id:
+                return False
+            text, ats, _ = _seg_text(ev.get('message'))
+            text = str(text or '').strip()
+            if not text:
+                return False
+            bot = config.resolve_bot_cfg(cfg, acct_cfg)
+            addressed = True
+            if mtype == 'group':
+                addressed = self_id in ats
+                for pfx in (bot.get('wake_prefix') or []):
+                    if pfx and text.startswith(pfx):
+                        addressed = True
+                        text = text[len(pfx):].strip()
+                        break
+                # 引用机器人的消息 == 在跟机器人说话（可在设置里关）
+                if not addressed and bot.get('reply_when_quoted', True):
+                    addressed = await self._quoted_is_bot(ev, self_id)
+            if not text:
+                return False
+            # ★ 关键词只对「已启用的群」生效：不自动建会话，disabled/未知群直接跳过
+            if mtype == 'group':
+                if gid in [str(x) for x in (bot.get('blocked_groups') or [])]:
+                    return False
+                allow = [str(x) for x in (bot.get('allowed_groups') or [])]
+                if allow and gid not in allow:
+                    return False
+                mode = (cfg.get('session_mode') or {}).get('group', 'public')
+                sid = store.session_key('group', gid, mode, account_id, uid)
+                sess = await store.get_session(sid)
+                if not sess or not sess.get('enabled', 0):
+                    return False
+            else:
+                mode = (cfg.get('session_mode') or {}).get('private', 'public')
+                sid = await store.ensure_session(mtype, gid or uid, mode=mode,
+                                                 account_id=account_id, uid=uid)
+                sess = await store.get_session(sid) or {}
+                if sess and not sess.get('enabled', 1):
+                    return False
+            card = cards.find(cfg, sess.get('persona_id') or cfg.get('default_card')
+                              or cfg.get('default_persona') or '')
+            if not card:
+                return False
+            try:
+                kws = list(card.get('keywords') or []) + await memory.list_triggers(card)
+            except Exception:
+                kws = list(card.get('keywords') or [])
+            low = text.lower()
+            nick = ((ev.get('sender') or {}).get('card')
+                    or (ev.get('sender') or {}).get('nickname') or uid)
+            async def _kw_fallback(txt):
+                if not txt:
+                    return
+                r = await self.ob.send_text(mtype, target, txt,
+                                            mention=uid if mtype == 'group' else None,
+                                            quote=(str(ev.get('message_id') or '')
+                                                   if bot.get('reply_with_quote', True) else None))
+                await self._record_own(account_id, acct_cfg or {}, mtype, target,
+                                       txt, r, self_id)
+                try:
+                    await store.add_message(sid, 'assistant', txt)
+                except Exception:
+                    pass
+            for idx, kw in enumerate(kws):
+                if not isinstance(kw, dict) or kw.get('enabled') is False:
+                    continue
+                m = str(kw.get('match') or '').strip()
+                if not m:
+                    continue
+                # 关键词按「包含」匹配：句子里出现就触发
+                ml = m.lower()
+                hit = ml in low
+                if not hit:
+                    continue
+                if not self.rl.allow('kw:%s:%s:%s' % (account_id, sid, idx), 5, 1):
+                    return True
+                reply = str(kw.get('reply') or '')
+                reply = reply.replace('{nick}', nick).replace('{uid}', uid)
+                logbuf.info('bot', '关键词触发模型「%s」→ %s:%s' % (m, mtype, target))
+                ai_on = ((cfg.get('features') or {}).get('ai') or {}).get('enabled', True)
+                if not ai_on:
+                    await _kw_fallback(reply)
+                    return True
+                try:
+                    await self._maybe_reply(ev, account_id, acct_cfg, force=True)
+                except Exception as e:
+                    logbuf.warn('bot', '关键词触发模型失败，回退固定文案：%s' % str(e)[:150])
+                    await _kw_fallback(reply)
+                return True
+            return False
+        except Exception as e:
+            logbuf.warn('bot', '关键词必回处理异常：%s' % str(e)[:160])
+            return False
+
     async def on_connected(self, ob=None, account_id=''):
         """OneBot 连上后回调：拉一次群列表/好友列表缓存名字。
 
@@ -571,12 +1047,42 @@ class Bot:
         except Exception as e:
             logbuf.debug('bot', '同步群头像失败：%s' % str(e)[:120])
 
-    async def _maybe_reply(self, ev, account_id, acct_cfg):
+    def _decide_reply_style(self, ev, mtype, force, bot, text, imgs, quote_imgs,
+                            quote_is_bot, addressed, uid):
+        """按场景决定：引用 / @ / 直接回复。返回 (quote_id, mention, reason)。"""
+        mid = str(ev.get('message_id') or '')
+        quote_on = bool(bot.get('reply_with_quote', True))
+        if mtype == 'private':
+            if quote_on and (quote_is_bot or imgs or quote_imgs):
+                return mid, None, 'private-context'
+            return '', None, 'private-plain'
+        # 群聊
+        mention = uid if (bot.get('reply_with_mention') and addressed and not force) else None
+        if force:   # 关键词触发：像接话，默认不引用不@；带图/引用机器人时才引用
+            if quote_on and (imgs or quote_imgs or quote_is_bot):
+                return mid, None, 'keyword-context'
+            return '', None, 'keyword-plain'
+        if quote_on:
+            if imgs or quote_imgs:
+                return mid, mention, 'media'
+            if quote_is_bot:
+                return mid, mention, 'reply-to-bot'
+            if len(text or '') >= 14:
+                return mid, mention, 'long-text'
+        if mention:
+            return '', mention, 'mention'
+        return '', None, 'plain'
+
+    async def _maybe_reply(self, ev, account_id, acct_cfg, force=False):
         if ev.get('__self__'):
             return        # 自己发的消息永不触发应答
         cfg = config.load()
         bot = config.resolve_bot_cfg(cfg, acct_cfg)
         if not bot.get('enabled', True):
+            return
+        # AI 总开关：只关自由聊天，面板（菜单/功能项）不受影响
+        if not ((cfg.get('features') or {}).get('ai') or {}).get('enabled', True):
+            logbuf.debug('bot', 'AI 总开关关闭，跳过应答')
             return
 
         mtype = ev.get('message_type')          # private | group
@@ -587,7 +1093,9 @@ class Bot:
             return
 
         text, ats, imgs = _seg_text(ev.get('message'))
-        quote_text, quote_who, quote_imgs = await self._resolve_quote(ev.get('message'))
+        quote_text, quote_who, quote_imgs, quote_sender = await self._resolve_quote(ev.get('message'))
+        quote_is_bot = bool(quote_sender and quote_sender == self_id
+                            and bot.get('reply_when_quoted', True))
         if not text and not imgs and not quote_imgs:
             return
 
@@ -604,7 +1112,7 @@ class Bot:
                 if p and text.startswith(p):
                     hit_prefix = p
                     break
-            if need_at and self_id not in ats and hit_prefix is None:
+            if not force and need_at and self_id not in ats and hit_prefix is None and not quote_is_bot:
                 return
             if hit_prefix:
                 text = text[len(hit_prefix):].strip()
@@ -647,29 +1155,104 @@ class Bot:
         all_imgs = list(imgs) + list(quote_imgs)
         await store.add_message(sid, 'user', prompt_text, name=nick)
 
-        # 人格 / 提供商（会话级 > 账号级 > 全局）
-        persona = config.get_persona(cfg, (sess or {}).get('persona_id'), acct_cfg)
-        provider = config.get_provider(cfg, (sess or {}).get('provider_id'), acct_cfg)
-        # 兜底链：第一个挂了自动换下一个（免 key 端点随时会限流）
-        chain = config.provider_chain(cfg, (sess or {}).get('provider_id'), acct_cfg)
-        system = (persona or {}).get('prompt') or ''
-        # 角色卡片的字数上限（prompt 约束之外的硬兜底）
+        # 角色卡片（会话 > 默认）—— 卡片里的提供商/模型/温度/输出长度都要生效
         card = cards.find(cfg, (sess or {}).get('persona_id')
                           or cfg.get('default_card') or cfg.get('default_persona') or '')
+        style = (card or {}).get('style') or {}
+        cmodel = (card or {}).get('model') or {}
+        pid = ((sess or {}).get('provider_id') or (acct_cfg or {}).get('provider_id')
+               or cmodel.get('provider_id') or '')
+        persona = config.get_persona(cfg, (sess or {}).get('persona_id'), acct_cfg, prompt_text)
+        provider = config.get_provider(cfg, pid, acct_cfg)
+        # ★ 记忆库优先：always 档案 + 命中的 canon/示例/群记忆
         try:
-            max_chars = int(((card or {}).get('style') or {}).get('max_chars') or 0)
+            mem_system = await memory.build_prompt(card, prompt_text, mtype, gid or uid)
+            if mem_system:
+                system = mem_system
+            else:
+                system = (persona or {}).get('prompt') or ''
+        except Exception as e:
+            logbuf.debug('bot', '记忆拼装失败，回退卡片：%s' % str(e)[:120])
+            system = (persona or {}).get('prompt') or ''
+        # 情景台词：高频短句直接回示例句，保证语气不跑偏
+        if not imgs and not force:
+            try:
+                direct = await memory.direct_reply(card, text)
+            except Exception:
+                direct = ''
+            if direct:
+                mention = uid if (mtype == 'group' and bot.get('reply_with_mention')) else None
+                quote = (str(ev.get('message_id') or '')
+                         if bot.get('reply_with_quote', True) else None)
+                try:
+                    r = await self.ob.send_text(mtype, gid or uid, direct,
+                                                mention=mention, quote=quote)
+                    await self._record_own(account_id, acct_cfg, mtype, gid or uid,
+                                           direct, r, self_id)
+                    await store.add_message(sid, 'assistant', direct)
+                except Exception as e:
+                    logbuf.error('bot', '情景回复发送失败：%s' % str(e)[:150])
+                return
+        # 开场白：只在「在吗 / 你好」这类招呼语时触发
+        if not imgs and not force and re.match(r'^(在吗|在么|在不在|你好|您好|hi|hello|嗨|哈喽)[!！。.~～\s]*$',
+                                 text or '', re.I):
+            g = await memory.pick_greeting(card)
+            if g:
+                mention = uid if (mtype == 'group' and bot.get('reply_with_mention')) else None
+                quote = (str(ev.get('message_id') or '')
+                         if bot.get('reply_with_quote', True) else None)
+                try:
+                    r = await self.ob.send_text(mtype, gid or uid, g, mention=mention, quote=quote)
+                    await self._record_own(account_id, acct_cfg, mtype, gid or uid, g, r, self_id)
+                    await store.add_message(sid, 'assistant', g)
+                except Exception as e:
+                    logbuf.error('bot', '开场白发送失败：%s' % str(e)[:150])
+                return
+        # 兜底链：第一个挂了自动换下一个（免 key 端点随时会限流）
+        chain = config.provider_chain(cfg, pid, acct_cfg)
+        if cmodel.get('model') and chain:
+            _pid = cmodel.get('provider_id') or pid
+            chain = [dict(p, model=cmodel['model']) if str(p.get('id')) == str(_pid) else p
+                     for p in chain]
+        system = (persona or {}).get('prompt') or ''
+        ctx = cfg.get('context') or {}
+        try:
+            max_chars = int(style.get('max_chars') or 0)
         except Exception:
             max_chars = 0
+        try:
+            card_max_tokens = int(style.get('max_tokens') or 0) \
+                or int(ctx.get('max_output_tokens') or 2048)
+        except Exception:
+            card_max_tokens = 2048
+        try:
+            card_temp = float(style.get('temperature')) \
+                if style.get('temperature') is not None else 0.8
+        except Exception:
+            card_temp = 0.8
         if not provider or not chain:
             self.last_error = '没有可用的模型提供商'
             logbuf.error('bot', self.last_error)
             return
 
-        ctx = cfg.get('context') or {}
         vis = (cfg.get('features') or {}).get('vision') or {}
-        tools, runner = llm.web_tools(cfg)
+        tools_list, runner = tools.build(cfg)
         try:
             system, messages, meta = await compress.build_context(cfg, sid, system, provider)
+            # 关键词触发：只带当前这句，避免把整段群历史塞进去跑偏
+            if force:
+                messages = [{'role': 'user', 'content': prompt_text}]
+            # 示例对话作为 few-shot 消息，比只写在 system 里更能约束语气
+            try:
+                exs = await memory.pick_examples(card, prompt_text, 2)
+                if exs:
+                    few = []
+                    for e in reversed(exs):
+                        few = [{'role': 'user', 'content': e['user']},
+                               {'role': 'assistant', 'content': e['assistant']}] + few
+                    messages = few + messages
+            except Exception:
+                pass
             plain = None          # 去掉图片后的版本，带图失败时兜底重试
             if vis.get('enabled') and all_imgs:
                 n = await attach_images(messages, all_imgs,
@@ -682,18 +1265,20 @@ class Bot:
                         % (sid, nick, text[:40], len(messages), meta.get('tokens'),
                            '，已压缩' if meta.get('compressed') else '',
                            '，图 %d 张' % meta['images'] if meta.get('images') else '',
-                           '，联网开' if tools else ''))
+                           '，工具 %d 个' % len(tools_list or []) if tools_list else ''))
             try:
                 reply, used = await llm.chat_chain(chain, messages, system=system,
-                                                   max_tokens=int(ctx.get('max_output_tokens') or 2048),
-                                                   tools=tools, tool_runner=runner)
+                                                   max_tokens=card_max_tokens,
+                                                   temperature=card_temp,
+                                                   tools=tools_list, tool_runner=runner)
             except Exception as e:
                 if plain and ('image' in str(e).lower() or '图片' in str(e)):
                     logbuf.warn('bot', '带图请求被拒，去掉图片重试：%s' % str(e)[:150])
                     meta.pop('images', None)
                     reply, used = await llm.chat_chain(chain, plain, system=system,
-                                                       max_tokens=int(ctx.get('max_output_tokens') or 2048),
-                                                       tools=tools, tool_runner=runner)
+                                                       max_tokens=card_max_tokens,
+                                                       temperature=card_temp,
+                                                       tools=tools_list, tool_runner=runner)
                 else:
                     raise
             if used and used.get('id') != provider.get('id'):
@@ -722,21 +1307,41 @@ class Bot:
         await store.add_message(sid, 'assistant', reply)
 
         mention = None
-        if mtype == 'group' and bot.get('reply_with_mention'):
-            mention = uid
-        for i in range(0, len(reply), MAX_REPLY_CHARS):
-            chunk = reply[i:i + MAX_REPLY_CHARS]
+        quote_id = ''
+        try:
+            addressed = (self_id in ats) or bool(hit_prefix) or quote_is_bot
+        except Exception:
+            addressed = quote_is_bot
+        quote_id, mention, style_reason = self._decide_reply_style(
+            ev, mtype, force, bot, text, imgs, quote_imgs, quote_is_bot, addressed, uid)
+        if style_reason:
+            logbuf.debug('bot', '回复方式：%s' % style_reason)
+        # 一条 / 多条短消息：按卡片设置切分（默认长回复才切，每条 ≤30 字）
+        parts = split_short(reply, style.get('part_chars'),
+                            style.get('max_parts'), style.get('reply_mode'))
+        try:
+            delay = float(style.get('part_delay') or 0)
+        except Exception:
+            delay = 0
+        for i, part in enumerate(parts):
             try:
-                r = await self.ob.send_text(mtype, gid or uid, chunk,
-                                            mention=mention if i == 0 else None)
-                # 机器人自己的发言也进聊天档案。
-                # reportSelfMessage=false → 事件流里没有自己的消息，只能发送时自记。
-                # 长回复分片，每片一个 message_id → 逐片记，否则撤回匹配不上。
+                r = await self.ob.send_text(mtype, gid or uid, part,
+                                            mention=mention if i == 0 else None,
+                                            quote=quote_id if i == 0 else None)
                 await self._record_own(account_id, acct_cfg, mtype, gid or uid,
-                                        chunk, r, self_id)
+                                        part, r, self_id)
             except Exception as e:
                 logbuf.error('bot', '发送失败：%s' % str(e)[:200])
                 break
+            if i < len(parts) - 1 and delay > 0:
+                await asyncio.sleep(min(2.0, delay))
+
+        # 每条消息后异步抽记忆（不阻塞回复）
+        try:
+            asyncio.create_task(memory.extract(cfg, card, prompt_text, reply,
+                                               mtype, gid or uid, uid, account_id))
+        except Exception:
+            pass
 
     async def recall(self, msg_id):
         """撤回一条消息（只能撤回自己有权限的，QQ 通常限 2 分钟内）。"""

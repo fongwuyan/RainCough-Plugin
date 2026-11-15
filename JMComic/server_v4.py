@@ -1004,7 +1004,7 @@ def jm_dl_start(params):
     if not aid or not aid.isdigit():
         _err('缺少漫画ID')
     try:
-        workers = int(_p(params).get('workers') or 6)
+        workers = int(_p(params).get('workers') or 10)
     except (TypeError, ValueError):
         workers = 6
     r = _dl().start(aid, _s(params, 'name'), _s(params, 'author'), workers)
@@ -1088,6 +1088,94 @@ def jm_dl_status(params):
 def jm_dl_list(params):
     """所有下载任务（按更新时间倒序）。"""
     return {'ok': True, 'tasks': _dl().list_all()}
+
+
+# ---- 接入面板「任务列表」----
+# 统一任务队列的 source/kind/status 契约与 core.TaskStore 对齐：
+#   queued | running | done | failed，progress 0-100。
+def _panel_status(s):
+    return {
+        'queued': 'queued',
+        'downloading': 'running',
+        'paused': 'queued',
+        'completed': 'done',
+        'failed': 'failed',
+        'cancelled': 'failed',
+    }.get(s, 'running')
+
+
+@rc.interface("jmcomic.tasks.list")
+def jm_tasks_list(params):
+    out = []
+    for t in _dl().list_all():
+        status = _panel_status(t.get('status'))
+        total = int(t.get('total_pages') or 0)
+        done = int(t.get('done_pages') or 0)
+        msg = t.get('error') or ''
+        if not msg:
+            if status == 'done':
+                msg = '已完成 %d/%d 页' % (done, total)
+            elif t.get('status') == 'paused':
+                msg = '已暂停 %d/%d 页' % (done, total)
+            else:
+                msg = '%s %d/%d 页' % (t.get('current') or '下载中', done, total)
+        created = int(t.get('started_at') or t.get('updated_at') or 0)
+        out.append({
+            'id': 'jmcomic-dl-' + str(t.get('aid')),
+            'source': 'JMComic',
+            'kind': 'download',
+            'name': t.get('name') or ('JMComic ' + str(t.get('aid'))),
+            'status': status,
+            'phase': t.get('status') or '',
+            'progress': int(t.get('progress') or (round(done * 100.0 / total) if total else 0)),
+            'message': msg,
+            'error': t.get('error') or '',
+            'created': created,
+            'created_at': created,
+            'updated_at': int(t.get('updated_at') or 0),
+            'meta': {
+                'external': True,
+                'plugin': 'JMComic',
+                'aid': str(t.get('aid')),
+                'total_pages': total,
+                'done_pages': done,
+                'failed_pages': int(t.get('failed_pages') or 0),
+                'workers': int(t.get('workers') or 0),
+                'raw_status': t.get('status'),
+            },
+        })
+    out.sort(key=lambda x: x.get('updated_at') or 0, reverse=True)
+    return {'ok': True, 'tasks': out}
+
+
+@rc.interface("jmcomic.tasks.clear")
+def jm_tasks_clear(params):
+    """清理已完成/失败/取消的下载任务记录（不删文件）。"""
+    removed = 0
+    for t in _dl().list_all():
+        if t.get('status') in ('completed', 'failed', 'cancelled'):
+            if _dl().remove(str(t.get('aid')), False):
+                removed += 1
+    return {'ok': True, 'removed': removed}
+
+
+@rc.interface("jmcomic.tasks.retry")
+def jm_tasks_retry(params):
+    """从面板任务列表继续/重试一个 JMComic 下载。{id 或 aid}"""
+    aid = str((params or {}).get('aid') or (params or {}).get('id') or '')
+    if aid.startswith('jmcomic-dl-'):
+        aid = aid[len('jmcomic-dl-'):]
+    if not aid:
+        raise rc.RCError(3001, '缺少任务 ID')
+    t = _dl().status(aid)
+    if not t:
+        raise rc.RCError(3002, '任务不存在')
+    if t.get('status') == 'failed' and (t.get('failed_pages') or t.get('failed_sample')):
+        result = _dl().retry_failed(aid)
+    else:
+        # 中断型失败（没有具体失败页）没有「只补失败」可补，直接全量续传。
+        result = _dl().resume(aid)
+    return {'ok': True, 'result': result, 'task': _dl().status(aid)}
 
 
 @rc.interface("jmcomic.dl.pause")

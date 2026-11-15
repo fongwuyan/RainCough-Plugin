@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from aiohttp import web  # noqa: E402
 
 from rcbot import accounts as accmod  # noqa: E402
-from rcbot import api, bot as botmod, config, logbuf, store  # noqa: E402
+from rcbot import api, bot as botmod, config, logbuf, panel, store  # noqa: E402
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -54,6 +54,13 @@ async def main():
             if mgr.accounts and all(a.ob.connected for a in mgr.accounts.values()):
                 return
     asyncio.create_task(warm())
+
+    # 用户面板：每日 AI 文案调度 + 缓存清理
+    try:
+        panel.cleanup_cache(7)
+    except Exception:
+        pass
+    asyncio.create_task(panel.scheduler(config.load))
 
     # 历史会话补账号前缀（一次性、幂等）
     try:

@@ -556,6 +556,86 @@ def chat_thumb(params):
 
 # ---------------------------------------------------------------- 一键清空会话
 
+@rc.interface("qqbot.panel.get")
+def panel_get(params):
+    """用户面板配置 + 本地图片 + 内置工具。"""
+    return {"ok": True, "data": _data("/api/panel", timeout=30)}
+
+
+@rc.interface("qqbot.panel.save")
+def panel_save(params):
+    p = params or {}
+    sec = p.get("panel") if isinstance(p.get("panel"), dict) else p
+    return {"ok": True, "data": _data("/api/panel", "POST", {"panel": sec}, timeout=60)}
+
+
+@rc.interface("qqbot.panel.preview")
+def panel_preview(params):
+    """预览菜单或某个功能项的输出。"""
+    return {"ok": True, "data": _data("/api/panel/preview", "POST", params or {}, timeout=60)}
+
+
+@rc.interface("qqbot.panel.generate")
+def panel_generate(params):
+    """立即让 AI 生成 N 条文案，追加到文本组。"""
+    p = params or {}
+    return {"ok": True, "data": _data("/api/panel/generate", "POST", {
+        "pool_id": p.get("pool_id") or "",
+        "count": int(p.get("count") or 0),
+    }, timeout=180)}
+
+
+@rc.interface("qqbot.panel.image_upload")
+def panel_image_upload(params):
+    """上传本地图片到某个图片组（base64）。"""
+    p = params or {}
+    return {"ok": True, "data": _data("/api/panel/image", "POST", {
+        "pool_id": p.get("pool_id") or "",
+        "name": p.get("name") or "image.jpg",
+        "data": p.get("data") or "",
+    }, timeout=60)}
+
+
+@rc.interface("qqbot.tools.get")
+def tools_get(params):
+    """工具链：内置工具列表 + 工作区占用。"""
+    return {"ok": True, "data": _data("/api/tools", timeout=30)}
+
+
+@rc.interface("qqbot.tools.save")
+def tools_save(params):
+    """保存工具开关与工作区配额。"""
+    p = params or {}
+    return {"ok": True, "data": _data("/api/tools", "POST", p, timeout=30)}
+
+
+@rc.interface("qqbot.tools.stats")
+def tools_stats(params):
+    """工具调用统计（本次进程运行以来）。"""
+    return {"ok": True, "data": _data("/api/tools/stats", timeout=30)}
+
+
+@rc.interface("qqbot.tools.test")
+def tools_test(params):
+    """手动测试一个内置工具。"""
+    p = params or {}
+    return {"ok": True, "data": _data("/api/tools/test", "POST", {
+        "id": p.get("id") or "",
+        "args": p.get("args") or {},
+    }, timeout=120)}
+
+
+@rc.interface("qqbot.tools.fs")
+def tools_fs(params):
+    """工作区文件操作：list/read/write/mkdir/delete。"""
+    p = params or {}
+    return {"ok": True, "data": _data("/api/tools/fs", "POST", {
+        "action": p.get("action") or "list",
+        "path": p.get("path") or "",
+        "content": p.get("content") or "",
+    }, timeout=60)}
+
+
 @rc.interface("qqbot.chat.clear_session")
 def chat_clear_session(params):
     """一键清空会话。
@@ -765,6 +845,103 @@ def card_import(params):
     return {"ok": True, "data": _data("/api/cards/import", "POST", p, timeout=20)}
 
 
+@rc.interface("rcbot.memory.map")
+def memory_map(params):
+    """记忆星空：主星/卫星/星座坐标。"""
+    p = dict(params or {})
+    qs = urllib.parse.urlencode({k: p.get(k) or "" for k in
+                                 ("card_id", "scope_type", "scope_id")})
+    return {"ok": True, "data": _data("/api/memory/map?" + qs, timeout=30)}
+
+
+@rc.interface("rcbot.memory.triggers")
+def memory_triggers(params):
+    """关键词规则列表（管理页）。"""
+    p = dict(params or {})
+    qs = urllib.parse.urlencode({"card_id": p.get("card_id") or ""})
+    return {"ok": True, "data": _data("/api/memory/triggers?" + qs, timeout=30)}
+
+
+@rc.interface("rcbot.memory.bulk")
+def memory_bulk(params):
+    """批量写入记忆（用于导入关键词等）。"""
+    p = dict(params or {})
+    return {"ok": True, "data": _data("/api/memory/bulk", "POST", p, timeout=120)}
+
+
+@rc.interface("rcbot.memory.consolidate")
+def memory_consolidate(params):
+    """合并近似重复、归档陈旧事件。"""
+    p = dict(params or {})
+    return {"ok": True, "data": _data("/api/memory/consolidate", "POST", p, timeout=60)}
+
+
+@rc.interface("rcbot.memory.tile")
+def memory_tile(params):
+    """按星图分块拉取卫星。"""
+    p = dict(params or {})
+    qs = urllib.parse.urlencode({"card_id": p.get("card_id") or "",
+                                 "tx": p.get("tx") or 0, "ty": p.get("ty") or 0,
+                                 "scope_type": p.get("scope_type") or "",
+                                 "scope_id": p.get("scope_id") or ""})
+    return {"ok": True, "data": _data("/api/memory/tile?" + qs, timeout=20)}
+
+
+@rc.interface("rcbot.memory.search")
+def memory_search(params):
+    """按关键词搜索记忆。"""
+    p = dict(params or {})
+    qs = urllib.parse.urlencode({"card_id": p.get("card_id") or "",
+                                 "q": p.get("q") or "",
+                                 "scope_type": p.get("scope_type") or "",
+                                 "scope_id": p.get("scope_id") or ""})
+    return {"ok": True, "data": _data("/api/memory/search?" + qs, timeout=20)}
+
+
+@rc.interface("rcbot.memory.item")
+def memory_item(params):
+    """单条记忆详情。"""
+    p = dict(params or {})
+    qs = urllib.parse.urlencode({"id": p.get("id") or ""})
+    return {"ok": True, "data": _data("/api/memory/item?" + qs, timeout=20)}
+
+
+@rc.interface("rcbot.memory.save")
+def memory_save(params):
+    """新增/修改记忆。"""
+    p = dict(params or {})
+    return {"ok": True, "data": _data("/api/memory/save", "POST", p, timeout=30)}
+
+
+@rc.interface("rcbot.memory.delete")
+def memory_delete(params):
+    """归档/删除记忆。"""
+    p = dict(params or {})
+    return {"ok": True, "data": _data("/api/memory/delete", "POST", p, timeout=20)}
+
+
+@rc.interface("rcbot.memory.pin")
+def memory_pin(params):
+    """置顶/取消置顶。"""
+    p = dict(params or {})
+    return {"ok": True, "data": _data("/api/memory/pin", "POST", p, timeout=20)}
+
+
+@rc.interface("rcbot.memory.seed")
+def memory_seed(params):
+    """把卡片字段迁移成记忆条目。"""
+    p = dict(params or {})
+    return {"ok": True, "data": _data("/api/memory/seed", "POST", p, timeout=60)}
+
+
+@rc.interface("rcbot.memory.stats")
+def memory_stats(params):
+    """记忆数量统计。"""
+    p = dict(params or {})
+    qs = urllib.parse.urlencode({"card_id": p.get("card_id") or ""})
+    return {"ok": True, "data": _data("/api/memory/stats?" + qs, timeout=20)}
+
+
 @rc.interface("rcbot.card.export")
 def card_export(params):
     """导出角色卡片（JSON 字符串）。"""
@@ -862,10 +1039,18 @@ IFACES = [
     "qqbot.chat.media_list", "qqbot.chat.media_delete",
     "qqbot.chat.media_transcode", "qqbot.chat.media_reindex",
     "qqbot.chat.media_repair", "qqbot.chat.thumb", "qqbot.chat.media_task",
+    "qqbot.panel.get", "qqbot.panel.save", "qqbot.panel.preview",
+    "qqbot.panel.generate", "qqbot.panel.image_upload",
+    "qqbot.tools.get", "qqbot.tools.save", "qqbot.tools.test", "qqbot.tools.fs",
+    "qqbot.tools.stats",
     "rcbot.status", "rcbot.accounts", "rcbot.account.save",
     "rcbot.config.get", "rcbot.config.save", "rcbot.tools.search",
     "rcbot.providers", "rcbot.provider.save", "rcbot.provider.delete",
     "rcbot.provider.test", "rcbot.provider.models",
+    "rcbot.memory.map", "rcbot.memory.item", "rcbot.memory.save",
+    "rcbot.memory.delete", "rcbot.memory.pin", "rcbot.memory.seed",
+    "rcbot.memory.stats", "rcbot.memory.search", "rcbot.memory.tile",
+    "rcbot.memory.consolidate", "rcbot.memory.bulk", "rcbot.memory.triggers",
     "rcbot.cards", "rcbot.card.save", "rcbot.card.delete",
     "rcbot.card.clone", "rcbot.card.import", "rcbot.card.export",
     "rcbot.personas", "rcbot.persona.save", "rcbot.persona.delete",

@@ -108,6 +108,44 @@ CREATE INDEX IF NOT EXISTS idx_media_sender ON media_files(sender_id);
 CREATE INDEX IF NOT EXISTS idx_media_acct_kind ON media_files(account_id, kind, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_media_rel ON media_files(rel);
 
+-- ★ 记忆库（角色卡片 → 记忆条目；星空视图读这张表）
+CREATE TABLE IF NOT EXISTS memory_items (
+  id           TEXT PRIMARY KEY,
+  card_id      TEXT DEFAULT '',
+  account_id   TEXT DEFAULT '',
+  scope_type   TEXT DEFAULT 'global',
+  scope_id     TEXT DEFAULT '',
+  subject_id   TEXT DEFAULT '',
+  type         TEXT DEFAULT 'fact',
+  mode         TEXT DEFAULT 'retrieved',
+  content      TEXT DEFAULT '',
+  meta         TEXT DEFAULT '{}',
+  keys         TEXT DEFAULT '[]',
+  importance   REAL DEFAULT 0.5,
+  confidence   REAL DEFAULT 1,
+  source       TEXT DEFAULT 'manual',
+  sort_order   INTEGER DEFAULT 0,
+  ref_chat_id  INTEGER DEFAULT 0,
+  created_at   INTEGER DEFAULT 0,
+  updated_at   INTEGER DEFAULT 0,
+  last_used_at INTEGER DEFAULT 0,
+  use_count    INTEGER DEFAULT 0,
+  pinned       INTEGER DEFAULT 0,
+  state        TEXT DEFAULT 'active',
+  star_x       REAL DEFAULT 0,
+  star_y       REAL DEFAULT 0,
+  is_main      INTEGER DEFAULT 0,
+  parent_id    TEXT DEFAULT '',
+  cluster      TEXT DEFAULT '',
+  tile_x       INTEGER DEFAULT 0,
+  tile_y       INTEGER DEFAULT 0,
+  awaken_count INTEGER DEFAULT 0,
+  last_awaken_at INTEGER DEFAULT 0,
+  archived     INTEGER DEFAULT 0,
+  superseded_by TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_mem_card ON memory_items(card_id, scope_type, scope_id, archived);
+CREATE INDEX IF NOT EXISTS idx_mem_main ON memory_items(card_id, is_main, cluster);
 -- ★ 账号登记表
 CREATE TABLE IF NOT EXISTS accounts (
   id          TEXT PRIMARY KEY,

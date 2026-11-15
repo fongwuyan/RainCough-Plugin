@@ -72,6 +72,66 @@
       "description": "按需生成图片缩略图（长边 320，磁盘缓存）"
     },
     {
+      "id": "qqbot.panel.get",
+      "visibility": "main",
+      "version": "1",
+      "description": "用户面板配置、本地图片与内置工具列表"
+    },
+    {
+      "id": "qqbot.panel.save",
+      "visibility": "main",
+      "version": "1",
+      "description": "保存用户面板（菜单/文本库/图片库）"
+    },
+    {
+      "id": "qqbot.panel.preview",
+      "visibility": "main",
+      "version": "1",
+      "description": "预览菜单或功能项输出"
+    },
+    {
+      "id": "qqbot.panel.generate",
+      "visibility": "main",
+      "version": "1",
+      "description": "立即让 AI 生成每日文案"
+    },
+    {
+      "id": "qqbot.panel.image_upload",
+      "visibility": "main",
+      "version": "1",
+      "description": "上传本地图片到图片组"
+    },
+    {
+      "id": "qqbot.tools.get",
+      "visibility": "main",
+      "version": "1",
+      "description": "工具链：内置工具列表与工作区占用"
+    },
+    {
+      "id": "qqbot.tools.save",
+      "visibility": "main",
+      "version": "1",
+      "description": "保存工具开关与工作区配额"
+    },
+    {
+      "id": "qqbot.tools.test",
+      "visibility": "main",
+      "version": "1",
+      "description": "手动测试内置工具"
+    },
+    {
+      "id": "qqbot.tools.fs",
+      "visibility": "main",
+      "version": "1",
+      "description": "工作区文件操作（列出/读/写/建目录/删除）"
+    },
+    {
+      "id": "qqbot.tools.stats",
+      "visibility": "main",
+      "version": "1",
+      "description": "工具调用统计（次数/成功率/耗时）"
+    },
+    {
       "id": "qqbot.chat.clear_session",
       "visibility": "main",
       "version": "1",
@@ -310,6 +370,78 @@
       "visibility": "main",
       "version": "1",
       "description": "新增/修改/删除机器人账号"
+    },
+    {
+      "id": "rcbot.memory.map",
+      "visibility": "all",
+      "version": "1",
+      "description": "记忆星空"
+    },
+    {
+      "id": "rcbot.memory.item",
+      "visibility": "all",
+      "version": "1",
+      "description": "记忆详情"
+    },
+    {
+      "id": "rcbot.memory.save",
+      "visibility": "all",
+      "version": "1",
+      "description": "保存记忆"
+    },
+    {
+      "id": "rcbot.memory.delete",
+      "visibility": "all",
+      "version": "1",
+      "description": "删除记忆"
+    },
+    {
+      "id": "rcbot.memory.pin",
+      "visibility": "all",
+      "version": "1",
+      "description": "置顶记忆"
+    },
+    {
+      "id": "rcbot.memory.seed",
+      "visibility": "all",
+      "version": "1",
+      "description": "迁移记忆"
+    },
+    {
+      "id": "rcbot.memory.stats",
+      "visibility": "all",
+      "version": "1",
+      "description": "记忆统计"
+    },
+    {
+      "id": "rcbot.memory.search",
+      "visibility": "all",
+      "version": "1",
+      "description": "搜索记忆"
+    },
+    {
+      "id": "rcbot.memory.tile",
+      "visibility": "all",
+      "version": "1",
+      "description": "星图分块"
+    },
+    {
+      "id": "rcbot.memory.consolidate",
+      "visibility": "all",
+      "version": "1",
+      "description": "巩固记忆"
+    },
+    {
+      "id": "rcbot.memory.bulk",
+      "visibility": "all",
+      "version": "1",
+      "description": "批量记忆"
+    },
+    {
+      "id": "rcbot.memory.triggers",
+      "visibility": "all",
+      "version": "1",
+      "description": "关键词列表"
     }
   ],
   "environment": {

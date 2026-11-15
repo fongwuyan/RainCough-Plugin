@@ -27,14 +27,14 @@ function toast(msg, kind) {
   toastTimer = setTimeout(() => { S.toast = '' }, kind === 'err' ? 5200 : 2600)
 }
 
-async function call(iface, params) {
+async function call(iface, params, opts) {
   if (!CTX || !CTX.invoke) throw new Error('插件运行时未就绪')
-  return await CTX.invoke(iface, params || {})
+  return await CTX.invoke(iface, params || {}, opts)
 }
 
 // rcbot.* 接口统一返回 {ok, data}，这里解包成 data；没有 data 字段就原样返回
-async function callData(iface, params) {
-  const r = await call(iface, params)
+async function callData(iface, params, opts) {
+  const r = await call(iface, params, opts)
   return (r && typeof r === 'object' && 'data' in r && r.data !== null && r.data !== undefined)
     ? r.data : r
 }
@@ -1459,7 +1459,16 @@ const Cards = {
   data() {
     return {
       S, list: [], def: '', cur: null, busy: '', err: '', dirty: false,
-      section: 'basic', providers: [],
+      section: 'memory', providers: [],
+      mem: null, memLoading: false, memSel: null, memDrag: null, memMoved: false,
+      memoryOpen: false, showJunk: false,
+      memQuery: '', memHits: [], memTimer: null,
+      memTiles: {}, memExtra: [], tileTimer: null,
+      memStats: null, showStats: false, hitIndex: 0,
+      memScopeKey: 'global', memScopes: { groups: [], privates: [] },
+      showKeywords: false, kwList: [], kwQuery: '', kwLimit: 80,
+      kwNew: { match: '', reply: '', mode: 'contains', require_at: true },
+      memView: { s: 0.8, ox: 0, oy: 0 },
     }
   },
   computed: {
@@ -1473,6 +1482,7 @@ const Cards = {
   },
   async mounted() {
     await this.load()
+    this.loadScopes()
     try {
       const p = await callData('rcbot.providers')
       this.providers = (p && p.items) || []
@@ -1489,8 +1499,12 @@ const Cards = {
       return 'linear-gradient(135deg, hsl(' + h + ' 58% 56%), hsl(' + ((h + 46) % 360) + ' 52% 42%))'
     },
     coverStyle(c) {
-      const cover = this.assetSrc(c, 'cover')
+      const cover = (c && c.cover_url) || (/^https?:/i.test((c && c.cover) || '') ? c.cover : '')
       return cover ? { backgroundImage: 'url(' + cover + ')' } : { backgroundImage: this.grad((c || {}).name) }
+    },
+    avatarSrc(c) {
+      if (!c) return ''
+      return c.avatar_url || (/^https?:/i.test(c.avatar || '') ? c.avatar : '')
     },
     // 图片字段有两种来源：
     //   c.cover        —— 卡片里存的原始值（相对媒体目录，可移植）
@@ -1507,22 +1521,36 @@ const Cards = {
         this.list = (d && d.items) || []
         this.def = (d && d.default) || ''
         if (!this.cur || this.cur.__new) {
-          if (!this.cur && this.list.length) this.pick(this.list[0])
+          // 刷新后停在卡片列表，不自动进入某张卡的记忆
+          this.cur = null
+          this.memoryOpen = false
         } else {
           const same = this.list.find((x) => x.id === this.cur.id)
-          if (same && !this.dirty) this.pick(same)
+          if (same && !this.dirty) this.cur = this.cloneDeep(same)
         }
       } catch (e) { this.err = errText(e) } finally { this.busy = '' }
     },
     pick(c) {
       this.cur = c ? this.cloneDeep(c) : null
       this.dirty = false
+      this.memSel = null
+      this.memoryOpen = !!this.cur
+      this.section = 'memory'
+      this.memQuery = ''
+      this.memHits = []
+      this.memTiles = {}
+      this.memExtra = []
+      if (this.cur && this.cur.id) this.$nextTick(() => this.loadMemory())
+    },
+    backToList() {
+      this.memoryOpen = false
+      this.memSel = null
     },
     add() {
       this.cur = {
         schema: 2, id: '', version: 1, status: 'draft',
         name: '新角色', alias: [], tagline: '', avatar: '', cover: '', portrait: '',
-        prompt: '', greetings: [], examples: [], lorebook: [], taboos: [],
+        prompt: '', taboos: [], keywords: [],
         style: { temperature: 0.8, max_tokens: 512, max_chars: 0, allow_emoji: false, color: '' },
         model: { provider_id: '', model: '' },
         context: { keep_rounds: 20 },
@@ -1547,8 +1575,515 @@ const Cards = {
     rmLore(i) { if (this.cur && this.cur.lorebook) this.cur.lorebook.splice(i, 1) },
     loreKeys(l) { return (l.keys || []).join('、') },
     setLoreKeys(l, v) { l.keys = String(v || '').split(/[、,，\s]+/).filter(Boolean) },
+    addKw() {
+      if (!this.cur) return
+      this.cur.keywords = this.cur.keywords || []
+      this.cur.keywords.push({ match: '', reply: '', mode: 'contains', require_at: true, enabled: true })
+      this.dirty = true
+    },
+    rmKw(i) {
+      if (!this.cur || !this.cur.keywords) return
+      this.cur.keywords.splice(i, 1)
+      this.dirty = true
+    },
     taboosText() { return (this.cur && this.cur.taboos || []).join('\n') },
     setTaboosText(v) { if (this.cur) this.cur.taboos = String(v || '').split('\n').map((x) => x.trim()).filter(Boolean) },
+    // ---------------- 记忆星空
+    memColor(t) {
+      const m = { profile: '#e8c46a', appearance: '#5fd0d8', persona: '#b48cf0',
+        taboo: '#f08c8c', canon: '#7aa8f0', fact: '#6fd08a', event: '#f0a45f',
+        greeting: '#f0d06a', example: '#f08cc8', trigger: '#e05a5a',
+        style: '#8a9ab0', model: '#8a9ab0' }
+      return m[t] || '#9ab6d0'
+    },
+    memName(t) {
+      const m = { profile: '身份', appearance: '形象', persona: '行为',
+        taboo: '禁则', canon: '设定', fact: '事实', event: '事件',
+        greeting: '开场白', example: '示例', trigger: '触发',
+        style: '风格', model: '模型' }
+      return m[t] || '记忆'
+    },
+    memState(s) {
+      return s === 'junk' ? '垃圾场' : s === 'dormant' ? '休眠' : '正常'
+    },
+    openSection(name) {
+      this.section = name
+      if (name === 'memory') this.$nextTick(() => this.loadMemory())
+    },
+    scopeParams() {
+      if (!this.memScopeKey || this.memScopeKey === 'global') {
+        return { scope_type: 'global', scope_id: '' }
+      }
+      const i = this.memScopeKey.indexOf(':')
+      return { scope_type: this.memScopeKey.slice(0, i), scope_id: this.memScopeKey.slice(i + 1) }
+    },
+    async loadScopes() {
+      try {
+        const d = await callData('rcbot.sessions')
+        const items = (d && (d.items || d)) || []
+        const groups = [], privates = []
+        const seen = {}
+        for (const x of items) {
+          const target = x && (x.target_id || x.target)
+          if (!target) continue
+          if (x.kind !== 'group' && x.kind !== 'private') continue
+          const key = x.kind + ':' + target
+          if (seen[key]) continue
+          seen[key] = 1
+          const label = x.display || x.title || x.name || String(target)
+          if (x.kind === 'group') groups.push({ key, label })
+          else privates.push({ key, label })
+        }
+        this.memScopes = { groups, privates }
+      } catch (e) { /* 没有会话也不影响全局视图 */ }
+    },
+    changeScope() {
+      this.memSel = null
+      this.memHits = []
+      this.memExtra = []
+      this.loadMemory()
+    },
+    async loadMemory() {
+      if (!this.cur || !this.cur.id) return
+      this.memLoading = true
+      this.memTiles = {}
+      this.memExtra = []
+      try {
+        const sp = this.scopeParams()
+        const d = await callData('rcbot.memory.map', { card_id: this.cur.id, ...sp })
+        this.mem = d || null
+        this.$nextTick(() => { this.fitMem(); this.ensureTiles() })
+      } catch (e) { toast(errText(e), 'err') } finally { this.memLoading = false }
+    },
+    allStars() {
+      const out = []
+      for (const k in this.memTiles) out.push(...(this.memTiles[k] || []))
+      out.push(...(this.memExtra || []))
+      return out
+    },
+    scheduleTiles() {
+      clearTimeout(this.tileTimer)
+      this.tileTimer = setTimeout(() => this.ensureTiles(), 180)
+    },
+    async ensureTiles() {
+      const c = this.$refs.memCanvas
+      if (!c || !this.cur || !this.mem) return
+      const w = c.clientWidth || 800, h = c.clientHeight || 520
+      const v = this.memView
+      const x0 = (0 - v.ox) / v.s, x1 = (w - v.ox) / v.s
+      const y0 = (0 - v.oy) / v.s, y1 = (h - v.oy) / v.s
+      const tx0 = Math.floor(x0 / 512), tx1 = Math.floor(x1 / 512)
+      const ty0 = Math.floor(y0 / 512), ty1 = Math.floor(y1 / 512)
+      const jobs = []
+      for (let tx = tx0; tx <= tx1 && jobs.length < 6; tx++) {
+        for (let ty = ty0; ty <= ty1 && jobs.length < 6; ty++) {
+          const key = tx + ',' + ty
+          if (this.memTiles[key] !== undefined) continue
+          this.memTiles[key] = []
+          jobs.push(callData('rcbot.memory.tile', { card_id: this.cur.id, tx, ty, ...this.scopeParams() })
+            .then((d) => { this.memTiles[key] = (d && d.items) || [] })
+            .catch(() => { this.memTiles[key] = [] }))
+        }
+      }
+      if (jobs.length) {
+        await Promise.all(jobs)
+        this.drawMem()
+      }
+    },
+    fitMem() {
+      const c = this.$refs.memCanvas
+      if (!c || !this.mem) return
+      const all = (this.mem.main || []).concat(this.allStars())
+      if (!all.length) return
+      let minx, maxx, miny, maxy
+      if (this.mem.bbox) {
+        minx = this.mem.bbox.minx; maxx = this.mem.bbox.maxx
+        miny = this.mem.bbox.miny; maxy = this.mem.bbox.maxy
+      } else {
+        const xs = all.map((s) => s.x), ys = all.map((s) => s.y)
+        minx = Math.min(...xs); maxx = Math.max(...xs)
+        miny = Math.min(...ys); maxy = Math.max(...ys)
+      }
+      const w = c.clientWidth || 800, h = c.clientHeight || 520
+      const s = Math.min(w / (maxx - minx + 140), h / (maxy - miny + 140), 2.4)
+      this.memView = { s, ox: w / 2 - (minx + maxx) / 2 * s, oy: h / 2 - (miny + maxy) / 2 * s }
+      this.drawMem()
+    },
+    drawMem() {
+      const c = this.$refs.memCanvas
+      if (!c) return
+      const dpr = window.devicePixelRatio || 1
+      const w = c.clientWidth || 800, h = c.clientHeight || 520
+      if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+        c.width = Math.round(w * dpr); c.height = Math.round(h * dpr)
+      }
+      const g = c.getContext('2d')
+      g.setTransform(dpr, 0, 0, dpr, 0, 0)
+      g.clearRect(0, 0, w, h)
+      const bg = g.createRadialGradient(w * 0.5, h * 0.42, 10, w * 0.5, h * 0.42, Math.max(w, h) * 0.85)
+      bg.addColorStop(0, '#101c31'); bg.addColorStop(0.55, '#0a1220'); bg.addColorStop(1, '#04060b')
+      g.fillStyle = bg; g.fillRect(0, 0, w, h)
+      // 星云：三团很淡的冷色雾
+      const neb = (cx, cy, rad, col) => {
+        const rg = g.createRadialGradient(cx, cy, 0, cx, cy, rad)
+        rg.addColorStop(0, col); rg.addColorStop(1, 'rgba(0,0,0,0)')
+        g.fillStyle = rg; g.fillRect(0, 0, w, h)
+      }
+      neb(w * 0.18, h * 0.22, Math.max(w, h) * 0.62, 'rgba(46,96,158,.20)')
+      neb(w * 0.84, h * 0.72, Math.max(w, h) * 0.58, 'rgba(112,70,156,.16)')
+      neb(w * 0.58, h * 0.10, Math.max(w, h) * 0.45, 'rgba(28,120,136,.12)')
+      // 远景尘埃
+      for (let i = 0; i < 140; i++) {
+        const dx = (Math.sin(i * 12.9898) * 43758.5453) % 1
+        const dy = (Math.sin(i * 78.233) * 12345.6789) % 1
+        const x = Math.abs(dx) * w, y = Math.abs(dy) * h
+        g.fillStyle = 'rgba(190,214,245,' + (0.05 + (i % 5) * 0.012) + ')'
+        g.fillRect(x, y, 1, 1)
+      }
+      // 暗角
+      const vg = g.createRadialGradient(w * 0.5, h * 0.5, Math.min(w, h) * 0.25,
+                                        w * 0.5, h * 0.5, Math.max(w, h) * 0.72)
+      vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(0,0,0,.52)')
+      g.fillStyle = vg; g.fillRect(0, 0, w, h)
+      if (!this.mem) return
+      const v = this.memView
+      const p = (s) => [s.x * v.s + v.ox, s.y * v.s + v.oy]
+      const byId = {}
+      for (const s of (this.mem.main || [])) byId[s.id] = s
+      const clusterCount = {}
+      for (const cl of (this.mem.clusters || [])) clusterCount[cl.name] = cl.count
+      // 主星 → 卫星连线
+      g.lineWidth = 0.7
+      for (const s of this.allStars()) {
+        const m = byId[s.parent]
+        if (!m) continue
+        const [x1, y1] = p(m), [x2, y2] = p(s)
+        g.strokeStyle = 'rgba(120,160,220,' + (0.10 + 0.25 * (s.b || 0.3)) + ')'
+        g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke()
+      }
+      const starPath = (x, y, r, inner, points) => {
+        g.beginPath()
+        for (let i = 0; i < points * 2; i++) {
+          const rr = i % 2 ? inner : r
+          const a = -Math.PI / 2 + i * Math.PI / points
+          const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr
+          if (i) g.lineTo(px, py); else g.moveTo(px, py)
+        }
+        g.closePath()
+      }
+      const hitSet = new Set((this.memHits || []).map((s) => s.id))
+      const searching = !!(this.memQuery || '').trim() && hitSet.size > 0
+      const dim = (s) => (searching && !hitSet.has(s.id) ? 0.15 : 1)
+      const drawStar = (s) => {
+        const [x, y] = p(s)
+        if (x < -30 || y < -30 || x > w + 30 || y > h + 30) return
+        const b = Math.max(0.08, s.b || 0.3)
+        const col = this.memColor(s.type)
+        if (s.main) {
+          const r = 14 + 8 * b
+          g.shadowColor = col
+          g.shadowBlur = 26 * b + 10
+          g.fillStyle = col
+          g.globalAlpha = (0.60 + 0.40 * b) * dim(s)
+          starPath(x, y, r, r * 0.40, 5)
+          g.fill()
+          // 十字星芒
+          g.shadowBlur = 0
+          g.globalAlpha = 0.50 * b
+          g.strokeStyle = col
+          g.lineWidth = 1.4
+          g.beginPath()
+          g.moveTo(x - r * 2.4, y); g.lineTo(x + r * 2.4, y)
+          g.moveTo(x, y - r * 2.4); g.lineTo(x, y + r * 2.4)
+          g.stroke()
+          // 星核
+          g.globalAlpha = 0.98
+          g.fillStyle = '#ffffff'
+          g.beginPath(); g.arc(x, y, Math.max(1.8, r * 0.20), 0, Math.PI * 2); g.fill()
+          g.globalAlpha = 0.92
+          g.fillStyle = 'rgba(235,244,255,.92)'
+          g.font = '13px system-ui, sans-serif'
+          g.fillText(this.memName(s.type) + ' · ' + (clusterCount[s.type] || ''), x + r + 8, y + 4)
+        } else {
+          const r = 2.8 + 5.0 * b
+          g.shadowColor = col
+          g.shadowBlur = 10 * b + 3
+          g.fillStyle = col
+          g.globalAlpha = (0.32 + 0.68 * b) * dim(s)
+          starPath(x, y, r, r * 0.26, 4)
+          g.fill()
+          g.globalAlpha = 0.60 * b
+          g.fillStyle = '#ffffff'
+          g.beginPath(); g.arc(x, y, Math.max(0.8, r * 0.18), 0, Math.PI * 2); g.fill()
+        }
+        g.shadowBlur = 0
+        g.globalAlpha = 1
+      }
+      for (const s of this.allStars()) {
+        // LOD：缩太小的时候先不画暗卫星，放大后再出现
+        if (this.memView.s < 0.28 && (s.b || 0.3) < 0.55 && !searching) continue
+        if (this.memView.s < 0.16 && !searching) continue
+        drawStar(s)
+      }
+      if (this.showJunk) {
+        g.shadowBlur = 0
+        const jl = this.mem.junk_stars || []
+        g.globalAlpha = 0.55
+        g.fillStyle = 'rgba(170,188,210,.8)'
+        g.font = '12px system-ui, sans-serif'
+        g.fillText('垃圾场 · ' + jl.length, 52, h - 58)
+        for (let i = 0; i < jl.length; i++) {
+          const jx = 56 + (i % 20) * 16
+          const jy = h - 38 + Math.floor(i / 20) * 16
+          g.globalAlpha = 0.22
+          g.fillStyle = 'rgba(160,178,200,1)'
+          starPath(jx, jy, 2.0, 0.7, 4)
+          g.fill()
+        }
+        g.globalAlpha = 1
+      }
+      for (const s of (this.mem.main || [])) drawStar(s)
+      if (searching) {
+        g.shadowBlur = 0
+        g.strokeStyle = 'rgba(255,220,140,.9)'
+        g.lineWidth = 1.2
+        for (const s of (this.memHits || [])) {
+          const [x, y] = p(s)
+          if (x < -20 || y < -20 || x > w + 20 || y > h + 20) continue
+          g.beginPath(); g.arc(x, y, 13, 0, Math.PI * 2); g.stroke()
+        }
+      }
+      g.globalAlpha = 1
+    },
+    toggleJunk() {
+      this.$nextTick(() => { this.fitMem(); this.drawMem() })
+    },
+    searchMem() {
+      clearTimeout(this.memTimer)
+      this.memTimer = setTimeout(async () => {
+        const q = this.memQuery.trim()
+        if (!this.cur) return
+        if (!q) { this.memHits = []; this.drawMem(); return }
+        try {
+          const d = await callData('rcbot.memory.search', { card_id: this.cur.id, q, ...this.scopeParams() })
+          this.memHits = (d && d.items) || []
+          this.hitIndex = 0
+          this.memExtra = this.memHits.slice()
+          if (this.memHits.length) this.focusHits()
+          else this.drawMem()
+        } catch (e) { /* 搜索失败不改动星图 */ }
+      }, 260)
+    },
+    async consolidateMem() {
+      if (!this.cur) return
+      if (!confirm('合并近似重复的记忆，并归档陈旧事件？')) return
+      try {
+        const r = await callData('rcbot.memory.consolidate', { card_id: this.cur.id })
+        toast('记忆已巩固：合并 ' + ((r && r.merged) || 0) + ' 条，归档 ' + ((r && r.stale) || 0) + ' 条', 'ok')
+        await this.loadMemory()
+        if (this.showStats) this.memStats = await callData('rcbot.memory.stats', { card_id: this.cur.id })
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    async openKeywords() {
+      this.showKeywords = true
+      this.kwLimit = 80
+      await this.loadKeywords()
+    },
+    async loadKeywords() {
+      if (!this.cur) return
+      try {
+        const d = await callData('rcbot.memory.triggers', { card_id: this.cur.id })
+        this.kwList = (d && d.items) || []
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    kwFiltered() {
+      const q = (this.kwQuery || '').trim().toLowerCase()
+      if (!q) return this.kwList
+      return this.kwList.filter((k) => (k.match || '').toLowerCase().includes(q) ||
+        (k.reply || '').toLowerCase().includes(q))
+    },
+    async saveKw(k) {
+      if (!k || !k.match || !k.reply) { toast('关键词和回复都不能为空', 'err'); return }
+      try {
+        await callData('rcbot.memory.save', { item: {
+          id: k.id, card_id: this.cur.id, type: 'trigger', mode: 'config',
+          content: k.reply, importance: 0.4,
+          meta: { match: k.match, reply: k.reply, mode: 'contains',
+                  require_at: !!k.require_at, enabled: k.enabled !== false },
+        } })
+        k.enabled = k.enabled !== false
+        toast('已保存：' + k.match, 'ok')
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    async delKw(k) {
+      if (!k || !confirm('删除关键词「' + k.match + '」？')) return
+      try {
+        await callData('rcbot.memory.delete', { id: k.id })
+        this.kwList = this.kwList.filter((x) => x.id !== k.id)
+        toast('已删除', 'ok')
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    async addKeyword() {
+      const n = this.kwNew
+      if (!n.match.trim() || !n.reply.trim()) { toast('关键词和回复都要填', 'err'); return }
+      try {
+        await callData('rcbot.memory.save', { item: {
+          card_id: this.cur.id, type: 'trigger', mode: 'config',
+          content: n.reply.trim(), importance: 0.4,
+          meta: { match: n.match.trim(), reply: n.reply.trim(), mode: 'contains',
+                  require_at: !!n.require_at, enabled: true },
+        } })
+        n.match = ''; n.reply = ''
+        await this.loadKeywords()
+        toast('已添加', 'ok')
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    async bulkKw(enabled) {
+      const list = this.kwFiltered()
+      if (!list.length) return
+      if (!confirm((enabled ? '启用' : '停用') + '当前筛选的 ' + list.length + ' 条？')) return
+      for (const k of list) {
+        k.enabled = enabled
+        await callData('rcbot.memory.save', { item: {
+          id: k.id, card_id: this.cur.id, type: 'trigger', mode: 'config',
+          content: k.reply, importance: 0.4,
+          meta: { match: k.match, reply: k.reply, mode: k.mode,
+                  require_at: !!k.require_at, enabled: enabled },
+        } })
+      }
+      toast('已更新 ' + list.length + ' 条', 'ok')
+    },
+    async toggleStats() {
+      if (!this.cur) return
+      this.showStats = !this.showStats
+      if (this.showStats) {
+        try { this.memStats = await callData('rcbot.memory.stats', { card_id: this.cur.id }) } catch (e) {}
+      }
+    },
+    centerOn(s) {
+      const c = this.$refs.memCanvas
+      if (!c) return
+      const w = c.clientWidth || 800, h = c.clientHeight || 520
+      const scale = Math.max(0.8, this.memView.s)
+      this.memView = { s: scale, ox: w / 2 - s.x * scale, oy: h / 2 - s.y * scale }
+      this.drawMem()
+    },
+    async openHit(delta) {
+      if (!this.memHits.length) return
+      const n = this.memHits.length
+      this.hitIndex = (this.hitIndex + delta + n) % n
+      const s = this.memHits[this.hitIndex]
+      this.centerOn(s)
+      try { this.memSel = await callData('rcbot.memory.item', { id: s.id }) } catch (e) {}
+    },
+    async openFirstHit() {
+      if (!this.memHits.length) return
+      try { this.memSel = await callData('rcbot.memory.item', { id: this.memHits[0].id }) } catch (e) {}
+    },
+    clearSearch() {
+      this.memQuery = ''
+      this.memHits = []
+      this.memExtra = []
+      this.$nextTick(() => this.fitMem())
+    },
+    focusHits() {      const c = this.$refs.memCanvas
+      if (!c || !this.memHits.length) return
+      const xs = this.memHits.map((s) => s.x), ys = this.memHits.map((s) => s.y)
+      const minx = Math.min(...xs), maxx = Math.max(...xs)
+      const miny = Math.min(...ys), maxy = Math.max(...ys)
+      const w = c.clientWidth || 800, h = c.clientHeight || 520
+      const s = Math.min(w / (maxx - minx + 220), h / (maxy - miny + 220), 2.2)
+      this.memView = { s, ox: w / 2 - (minx + maxx) / 2 * s, oy: h / 2 - (miny + maxy) / 2 * s }
+      this.drawMem()
+    },
+    memDown(e) {
+      this.memDrag = { x: e.clientX, y: e.clientY, ox: this.memView.ox, oy: this.memView.oy }
+      this.memMoved = false
+    },
+    memMove(e) {
+      if (!this.memDrag) return
+      const dx = e.clientX - this.memDrag.x, dy = e.clientY - this.memDrag.y
+      if (Math.abs(dx) + Math.abs(dy) > 3) this.memMoved = true
+      this.memView = { s: this.memView.s, ox: this.memDrag.ox + dx, oy: this.memDrag.oy + dy }
+      this.drawMem()
+    },
+    memUp() { this.memDrag = null; this.scheduleTiles() },
+    memWheel(e) {
+      e.preventDefault()
+      const c = this.$refs.memCanvas
+      if (!c) return
+      const rect = c.getBoundingClientRect()
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top
+      const k = e.deltaY < 0 ? 1.12 : 0.89
+      const s = Math.min(4, Math.max(0.15, this.memView.s * k))
+      const v = this.memView
+      this.memView = { s, ox: mx - (mx - v.ox) * (s / v.s), oy: my - (my - v.oy) * (s / v.s) }
+      this.drawMem()
+      this.scheduleTiles()
+    },
+    async memClick(e) {
+      if (this.memMoved) { this.memMoved = false; return }
+      if (!this.mem) return
+      const c = this.$refs.memCanvas
+      const rect = c.getBoundingClientRect()
+      const mx = e.clientX - rect.left, my = e.clientY - rect.top
+      let best = null, bd = 14
+      const pool = (this.mem.main || []).concat(this.allStars(),
+        this.showJunk ? (this.mem.junk_stars || []) : [])
+      for (const s of pool) {
+        const x = s.x * this.memView.s + this.memView.ox
+        const y = s.y * this.memView.s + this.memView.oy
+        const d = Math.hypot(x - mx, y - my)
+        if (d < bd) { bd = d; best = s }
+      }
+      if (!best) {
+        // 垃圾场暗星：左下角固定区域，点一下也能看
+        if (this.showJunk) {
+          const hh = c.clientHeight || 520
+          if (my > hh - 80 && my < hh - 12 && mx > 44) {
+            const col = Math.floor((mx - 56) / 16)
+            const row = Math.floor((my - (hh - 42)) / 16)
+            if (col >= 0 && col < 20 && row >= 0) {
+              const j = (this.mem.junk_stars || [])[row * 20 + col]
+              if (j) {
+                try { this.memSel = await callData('rcbot.memory.item', { id: j.id }) } catch (e) {}
+                return
+              }
+            }
+          }
+        }
+        return
+      }
+      try {
+        this.memSel = await callData('rcbot.memory.item', { id: best.id })
+      } catch (err) { toast(errText(err), 'err') }
+    },
+    async saveMem() {
+      if (!this.memSel) return
+      try {
+        await callData('rcbot.memory.save', { item: this.memSel })
+        toast('记忆已保存', 'ok')
+        const id = this.memSel.id
+        this.memSel = await callData('rcbot.memory.item', { id })
+        this.loadMemory()
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    async pinMem() {      if (!this.memSel) return
+      try {
+        await callData('rcbot.memory.pin', { id: this.memSel.id, pinned: !this.memSel.pinned })
+        this.memSel.pinned = this.memSel.pinned ? 0 : 1
+        this.loadMemory()
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    async delMem() {
+      if (!this.memSel) return
+      if (!confirm('把这条记忆移入垃圾场？')) return
+      try {
+        await callData('rcbot.memory.delete', { id: this.memSel.id })
+        this.memSel = null
+        this.loadMemory()
+      } catch (e) { toast(errText(e), 'err') }
+    },
     // ---------------- 保存 / 其它操作
     async save() {
       if (!this.cur) return
@@ -1625,9 +2160,9 @@ const Cards = {
     },
   },
   template: `
-  <div class="rcq-split">
+  <div class="rcq-split" :style="memoryOpen ? { gridTemplateColumns: '1fr' } : null">
     <!-- 左：卡片列表 -->
-    <div class="rcq-pnl flat">
+    <div class="rcq-pnl flat" v-if="!memoryOpen">
       <div class="rcq-ph" style="padding:14px 16px 0;margin-bottom:10px">
         <b>角色卡片</b><span class="sp"></span>
         <button class="btn btn-sm" @click="importJson">导入</button>
@@ -1639,7 +2174,8 @@ const Cards = {
           <div class="cdc-cover" :style="coverStyle(c)">
             <span class="cdc-fallback" v-if="!assetSrc(c, 'cover')">{{ (c.name || '?').slice(0, 1) }}</span>
           </div>
-          <img v-if="assetSrc(c, 'avatar')" class="cdc-ava" :src="assetSrc(c, 'avatar')" alt="" />
+          <img v-if="avatarSrc(c)" class="cdc-ava" :src="avatarSrc(c)" alt=""
+            @error="$event.target.style.display='none'" />
           <div class="cdc-body">
             <div class="cdc-name">{{ c.name || '未命名' }}</div>
             <div class="cdc-tag">{{ c.tagline || (c.prompt || '').slice(0, 40) }}</div>
@@ -1655,20 +2191,16 @@ const Cards = {
       </div>
     </div>
 
-    <!-- 右：卡片编辑 -->
-    <div class="rcq-pnl" v-if="cur">
+    <!-- 右：记忆星空 -->
+    <div class="rcq-pnl" v-if="cur && memoryOpen">
       <div class="rcq-ph">
-        <b>{{ isNew ? '新建角色卡片' : '编辑角色卡片' }}</b><span class="sp"></span>
-        <span class="rcq-hint" v-if="dirty">有未保存的修改</span>
-        <button class="btn btn-sm" @click="exportJson(cur)">导出</button>
-        <button class="btn btn-sm" @click="cloneCard(cur)">复制一份</button>
-        <button class="btn btn-sm btn-primary" :disabled="!!busy" @click="save">
-          {{ busy === 'save' ? '保存中…' : '保存' }}
-        </button>
+        <button class="btn btn-sm" @click="backToList">← 卡片</button>
+        <b style="margin-left:8px">{{ cur.name || '角色' }} · 记忆</b><span class="sp"></span>
+        <span class="rcq-hint" v-if="mem"> · {{ mem.total }} 颗星 · {{ (mem.main || []).length }} 主星 · 垃圾场 {{ mem.junk || 0 }}</span>
       </div>
 
-      <!-- 卡片本体 -->
-      <div class="cd-hero" :class="{ grad: !assetSrc(cur, 'cover') }">
+      <!-- 卡片本体（已并入记忆，不再展示） -->
+      <div class="cd-hero" v-if="false" :class="{ grad: !assetSrc(cur, 'cover') }">
         <div class="cdh-cover" :style="coverStyle(cur)"></div>
         <div class="cdh-inner">
           <div class="cdh-ava">
@@ -1707,14 +2239,15 @@ const Cards = {
         </div>
       </div>
 
-      <div class="cd-tabs">
+      <div class="cd-tabs" v-if="false">
         <button :class="{ on: section === 'basic' }" @click="section = 'basic'">形象</button>
         <button :class="{ on: section === 'content' }" @click="section = 'content'">内容</button>
         <button :class="{ on: section === 'behavior' }" @click="section = 'behavior'">行为</button>
+        <button :class="{ on: section === 'memory' }" @click="openSection('memory')">记忆</button>
       </div>
 
       <!-- 形象 -->
-      <div class="rcq-form" v-if="section === 'basic'">
+      <div class="rcq-form" v-if="false">
         <label class="rcq-fi wide"><span>名称</span>
           <input class="input" v-model="cur.name" @input="dirty = true" placeholder="例如：雨咯" />
         </label>
@@ -1750,7 +2283,7 @@ const Cards = {
       </div>
 
       <!-- 内容 -->
-      <div class="rcq-form" v-if="section === 'content'">
+      <div class="rcq-form" v-if="false">
         <label class="rcq-fi wide"><span>系统提示词</span>
           <textarea class="rcq-ta tall" v-model="cur.prompt" @input="dirty = true"
             placeholder="描述它的身份、语气、边界。例如：你叫小雨，说话简短自然，不用敬语，不主动提自己是 AI。"></textarea>
@@ -1802,7 +2335,7 @@ const Cards = {
       </div>
 
       <!-- 行为 -->
-      <div class="rcq-form" v-if="section === 'behavior'">
+      <div class="rcq-form" v-if="false">
         <label class="rcq-fi wide"><span>模型提供商</span>
           <select class="input" v-model="cur.model.provider_id" @change="dirty = true">
             <option value="">（跟随账号默认）</option>
@@ -1835,18 +2368,175 @@ const Cards = {
           <input class="input" type="number" min="1"
             v-model.number="cur.context.keep_rounds" @input="dirty = true" />
         </label>
-        <label class="rcq-fi"><span>气泡色</span>
+            <label class="rcq-fi"><span>气泡色</span>
           <input class="input" v-model="cur.style.color" @input="dirty = true" placeholder="#12b7f5" />
+        </label>
+        <label class="rcq-fi"><span>回复方式</span>
+          <select class="input" v-model="cur.style.reply_mode" @change="dirty = true">
+            <option value="auto">自动（长了拆多条）</option>
+            <option value="single">总是单条</option>
+            <option value="multi">尽量多条短句</option>
+          </select>
+        </label>
+        <label class="rcq-fi"><span>每条最多字数</span>
+          <input class="input" type="number" min="8" max="200"
+            v-model.number="cur.style.part_chars" @input="dirty = true" />
+        </label>
+        <label class="rcq-fi"><span>最多几条</span>
+          <input class="input" type="number" min="1" max="10"
+            v-model.number="cur.style.max_parts" @input="dirty = true" />
+        </label>
+        <label class="rcq-fi"><span>发送间隔（秒）</span>
+          <input class="input" type="number" step="0.05" min="0" max="2"
+            v-model.number="cur.style.part_delay" @input="dirty = true" />
         </label>
       </div>
 
-      <div class="rcq-flex" style="margin-top:12px">
+      <div class="rcq-sec" v-if="false">
+        <div class="rcq-ph" style="margin-bottom:8px"><b>关键词必回</b>
+          <span class="rcq-hint">命中关键词直接回固定文案，不调模型、不受 AI 开关影响</span></div>
+        <div v-for="(k, i) in (cur.keywords || [])" :key="i" class="rcq-flex"
+          style="gap:8px;margin-bottom:8px;flex-wrap:wrap">
+          <input class="input" style="flex:1;min-width:130px" v-model="k.match"
+            placeholder="关键词" @input="dirty = true" />
+          <input class="input" style="flex:2;min-width:200px" v-model="k.reply"
+            placeholder="回复内容，支持 {nick}" @input="dirty = true" />
+          <select class="input" style="width:110px" v-model="k.mode" @change="dirty = true">
+            <option value="contains">包含</option>
+            <option value="exact">完全匹配</option>
+          </select>
+          <label class="rcq-hint"><input type="checkbox" v-model="k.require_at"
+            @change="dirty = true" /> 需 @</label>
+          <label class="rcq-hint"><input type="checkbox" v-model="k.enabled"
+            @change="dirty = true" /> 启用</label>
+          <button class="btn btn-sm" @click="rmKw(i)">删除</button>
+        </div>
+        <button class="btn btn-sm" @click="addKw">+ 添加关键词</button>
+        <div class="rcq-note" v-if="!(cur.keywords || []).length">
+          例如「打卡」→「打卡成功，今天也要加油」；群里默认需要 @ 机器人，私聊不需要。
+        </div>
+      </div>
+
+      <div class="rcq-sec" v-if="section === 'memory'" style="position:relative">
+        <div class="rcq-flex" style="justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div><b>记忆星空</b>
+            <span class="rcq-hint" v-if="mem"> · {{ mem.total }} 颗星 · {{ (mem.main || []).length }} 主星 · 垃圾场 {{ mem.junk || 0 }}</span>
+            <span class="rcq-hint" v-else-if="memLoading">星域加载中…</span>
+          </div>
+          <div class="rcq-flex" style="gap:6px">
+            <select class="input" style="width:190px" v-model="memScopeKey" @change="changeScope">
+              <option value="global">全局记忆</option>
+              <optgroup label="群聊" v-if="memScopes.groups.length">
+                <option v-for="g in memScopes.groups" :key="g.key" :value="g.key">{{ g.label }}</option>
+              </optgroup>
+              <optgroup label="私聊" v-if="memScopes.privates.length">
+                <option v-for="p in memScopes.privates" :key="p.key" :value="p.key">{{ p.label }}</option>
+              </optgroup>
+            </select>
+            <input class="input" style="width:170px" v-model="memQuery" @input="searchMem"
+              @keyup.enter="openFirstHit" @keyup.esc="clearSearch" placeholder="搜索记忆…" />
+            <button v-if="memQuery" class="btn btn-sm" @click="clearSearch">×</button>
+            <span class="rcq-hint" v-if="memQuery">{{ memHits.length }} 条</span>
+            <button v-if="memHits.length" class="btn btn-sm" @click="openHit(-1)">‹</button>
+            <button v-if="memHits.length" class="btn btn-sm" @click="openHit(1)">›</button>
+            <button class="btn btn-sm" @click="toggleStats">统计</button>
+            <button class="btn btn-sm" @click="consolidateMem">巩固</button>
+            <button class="btn btn-sm" @click="openKeywords">关键词</button>
+            <label class="rcq-hint"><input type="checkbox" v-model="showJunk"
+              @change="toggleJunk" /> 显示垃圾场</label>
+            <button class="btn btn-sm" @click="loadMemory">刷新</button>
+            <button class="btn btn-sm" @click="fitMem">适配</button>
+          </div>
+        </div>
+        <canvas ref="memCanvas" @mousedown="memDown" @mousemove="memMove" @mouseup="memUp"
+          @mouseleave="memUp" @click="memClick" @wheel="memWheel"
+          style="width:100%;height:calc(100vh - 210px);min-height:560px;border-radius:12px;display:block;cursor:grab;background:#05080f;border:1px solid rgba(120,160,220,.18)"></canvas>
+        <div class="rcq-hint" style="margin-top:6px">拖动平移 · 滚轮缩放 · 点击星星查看 · 暗星会沉入垃圾场</div>
+        <div v-if="showKeywords" style="position:absolute;inset:0;background:#070c14;z-index:30;border-radius:12px;padding:14px;overflow:auto;border:1px solid rgba(120,160,220,.25)">
+          <div class="rcq-flex" style="justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px">
+            <b style="color:#f0f6ff">关键词管理 · {{ kwList.length }} 条</b>
+            <span class="rcq-hint" style="color:#e6b85c">包含匹配 · 仅对已启用的群生效</span>
+            <div class="rcq-flex" style="gap:6px;align-items:center">
+              <input class="input" style="width:160px" v-model="kwQuery" placeholder="搜索关键词/回复…" />
+              <span class="rcq-hint" style="color:#9fb2c8">{{ kwFiltered().length }} 条</span>
+              <button class="btn btn-sm" @click="bulkKw(true)">全部启用</button>
+              <button class="btn btn-sm" @click="bulkKw(false)">全部停用</button>
+              <button class="btn btn-sm" @click="showKeywords = false">关闭</button>
+            </div>
+          </div>
+          <div class="rcq-flex" style="gap:6px;margin-bottom:10px;flex-wrap:wrap;padding:8px;border:1px solid rgba(120,160,220,.2);border-radius:8px">
+            <input class="input" style="width:150px" v-model="kwNew.match" placeholder="新关键词" />
+            <input class="input" style="flex:1;min-width:200px" v-model="kwNew.reply" placeholder="兜底回复（模型失败时用）" />
+            <span style="width:100px">包含匹配</span>
+            <button class="btn btn-sm" @click="addKeyword">添加</button>
+          </div>
+          <div class="rcq-flex" style="font-size:11px;color:#8fa4bd;padding:0 4px 6px;gap:6px">
+            <span style="width:150px">关键词</span><span style="flex:1">兜底回复（模型失败时用）</span>
+            <span style="width:100px">匹配</span>
+            <span style="width:44px">启用</span><span style="width:90px">操作</span>
+          </div>
+          <div v-for="k in kwFiltered().slice(0, kwLimit)" :key="k.id"
+            class="rcq-flex" style="gap:6px;align-items:center;padding:4px 0;border-top:1px solid rgba(120,160,220,.08)">
+            <input class="input" style="width:150px" v-model="k.match" @change="saveKw(k)" />
+            <input class="input" style="flex:1;min-width:160px" v-model="k.reply" @change="saveKw(k)" />
+            <span style="width:100px;color:#9fb2c8">包含</span>
+            <input type="checkbox" style="width:44px" v-model="k.enabled" @change="saveKw(k)" />
+            <button class="btn btn-sm" style="width:90px;color:#f5534f" @click="delKw(k)">删除</button>
+          </div>
+          <div v-if="kwFiltered().length > kwLimit" style="text-align:center;margin-top:10px">
+            <button class="btn btn-sm" @click="kwLimit += 100">加载更多（剩余 {{ kwFiltered().length - kwLimit }}）</button>
+          </div>
+        </div>
+        <div v-if="showStats && memStats" style="position:absolute;left:12px;top:44px;width:280px;max-height:470px;overflow:auto;background:rgba(10,16,26,.97);border:1px solid rgba(130,170,230,.4);border-radius:10px;padding:12px;box-shadow:0 8px 30px rgba(0,0,0,.6);color:#dbe7f5">
+          <div class="rcq-flex" style="justify-content:space-between;align-items:center">
+            <b style="color:#f0f6ff">记忆统计</b>
+            <button class="btn btn-sm" @click="showStats = false">×</button>
+          </div>
+          <div class="rcq-hint" style="margin:8px 0;color:#9fb2c8">
+            共 {{ memStats.total }} 条 · {{ memStats.chars }} 字 · 近 7 天 +{{ memStats.recent7d }}
+          </div>
+          <div v-for="(c, t) in memStats.types" :key="t" class="rcq-flex"
+            style="justify-content:space-between;font-size:12px;padding:3px 0;color:#dbe7f5">
+            <span>{{ memName(t) }}</span><b>{{ c }}</b>
+          </div>
+          <div class="rcq-hint" style="margin-top:8px;color:#9fb2c8">
+            状态：正常 {{ (memStats.states && memStats.states.active) || 0 }} ·
+            休眠 {{ (memStats.states && memStats.states.dormant) || 0 }} ·
+            垃圾场 {{ (memStats.states && memStats.states.junk) || 0 }}
+          </div>
+          <div class="rcq-hint" style="color:#9fb2c8">
+            范围：全局 {{ (memStats.scopes && memStats.scopes.global) || 0 }} ·
+            群 {{ (memStats.scopes && memStats.scopes.group) || 0 }} ·
+            私聊 {{ (memStats.scopes && memStats.scopes.private) || 0 }}
+          </div>
+        </div>
+        <div v-if="memSel" style="position:absolute;right:10px;top:44px;width:330px;max-height:470px;overflow:auto;background:rgba(14,20,30,.96);border:1px solid rgba(120,160,220,.3);border-radius:10px;padding:12px;box-shadow:0 8px 30px rgba(0,0,0,.5)">
+          <div class="rcq-flex" style="justify-content:space-between;align-items:center">
+            <b>{{ memName(memSel.type) }}</b>
+            <button class="btn btn-sm" @click="memSel = null">×</button>
+          </div>
+          <textarea class="input" v-model="memSel.content"
+            style="width:100%;height:150px;margin:10px 0;font-size:13px;line-height:1.6;resize:vertical"></textarea>
+          <div class="rcq-hint">重要度
+            <input class="input" type="number" step="0.05" min="0" max="1"
+              v-model.number="memSel.importance" style="width:70px;margin:0 6px" />
+            · 使用 {{ memSel.use_count || 0 }} 次 · {{ memState(memSel.state) }}
+          </div>
+          <div class="rcq-flex" style="gap:8px;margin-top:10px">
+            <button class="btn btn-sm" @click="saveMem">保存修改</button>
+            <button class="btn btn-sm" @click="pinMem">{{ memSel.pinned ? '取消置顶' : '置顶' }}</button>
+            <button class="btn btn-sm" @click="delMem">移入垃圾场</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="rcq-flex" style="margin-top:12px" v-if="false">
         <button class="btn btn-sm" @click="setDefault(cur)">设为默认角色</button>
         <button class="btn btn-sm" style="color:var(--err,#f5534f)"
           :disabled="busy === 'del' + cur.id" @click="del(cur)">删除</button>
         <span class="rcq-hint" style="margin-left:auto">卡片 v{{ cur.version || 1 }} · {{ cur.status === 'published' ? '已发布' : '草稿' }}</span>
       </div>
-      <div class="rcq-note">
+      <div class="rcq-note" v-if="false">
         角色卡片是「定义」，账号和会话只引用它 —— 改卡片不会影响已经产生的历史会话。
         想给别的机器人用，直接「导出」成 JSON 发过去，对方「导入」即可。
       </div>
@@ -2324,12 +3014,13 @@ const Logs = {
     return {
       S, items: [], mode: 'live', level: '', lines: 400, follow: true,
       source: '', connected: false, hint: '', busy: false, timer: null, err: '',
+      stats: null,
     }
   },
   computed: {
     filtered() { return this.items },
   },
-  async mounted() { await this.load(); this.tick() },
+  async mounted() { await this.load(); await this.loadStats(); this.tick() },
   beforeUnmount() { if (this.timer) clearTimeout(this.timer) },
   methods: {
     tick() {
@@ -2337,9 +3028,15 @@ const Logs = {
       if (this.mode === 'live' && this.follow) {
         this.timer = setTimeout(async () => {
           await this.load(true)
+          await this.loadStats(true)
           this.tick()
         }, 2000)
       }
+    },
+    async loadStats(silent) {
+      try {
+        this.stats = await callData('qqbot.tools.stats', {})
+      } catch (e) { if (!silent) this.err = errText(e) }
     },
     async load(silent) {
       if (!silent) this.busy = true
@@ -2428,6 +3125,43 @@ const Logs = {
       </div>
     </div>
 
+    <div class="rcq-pnl">
+      <div class="rcq-flex">
+        <b>工具调用统计</b>
+        <span class="rcq-hint">本次进程运行以来（AI 调用 + 手动测试）</span>
+        <span style="margin-left:auto"></span>
+        <button class="btn btn-sm" @click="loadStats()">刷新</button>
+      </div>
+      <div v-if="stats" class="rcq-flex" style="gap:18px;margin-top:8px;flex-wrap:wrap">
+        <span class="rcq-hint">总调用 <b>{{ stats.total }}</b></span>
+        <span class="rcq-hint">成功 <b style="color:var(--ok,#5fd38d)">{{ stats.ok }}</b></span>
+        <span class="rcq-hint">失败 <b style="color:var(--bad,#e0533f)">{{ stats.fail }}</b></span>
+        <span class="rcq-hint">成功率 <b>{{ stats.rate }}%</b></span>
+      </div>
+      <div v-if="stats && stats.tools.length" style="margin-top:8px">
+        <div v-for="t in stats.tools" :key="t.id" class="rcq-flex"
+          style="padding:7px 0;border-bottom:1px solid var(--bd)">
+          <b style="min-width:110px">{{ t.name }}</b>
+          <span class="rcq-hint">调用 {{ t.calls }}</span>
+          <span class="rcq-hint" style="margin-left:10px">成功 {{ t.ok }}</span>
+          <span class="rcq-hint" style="margin-left:10px">失败 {{ t.fail }}</span>
+          <span class="rcq-hint" style="margin-left:auto">平均 {{ t.avg_ms }}ms</span>
+        </div>
+      </div>
+      <div v-else class="rcq-hint" style="margin-top:8px">还没有工具调用</div>
+      <div v-if="stats && stats.recent.length" style="margin-top:10px">
+        <div class="rcq-hint" style="margin-bottom:4px">最近调用</div>
+        <div v-for="(r, i) in stats.recent" :key="i" class="rcq-flex"
+          style="font-size:12px;padding:3px 0;border-bottom:1px dashed var(--bd)">
+          <span class="mono" style="color:var(--m)">{{ r.time }}</span>
+          <span style="margin-left:8px">{{ r.name }}</span>
+          <span class="rcq-hint" style="margin-left:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px">{{ r.args }}</span>
+          <span :style="{ marginLeft: 'auto', color: r.ok ? 'var(--ok,#5fd38d)' : 'var(--bad,#e0533f)' }">
+            {{ r.ok ? 'ok' : 'fail' }} · {{ r.ms }}ms</span>
+        </div>
+      </div>
+    </div>
+
     <div v-if="err" class="rcq-pnl rcq-warn" style="font-size:12px">{{ err }}</div>
 
     <div class="rcq-log" ref="box">
@@ -2462,6 +3196,18 @@ const Settings = {
     vis() { return this.feats.vision || {} },
     rp() { return this.feats.random_pick || {} },
     sl() { return this.feats.sl_status || {} },
+    ai() {
+      if (!this.cfg) return { enabled: true }
+      this.cfg.features = this.cfg.features || {}
+      this.cfg.features.ai = this.cfg.features.ai || { enabled: true }
+      return this.cfg.features.ai
+    },
+    pnl() {
+      if (!this.cfg) return { enabled: true }
+      this.cfg.features = this.cfg.features || {}
+      this.cfg.features.panel = this.cfg.features.panel || { enabled: true }
+      return this.cfg.features.panel
+    },
   },
   async mounted() { await this.load() },
   methods: {
@@ -2499,6 +3245,8 @@ const Settings = {
             group_need_at: !!this.bot.group_need_at,
             private_always_reply: !!this.bot.private_always_reply,
             reply_with_mention: !!this.bot.reply_with_mention,
+            reply_with_quote: this.bot.reply_with_quote !== false,
+            reply_when_quoted: this.bot.reply_when_quoted !== false,
             wake_prefix: splitList(this.bot.__prefixText != null ? this.bot.__prefixText : (this.bot.wake_prefix || []).join(',')),
             allowed_groups: splitList(this.bot.__allowText != null ? this.bot.__allowText : (this.bot.allowed_groups || []).join(',')),
             blocked_groups: splitList(this.bot.__blockText != null ? this.bot.__blockText : (this.bot.blocked_groups || []).join(',')),
@@ -2517,6 +3265,8 @@ const Settings = {
       try {
         await call('rcbot.config.save', {
           features: {
+            ai: { enabled: !!this.ai.enabled },
+            panel: { enabled: !!this.pnl.enabled },
             web_search: {
               enabled: !!this.ws.enabled,
               max_results: Number(this.ws.max_results) || 5,
@@ -2528,6 +3278,7 @@ const Settings = {
             random_pick: {
               enabled: this.rp.enabled !== false,
               scope: this.rp.scope || 'enabled_groups',
+              respect_need_at: !!this.rp.respect_need_at,
             },
             sl_status: {
               enabled: this.sl.enabled !== false,
@@ -2623,6 +3374,16 @@ const Settings = {
             <label>回复时 @ 对方</label>
             <label class="switch"><input type="checkbox" v-model="bot.reply_with_mention" /><span class="slider"></span></label>
           </div>
+          <div class="switch-row">
+            <label>回复时引用原消息</label>
+            <label class="switch"><input type="checkbox" v-model="bot.reply_with_quote" /><span class="slider"></span></label>
+          </div>
+          <div class="switch-row">
+            <label>引用机器人消息时回复
+              <div class="rcq-note">群里没 @ 但引用了机器人说的话，也算在跟它说话。</div>
+            </label>
+            <label class="switch"><input type="checkbox" v-model="bot.reply_when_quoted" /><span class="slider"></span></label>
+          </div>
           <div class="rcq-form" style="margin-top:8px">
             <label class="rcq-fi"><span>唤醒前缀（逗号分隔，不用 @）</span>
               <input class="input" :value="(bot.wake_prefix || []).join(',')"
@@ -2646,6 +3407,18 @@ const Settings = {
 
       <!-- 能力 -->
       <div v-if="tab === 'cap'">
+        <div class="switch-row">
+          <label>AI 回复
+            <div class="rcq-note">关闭后普通消息不调用模型；面板菜单与功能仍可用。</div>
+          </label>
+          <label class="switch"><input type="checkbox" v-model="ai.enabled" /><span class="slider"></span></label>
+        </div>
+        <div class="switch-row">
+          <label>菜单面板
+            <div class="rcq-note">关闭后 @机器人 菜单 交给 AI 处理。</div>
+          </label>
+          <label class="switch"><input type="checkbox" v-model="pnl.enabled" /><span class="slider"></span></label>
+        </div>
         <div class="switch-row">
           <label>允许联网搜索
             <div class="rcq-note">模型遇到时效性问题会调用 <code>web_search</code>，走 Bing 抓结果。</div>
@@ -2691,8 +3464,19 @@ const Settings = {
               </select>
             </label>
           </div>
+          <div class="switch-row">
+            <label>随机挑也遵守「群里必须 @」
+              <div class="rcq-note">
+                开启后只挑 @过机器人（或带唤醒前缀）的消息，避免和「群里必须 @ 才回复」冲突；
+                关闭 = 随机挑是手动触发，不受这条规则限制。
+              </div>
+            </label>
+            <label class="switch"><input type="checkbox" v-model="rp.respect_need_at" /><span class="slider"></span></label>
+          </div>
           <div class="rcq-note">
             「已启用的群聊」= 在「会话管理」里打开开关的那些群。还没启用的群不参与挑选。
+            挑选不是纯随机：按「长度合适、像在问话、比较新、各群轮换」加权，避免翻到
+            <code>[图片]</code>、单字回复或反复同一群。
           </div>
         </div>
 
@@ -2778,6 +3562,571 @@ const Settings = {
 
 // ------------------------------------------------------------------ 框架
 
+// ------------------------------------------------------------------ 工具链
+
+const Tools = {
+  data() {
+    return {
+      loading: true, busy: '', err: '', tools: [], enabled: {},
+      ws: { root: '', files: 0, bytes: 0, max_mb: 20 },
+      fsPath: '', fsItems: [], edit: null, test: null, testOut: '',
+    }
+  },
+  async mounted() { await this.load() },
+  methods: {
+    fmtSize(n) {
+      n = Number(n) || 0
+      if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB'
+      if (n >= 1024) return Math.round(n / 1024) + ' KB'
+      return n + ' B'
+    },
+    async load() {
+      this.loading = true
+      try {
+        const d = await callData('qqbot.tools.get', {})
+        this.tools = (d && d.tools) || []
+        this.enabled = (d && d.enabled) || {}
+        this.ws = (d && d.workspace) || this.ws
+        await this.fsList(this.fsPath)
+      } catch (e) { this.err = errText(e) } finally { this.loading = false }
+    },
+    async saveCfg() {
+      this.busy = 'save'
+      try {
+        await callData('qqbot.tools.save', {
+          enabled: this.enabled,
+          workspace: { max_mb: Number(this.ws.max_mb) || 20 },
+        })
+        toast('工具链设置已保存', 'ok')
+      } catch (e) { toast(errText(e), 'err') } finally { this.busy = '' }
+    },
+    async fsList(rel) {
+      try {
+        const d = await callData('qqbot.tools.fs', { action: 'list', path: rel || '' })
+        this.fsPath = (d && d.path) || ''
+        this.fsItems = (d && d.items) || []
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    fsGo(it) {
+      if (it.is_dir) this.fsList((this.fsPath ? this.fsPath + '/' : '') + it.name)
+      else this.openFile(it.name)
+    },
+    fsUp() {
+      const parts = this.fsPath.split('/').filter(Boolean)
+      parts.pop()
+      this.fsList(parts.join('/'))
+    },
+    async openFile(name) {
+      const path = (this.fsPath ? this.fsPath + '/' : '') + name
+      try {
+        const d = await callData('qqbot.tools.fs', { action: 'read', path })
+        this.edit = { path, content: (d && d.content) || '', size: (d && d.size) || 0 }
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    newFile() {
+      const name = prompt('文件名（可带子目录，如 notes/todo.txt）')
+      if (!name) return
+      this.edit = { path: (this.fsPath ? this.fsPath + '/' : '') + name, content: '', size: 0 }
+    },
+    async newDir() {
+      const name = prompt('目录名')
+      if (!name) return
+      try {
+        await callData('qqbot.tools.fs', { action: 'mkdir', path: (this.fsPath ? this.fsPath + '/' : '') + name })
+        await this.fsList(this.fsPath)
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    async saveFile() {
+      if (!this.edit) return
+      try {
+        await callData('qqbot.tools.fs', { action: 'write', path: this.edit.path, content: this.edit.content })
+        toast('已保存', 'ok')
+        this.edit = null
+        await this.load()
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    async delItem(it) {
+      const path = (this.fsPath ? this.fsPath + '/' : '') + it.name
+      if (!confirm('删除「' + path + '」？')) return
+      try {
+        await callData('qqbot.tools.fs', { action: 'delete', path })
+        await this.load()
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    openTest(t) {
+      const preset = {
+        web_search: { query: '今天的新闻' },
+        calc: { expression: 'sqrt(2)*10 + 3**2' },
+        convert: { value: 100, from: 'km', to: 'mi' },
+        random: { kind: 'dice', sides: 6, count: 2 },
+        codec: { action: 'sha256', text: 'hello' },
+        date_calc: { action: 'diff', date1: '2026-01-01', date2: '2026-11-08' },
+      }
+      this.test = { id: t.id, args: JSON.stringify(preset[t.id] || {}, null, 2) }
+      this.testOut = ''
+    },
+    async runTest() {
+      if (!this.test) return
+      this.busy = 'test'
+      try {
+        const args = JSON.parse(this.test.args || '{}')
+        const d = await callData('qqbot.tools.test', { id: this.test.id, args })
+        this.testOut = JSON.stringify(d && d.result, null, 2)
+      } catch (e) { this.testOut = '失败：' + errText(e) } finally { this.busy = '' }
+    },
+  },
+  template: `
+  <div>
+    <div v-if="err" class="rcq-pnl rcq-warn" style="font-size:12px">{{ err }}</div>
+
+    <div class="rcq-pnl">
+      <div class="rcq-flex">
+        <b>系统内置工具</b>
+        <span class="rcq-hint">AI 按需调用；只做系统内置，不开放自定义</span>
+        <span style="margin-left:auto"></span>
+        <button class="btn btn-sm btn-primary" :disabled="!!busy" @click="saveCfg">保存</button>
+      </div>
+      <div v-for="t in tools" :key="t.id" class="rcq-flex"
+        style="padding:9px 0;border-bottom:1px solid var(--bd)">
+        <label class="switch"><input type="checkbox" v-model="enabled[t.id]" /><span class="slider"></span></label>
+        <b style="margin-left:8px">{{ t.name }}</b>
+        <span class="rcq-hint" style="margin-left:6px">{{ t.desc }}</span>
+        <span style="margin-left:auto"></span>
+        <span class="rcq-badge" :class="t.category === 'workspace' ? 'warn' : 'ok'">
+          {{ t.category === 'workspace' ? '工作区' : '辅助' }}</span>
+        <button class="btn btn-sm" style="margin-left:8px" @click="openTest(t)">测试</button>
+      </div>
+    </div>
+
+    <div class="rcq-pnl">
+      <div class="rcq-flex">
+        <b>工作区</b>
+        <span class="rcq-hint">{{ ws.files }} 个文件 · {{ fmtSize(ws.bytes) }} / {{ ws.max_mb }} MB</span>
+        <span style="margin-left:auto"></span>
+        <label class="rcq-hint">配额(MB)</label>
+        <input class="input" type="number" min="1" max="1024" style="width:90px" v-model.number="ws.max_mb" />
+        <button class="btn btn-sm" @click="saveCfg">应用</button>
+      </div>
+      <div class="rcq-note" style="word-break:break-all">
+        {{ ws.root }} —— AI 只能在这个目录内读写，初始为空。
+      </div>
+      <div class="rcq-flex" style="margin-top:8px">
+        <button class="btn btn-sm" @click="fsUp" :disabled="!fsPath">↑ 上一级</button>
+        <span class="rcq-hint" style="margin-left:6px">/{{ fsPath }}</span>
+        <span style="margin-left:auto"></span>
+        <button class="btn btn-sm" @click="newFile">新建文件</button>
+        <button class="btn btn-sm" @click="newDir">新建目录</button>
+        <button class="btn btn-sm" @click="fsList(fsPath)">刷新</button>
+      </div>
+      <div v-for="it in fsItems" :key="it.name" class="rcq-flex"
+        style="padding:7px 0;border-bottom:1px solid var(--bd)">
+        <span style="cursor:pointer" @click="fsGo(it)">
+          {{ it.is_dir ? '📁' : '📄' }} {{ it.name }}</span>
+        <span class="rcq-hint" style="margin-left:auto">{{ it.is_dir ? '' : fmtSize(it.size) }}</span>
+        <button class="btn btn-sm" style="margin-left:8px" @click="delItem(it)">删除</button>
+      </div>
+      <div v-if="!fsItems.length" class="rcq-hint" style="margin-top:8px">空目录</div>
+    </div>
+
+    <div v-if="edit" class="rcq-mask" @click.self="edit = null">
+      <div class="rcq-modal">
+        <div class="rcq-flex"><b class="mono" style="word-break:break-all">{{ edit.path }}</b>
+          <span style="margin-left:auto"></span>
+          <button class="btn btn-sm" @click="edit = null">关闭</button></div>
+        <textarea class="input" rows="16" v-model="edit.content" style="margin-top:10px"></textarea>
+        <div class="rcq-acts" style="margin-top:10px">
+          <button class="btn btn-primary" @click="saveFile">保存</button>
+          <button class="btn" @click="edit = null">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="test" class="rcq-mask" @click.self="test = null">
+      <div class="rcq-modal">
+        <div class="rcq-flex"><b>测试 {{ test.id }}</b>
+          <span style="margin-left:auto"></span>
+          <button class="btn btn-sm" @click="test = null">关闭</button></div>
+        <div class="rcq-fi" style="margin-top:10px"><span>参数（JSON）</span>
+          <textarea class="input" rows="4" v-model="test.args"></textarea></div>
+        <div class="rcq-acts" style="margin-top:10px">
+          <button class="btn btn-primary" :disabled="busy === 'test'" @click="runTest">运行</button>
+        </div>
+        <pre v-if="testOut" style="margin-top:10px;white-space:pre-wrap;max-height:260px;overflow:auto;background:var(--sf2);padding:10px;border-radius:8px;font-size:12px">{{ testOut }}</pre>
+      </div>
+    </div>
+  </div>`,
+}
+
+// ------------------------------------------------------------------ 面板
+
+const PanelPage = {
+  data() {
+    return {
+      tab: 'menu', loading: true, busy: '', err: '',
+      cfg: null, images: {}, previewText: '',
+      edit: null, selPool: '', selImg: '',
+    }
+  },
+  computed: {
+    items() { return (this.cfg && this.cfg.items) || [] },
+    pools() { return (this.cfg && this.cfg.text_pools) || [] },
+    ipools() { return (this.cfg && this.cfg.image_pools) || [] },
+    curPool() { return this.pools.find((p) => p.id === this.selPool) || this.pools[0] || null },
+    curImg() { return this.ipools.find((p) => p.id === this.selImg) || this.ipools[0] || null },
+  },
+  async mounted() { await this.load() },
+  methods: {
+    async load() {
+      this.loading = true
+      try {
+        const d = await callData('qqbot.panel.get', {})
+        this.cfg = (d && d.panel) || { items: [], text_pools: [], image_pools: [] }
+        this.images = (d && d.images) || {}
+        if (!this.selPool) this.selPool = (this.cfg.text_pools[0] || {}).id || ''
+        if (!this.selImg) this.selImg = (this.cfg.image_pools[0] || {}).id || ''
+      } catch (e) { this.err = errText(e) } finally { this.loading = false }
+    },
+    async save() {
+      this.busy = 'save'
+      try {
+        await callData('qqbot.panel.save', { panel: this.cfg })
+        toast('面板已保存', 'ok')
+      } catch (e) { toast(errText(e), 'err') } finally { this.busy = '' }
+    },
+    async previewMenu() {
+      try {
+        const d = await callData('qqbot.panel.preview', { mode: 'menu' })
+        this.previewText = (d && d.text) || ''
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    async previewItem(it) {
+      try {
+        const d = await callData('qqbot.panel.preview', { mode: 'feature', id: it.id })
+        this.previewText = ((d && d.text) || '') + (d && d.image ? '\n[图片] ' + d.image : '')
+      } catch (e) { toast(errText(e), 'err') }
+    },
+    addItem() {
+      this.edit = {
+        id: 'item_' + Date.now().toString(36), name: '', aliases: [], desc: '',
+        type: 'content', text_pool: (this.pools[0] || {}).id || '',
+        image_pool: (this.ipools[0] || {}).id || '', cooldown: 5,
+        show_in_menu: true, enabled: true, text: '',
+      }
+    },
+    editItem(it) { this.edit = JSON.parse(JSON.stringify(it)) },
+    saveEdit() {
+      const e = this.edit
+      if (!e || !String(e.name || '').trim()) { toast('名称不能为空', 'err'); return }
+      const i = this.items.findIndex((x) => x.id === e.id)
+      if (i >= 0) this.cfg.items.splice(i, 1, e)
+      else this.cfg.items.push(e)
+      this.edit = null
+      this.save()
+    },
+    delItem(i) {
+      if (!confirm('删除功能项「' + (this.items[i].name || '') + '」？')) return
+      this.cfg.items.splice(i, 1)
+      this.save()
+    },
+    moveItem(i, d) {
+      const j = i + d
+      if (j < 0 || j >= this.items.length) return
+      const t = this.cfg.items[i]
+      this.cfg.items[i] = this.cfg.items[j]
+      this.cfg.items[j] = t
+      this.save()
+    },
+    aliasesStr(it) { return (it.aliases || []).join(', ') },
+    setAliases(it, v) { it.aliases = String(v || '').split(/[,，\s]+/).filter(Boolean) },
+    levelsStr(it) { return (it.levels || []).join(', ') },
+    setLevels(it, v) { it.levels = String(v || '').split(/[,，\s]+/).filter(Boolean) },
+    poolText(pool) {
+      return (pool.items || []).filter((x) => !x.source || x.source === 'manual')
+        .map((x) => (typeof x === 'string' ? x : x.text || '')).join('\n')
+    },
+    setPoolText(pool, v) {
+      const ai = (pool.items || []).filter((x) => x.source === 'ai')
+      const lines = String(v || '').split('\n').map((s) => s.trim()).filter(Boolean)
+      pool.items = lines.map((t, i) => ({ id: 'm' + i, text: t, source: 'manual' })).concat(ai)
+    },
+    aiOf(pool) {
+      if (!pool.ai_daily) pool.ai_daily = { enabled: false, count: 10, time: '00:10', keep_max: 300 }
+      return pool.ai_daily
+    },
+    addTextPool() {
+      const id = 'pool_' + Date.now().toString(36)
+      this.cfg.text_pools = this.cfg.text_pools || []
+      this.cfg.text_pools.push({
+        id, name: '新文本组', enabled: true, items: [],
+        ai_daily: { enabled: false, count: 10, time: '00:10', keep_max: 300, prompt: '' },
+      })
+      this.selPool = id
+      this.save()
+    },
+    delTextPool() {
+      const p = this.curPool
+      if (!p || !confirm('删除文本组「' + p.name + '」？')) return
+      this.cfg.text_pools = this.pools.filter((x) => x.id !== p.id)
+      this.selPool = (this.cfg.text_pools[0] || {}).id || ''
+      this.save()
+    },
+    addImgPool() {
+      const id = 'img_' + Date.now().toString(36)
+      this.cfg.image_pools = this.cfg.image_pools || []
+      this.cfg.image_pools.push({
+        id, name: '新图片组', enabled: true, source: 'api', items: [],
+        api: { url: '', timeout: 10, max_bytes: 8388608, max_redirects: 3 },
+      })
+      this.selImg = id
+      this.save()
+    },
+    delImgPool() {
+      const p = this.curImg
+      if (!p || !confirm('删除图片组「' + p.name + '」？')) return
+      this.cfg.image_pools = this.ipools.filter((x) => x.id !== p.id)
+      this.selImg = (this.cfg.image_pools[0] || {}).id || ''
+      this.save()
+    },
+    async generate(pool) {
+      this.busy = 'gen'
+      try {
+        const d = await callData('qqbot.panel.generate', {
+          pool_id: pool.id, count: Number(this.aiOf(pool).count) || 10,
+        }, { timeoutMs: 180000 })
+        toast('已生成 ' + ((d && d.added) || 0) + ' 条', 'ok')
+        await this.load()
+      } catch (e) { toast(errText(e), 'err') } finally { this.busy = '' }
+    },
+    async uploadImage(ev) {
+      const f = ev.target.files && ev.target.files[0]
+      ev.target.value = ''
+      if (!f || !this.curImg) return
+      const b64 = await new Promise((res) => {
+        const r = new FileReader()
+        r.onload = () => res(String(r.result || ''))
+        r.readAsDataURL(f)
+      })
+      this.busy = 'upload'
+      try {
+        const d = await callData('qqbot.panel.image_upload', {
+          pool_id: this.curImg.id, name: f.name, data: b64,
+        })
+        if (d && d.name) {
+          this.curImg.items = this.curImg.items || []
+          this.curImg.items.push(d.name)
+          await this.save()
+        }
+        await this.load()
+        toast('已上传', 'ok')
+      } catch (e) { toast(errText(e), 'err') } finally { this.busy = '' }
+    },
+    imgUrl(name) {
+      const list = this.images[(this.curImg || {}).id] || []
+      const hit = list.find((x) => x.name === name)
+      return hit ? '/api/fm/preview?path=' + encodeURIComponent(hit.abs) : ''
+    },
+    fmtSize(n) {
+      n = Number(n) || 0
+      return n >= 1048576 ? (n / 1048576).toFixed(1) + 'MB' : Math.round(n / 1024) + 'KB'
+    },
+  },
+  template: `
+  <div>
+    <div v-if="err" class="rcq-pnl rcq-warn" style="font-size:12px">{{ err }}</div>
+
+    <div class="rcq-pnl">
+      <div class="rcq-flex">
+        <button class="btn btn-sm" :class="tab === 'menu' ? 'btn-primary' : ''" @click="tab = 'menu'">菜单</button>
+        <button class="btn btn-sm" :class="tab === 'text' ? 'btn-primary' : ''" @click="tab = 'text'">文本库</button>
+        <button class="btn btn-sm" :class="tab === 'image' ? 'btn-primary' : ''" @click="tab = 'image'">图片库</button>
+        <span style="margin-left:auto"></span>
+        <button class="btn btn-sm btn-primary" :disabled="!!busy" @click="save">
+          {{ busy === 'save' ? '保存中…' : '保存' }}</button>
+      </div>
+    </div>
+
+    <template v-if="tab === 'menu' && cfg">
+      <div class="rcq-pnl">
+        <div class="rcq-grid">
+          <label class="rcq-fi"><span>标题</span>
+            <input class="input" v-model="cfg.title" /></label>
+          <label class="rcq-fi"><span>触发词（逗号分隔）</span>
+            <input class="input" :value="(cfg.triggers || []).join(', ')"
+              @input="cfg.triggers = $event.target.value.split(/[,，\\s]+/).filter(Boolean)" /></label>
+          <label class="rcq-fi"><span>底部提示</span>
+            <input class="input" v-model="cfg.hint" /></label>
+          <div class="rcq-acts">
+            <label class="rcq-fi" style="margin:0"><span>每页条数</span>
+              <input class="input" type="number" min="1" max="20" v-model.number="cfg.page_size" style="width:90px" /></label>
+            <button class="btn btn-sm" @click="previewMenu">预览菜单</button>
+            <button class="btn btn-sm" @click="addItem">+ 功能</button>
+          </div>
+        </div>
+        <pre v-if="previewText" style="margin-top:10px;white-space:pre-wrap;background:var(--sf2);padding:10px;border-radius:8px;font-size:12.5px">{{ previewText }}</pre>
+      </div>
+
+      <div class="rcq-pnl">
+        <div v-for="(it, i) in items" :key="it.id" class="rcq-flex"
+          style="padding:9px 0;border-bottom:1px solid var(--bd)">
+          <b style="min-width:110px">{{ it.name || '(未命名)' }}</b>
+          <span class="rcq-hint">{{ it.type }}<template v-if="it.aliases && it.aliases.length"> · {{ aliasesStr(it) }}</template></span>
+          <span style="margin-left:auto"></span>
+          <button class="btn btn-sm" @click="moveItem(i, -1)" :disabled="i === 0">↑</button>
+          <button class="btn btn-sm" @click="moveItem(i, 1)" :disabled="i === items.length - 1">↓</button>
+          <button class="btn btn-sm" @click="previewItem(it)">预览</button>
+          <button class="btn btn-sm" @click="editItem(it)">编辑</button>
+          <button class="btn btn-sm" @click="delItem(i)">删除</button>
+        </div>
+        <div v-if="!items.length" class="rcq-empty2">还没有功能项</div>
+      </div>
+    </template>
+
+    <template v-if="tab === 'text' && cfg">
+      <div class="rcq-pnl">
+        <div class="rcq-flex">
+          <select class="input" style="width:220px" v-model="selPool">
+            <option v-for="p in pools" :key="p.id" :value="p.id">{{ p.name }}（{{ (p.items || []).length }} 条）</option>
+          </select>
+          <button class="btn btn-sm" @click="addTextPool">+ 新建</button>
+          <button class="btn btn-sm" @click="delTextPool">删除</button>
+          <span style="margin-left:auto"></span>
+          <button class="btn btn-sm" :disabled="busy === 'gen'" @click="generate(curPool)">
+            {{ busy === 'gen' ? '生成中…' : '立即生成' }}</button>
+        </div>
+      </div>
+
+      <div v-if="curPool" class="rcq-pnl">
+        <label class="rcq-fi"><span>文本组名称</span>
+          <input class="input" v-model="curPool.name" /></label>
+        <div class="rcq-fi" style="margin-top:10px"><span>文案（每行一条；AI 生成的条目在下方单独列出）</span>
+          <textarea class="input" rows="10" :value="poolText(curPool)"
+            @input="setPoolText(curPool, $event.target.value)"></textarea></div>
+
+        <div class="rcq-flex" style="margin-top:12px">
+          <b>AI 每日生成</b>
+          <label class="rcq-hint"><input type="checkbox" v-model="aiOf(curPool).enabled" /> 启用</label>
+          <span class="rcq-hint">每天</span>
+          <input class="input" style="width:90px" v-model="aiOf(curPool).time" placeholder="00:10" />
+          <span class="rcq-hint">生成</span>
+          <input class="input" type="number" min="1" max="50" style="width:80px" v-model.number="aiOf(curPool).count" />
+          <span class="rcq-hint">条 · 保留上限</span>
+          <input class="input" type="number" min="0" style="width:90px" v-model.number="aiOf(curPool).keep_max" />
+        </div>
+        <div class="rcq-fi" style="margin-top:8px"><span>生成提示词（留空用默认）</span>
+          <textarea class="input" rows="3" v-model="aiOf(curPool).prompt"></textarea></div>
+        <div class="rcq-hint" style="margin-top:6px">
+          上次：{{ aiOf(curPool).last_run_date || '—' }} · {{ aiOf(curPool).last_run_count || 0 }} 条
+        </div>
+
+        <div v-if="(curPool.items || []).some(x => x.source === 'ai')" style="margin-top:12px">
+          <b>AI 条目</b>
+          <div v-for="(x, i) in (curPool.items || [])" :key="i">
+            <div v-if="x.source === 'ai'" class="rcq-flex" style="padding:6px 0;border-bottom:1px solid var(--bd)">
+              <span style="font-size:12.5px">{{ x.text }}</span>
+              <span class="rcq-hint" style="margin-left:8px;flex:none">{{ x.gen_date }}</span>
+              <span style="margin-left:auto"></span>
+              <button class="btn btn-sm" @click="curPool.items.splice(i, 1); save()">删除</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <template v-if="tab === 'image' && cfg">
+      <div class="rcq-pnl">
+        <div class="rcq-flex">
+          <select class="input" style="width:220px" v-model="selImg">
+            <option v-for="p in ipools" :key="p.id" :value="p.id">{{ p.name }}（{{ p.source }}）</option>
+          </select>
+          <button class="btn btn-sm" @click="addImgPool">+ 新建</button>
+          <button class="btn btn-sm" @click="delImgPool">删除</button>
+          <span style="margin-left:auto"></span>
+          <label class="btn btn-sm" style="margin:0">上传图片
+            <input type="file" accept="image/*" hidden @change="uploadImage" /></label>
+        </div>
+      </div>
+
+      <div v-if="curImg" class="rcq-pnl">
+        <div class="rcq-grid">
+          <label class="rcq-fi"><span>图片组名称</span>
+            <input class="input" v-model="curImg.name" /></label>
+          <label class="rcq-fi"><span>来源</span>
+            <select class="input" v-model="curImg.source">
+              <option value="api">外部图片 API</option>
+              <option value="local">本地图片</option>
+            </select></label>
+        </div>
+        <div v-if="curImg.source === 'api'" class="rcq-grid" style="margin-top:10px">
+          <label class="rcq-fi" style="grid-column:1/-1"><span>API 地址（302 最多跟 3 跳）</span>
+            <input class="input" v-model="curImg.api.url" placeholder="https://www.loliapi.com/acg/pe/" /></label>
+          <label class="rcq-fi"><span>超时（秒）</span>
+            <input class="input" type="number" v-model.number="curImg.api.timeout" /></label>
+          <label class="rcq-fi"><span>最大体积（MB）</span>
+            <input class="input" type="number" :value="Math.round((curImg.api.max_bytes || 8388608) / 1048576)"
+              @input="curImg.api.max_bytes = (Number($event.target.value) || 8) * 1048576" /></label>
+        </div>
+        <div v-else style="margin-top:10px">
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <div v-for="n in (curImg.items || [])" :key="n" style="width:110px">
+              <img :src="imgUrl(n)" style="width:100%;height:80px;object-fit:cover;border-radius:8px"
+                @error="$event.target.style.opacity = 0.25" />
+              <div class="rcq-flex" style="margin-top:4px">
+                <span class="rcq-hint" style="overflow:hidden;text-overflow:ellipsis">{{ n }}</span>
+                <button class="btn btn-sm" style="margin-left:auto" @click="curImg.items = curImg.items.filter(v => v !== n); save()">×</button>
+              </div>
+            </div>
+          </div>
+          <div v-if="!(curImg.items || []).length" class="rcq-hint" style="margin-top:6px">还没有本地图片，点右上角上传</div>
+        </div>
+      </div>
+    </template>
+
+    <div v-if="edit" class="rcq-mask" @click.self="edit = null">
+      <div class="rcq-modal">
+        <div class="rcq-flex"><b>功能项</b><span style="margin-left:auto"></span>
+          <button class="btn btn-sm" @click="edit = null">关闭</button></div>
+        <div class="rcq-grid" style="margin-top:10px">
+          <label class="rcq-fi"><span>名称</span><input class="input" v-model="edit.name" /></label>
+          <label class="rcq-fi"><span>别名（逗号分隔）</span>
+            <input class="input" :value="aliasesStr(edit)" @input="setAliases(edit, $event.target.value)" /></label>
+          <label class="rcq-fi"><span>说明</span><input class="input" v-model="edit.desc" /></label>
+          <label class="rcq-fi"><span>类型</span>
+            <select class="input" v-model="edit.type">
+              <option value="content">文本库 + 图片库</option>
+              <option value="text">固定文本</option>
+            </select></label>
+          <label class="rcq-fi"><span>文本组</span>
+            <select class="input" v-model="edit.text_pool">
+              <option value="">不使用</option>
+              <option v-for="p in pools" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select></label>
+          <label class="rcq-fi"><span>图片组</span>
+            <select class="input" v-model="edit.image_pool">
+              <option value="">不使用</option>
+              <option v-for="p in ipools" :key="p.id" :value="p.id">{{ p.name }}</option>
+            </select></label>
+          <label class="rcq-fi"><span>冷却（秒）</span>
+            <input class="input" type="number" v-model.number="edit.cooldown" /></label>
+          <template v-if="edit.type === 'content'">
+            <label class="rcq-fi"><span>运势等级（逗号分隔，留空不显示）</span>
+              <input class="input" :value="levelsStr(edit)" @input="setLevels(edit, $event.target.value)" /></label>
+            <label class="rcq-fi"><span>等级前缀</span>
+              <input class="input" v-model="edit.level_prefix" placeholder="运势" /></label>
+          </template>
+          <label class="rcq-fi"><span>菜单显示</span>
+            <label class="rcq-hint"><input type="checkbox" v-model="edit.show_in_menu" /> 显示</label></label>
+        </div>
+        <div v-if="edit.type === 'text'" class="rcq-fi" style="margin-top:10px">
+          <span>固定文本</span><textarea class="input" rows="4" v-model="edit.text"></textarea></div>
+        <div class="rcq-acts" style="margin-top:12px">
+          <button class="btn btn-primary" @click="saveEdit">保存</button>
+          <button class="btn" @click="edit = null">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>`,
+}
+
 const TABS = [
   // 「消息」不再整屏铺满：和其它页签一样嵌在插件页里，
   // 顶部选项卡始终保留，用户随时能切走。
@@ -2789,6 +4138,8 @@ const TABS = [
   { id: 'cards', label: '角色卡片', comp: Cards },
   { id: 'sessions', label: '会话管理', comp: Sessions },
   { id: 'providers', label: '模型提供商', comp: Providers },
+  { id: 'tools', label: '工具链', comp: Tools },
+  { id: 'panel', label: '面板', comp: PanelPage },
   { id: 'logs', label: '运行日志', comp: Logs },
   { id: 'settings', label: '设置', comp: Settings },
 ]

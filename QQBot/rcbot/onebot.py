@@ -140,18 +140,33 @@ class OneBot:
         finally:
             self._pending.pop(echo, None)
 
-    async def send_text(self, kind, target, text, mention=None):
-        """发文本。返回 OneBot 响应（含 message_id，撤回打标要用）。"""
-        segs = []
-        if mention:
-            segs.append({'type': 'at', 'data': {'qq': str(mention)}})
-            segs.append({'type': 'text', 'data': {'text': ' '}})
-        segs.append({'type': 'text', 'data': {'text': text}})
+    async def send_segments(self, kind, target, segs):
+        """发一条由多段组成的消息（文字 + 图片合并成一条）。"""
         if kind == 'group':
             return await self.call('send_group_msg',
                                    {'group_id': int(target), 'message': segs})
         return await self.call('send_private_msg',
                                {'user_id': int(target), 'message': segs})
+
+    async def send_text(self, kind, target, text, mention=None, quote=None):
+        """发文本。quote = 被回复消息的 message_id（引用回复）。"""
+        segs = []
+        if quote:
+            segs.append({'type': 'reply', 'data': {'id': str(quote)}})
+        if mention:
+            segs.append({'type': 'at', 'data': {'qq': str(mention)}})
+            segs.append({'type': 'text', 'data': {'text': ' '}})
+        segs.append({'type': 'text', 'data': {'text': text}})
+        return await self.send_segments(kind, target, segs)
+
+    async def send_image(self, kind, target, file, mention=None):
+        """发一张图。file 支持 base64://、file://、http(s)://。"""
+        segs = []
+        if mention:
+            segs.append({'type': 'at', 'data': {'qq': str(mention)}})
+            segs.append({'type': 'text', 'data': {'text': ' '}})
+        segs.append({'type': 'image', 'data': {'file': file}})
+        return await self.send_segments(kind, target, segs)
 
     async def status(self):
         out = {'connected': self.connected, 'self_id': self.self_id,

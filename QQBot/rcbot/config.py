@@ -37,6 +37,8 @@ DEFAULT = {
         'group_need_at': True,        # 群里必须 @ 才回
         'private_always_reply': True,  # 私聊全部回复
         'reply_with_mention': False,   # 回复时 @ 对方
+        'reply_with_quote': True,      # 回复时引用原消息
+        'reply_when_quoted': True,     # 用户引用机器人的消息时，机器人也回复
         'wake_prefix': ['/'],          # 群里的唤醒前缀（发了就回，不用 @）
         'rate_limit': {'window': 60, 'max': 30},
         'allowed_groups': [],          # 空 = 不限
@@ -55,6 +57,10 @@ DEFAULT = {
         'private': 'private',
     },
     'features': {
+        # ★ 总开关：AI 自由聊天。关掉后普通消息不回复，面板功能不受影响。
+        'ai': {'enabled': True},
+        # ★ 菜单面板：@机器人 菜单 直接回固定菜单（不经过模型）
+        'panel': {'enabled': True},
         'web_search': {'enabled': False, 'max_results': 5},
         'vision': {'enabled': False, 'max_images': 3},
         # ★ #sl 状态指令：任意群/私聊发这个关键词，机器人回一条 SnowLuma 状态。
@@ -73,6 +79,8 @@ DEFAULT = {
         'random_pick': {
             'enabled': True,
             'scope': 'enabled_groups',
+            # true = 只挑 @过机器人 / 带唤醒前缀的消息（与「群里必须@」一致）
+            'respect_need_at': False,
         },
     },
     # ★ 聊天记录（全量档案，与喂模型的上下文表分离）
@@ -99,6 +107,74 @@ DEFAULT = {
         'audio_format': 'mp3',
         'keep_silk_source': True,      # 转码后是否保留原始 .silk
         'transcode_video': True,       # 视频转 H.264（HEVC 浏览器放不了）
+    },
+    # ★ 工具链：系统内置工具 + 受限工作区
+    'tools': {
+        'enabled': {
+            'web_search': True, 'now': True,
+            'calc': True, 'convert': True, 'random': True,
+            'codec': True, 'date_calc': True,
+            'ws_list': True, 'ws_read': True, 'ws_write': True,
+            'ws_mkdir': True, 'ws_delete': True,
+        },
+        'workspace': {'max_mb': 20},
+    },
+    # ★ 投影解析：开启的会话里自动解析 .litematic 文件
+    'litematic': {'enabled_chats': [], 'max_mb': 50},
+    # ★ 用户面板：固定菜单 + 功能项 + 文本库/图片库
+    'panel': {
+        'enabled': True,
+        'title': '雨咯Bot',
+        'triggers': ['菜单', 'menu', '帮助'],
+        'hint': '回复数字或功能名即可',
+        'columns': 2,
+        'page_size': 8,
+        'timezone': 'Asia/Shanghai',
+        'log_to_archive': True,
+        'items': [
+            {
+                'id': 'fortune', 'name': '今日运势', 'aliases': ['运势', '今日运势'],
+                'desc': '看看今天的手气', 'type': 'content',
+                'text_pool': 'fortune_text', 'image_pool': 'acg_images',
+                'levels': ['大吉', '中吉', '小吉', '平'], 'level_prefix': '运势',
+                'cooldown': 5, 'show_in_menu': True, 'enabled': True,
+            },
+        ],
+        'text_pools': [
+            {
+                'id': 'fortune_text', 'name': '今日运势文案', 'enabled': True,
+                'items': [
+                    {'id': 'm1', 'text': '今天适合把拖了很久的事收个尾，运气站在你这边。宜：收尾；忌：拖延。', 'source': 'manual'},
+                    {'id': 'm2', 'text': '状态在线，适合处理需要专注的事。宜：深度工作；忌：多线程。', 'source': 'manual'},
+                    {'id': 'm3', 'text': '会遇到一点小麻烦，但都不是事。宜：沟通；忌：硬扛。', 'source': 'manual'},
+                    {'id': 'm4', 'text': '适合出门走走，换个环境思路会清楚很多。宜：散步；忌：久坐。', 'source': 'manual'},
+                    {'id': 'm5', 'text': '有人会给你带来好消息，记得回应。宜：回消息；忌：已读不回。', 'source': 'manual'},
+                    {'id': 'm6', 'text': '今天的手气不错，适合做点小决定。宜：尝试；忌：犹豫。', 'source': 'manual'},
+                    {'id': 'm7', 'text': '别把情绪带进工作，慢一点反而更快。宜：深呼吸；忌：着急。', 'source': 'manual'},
+                    {'id': 'm8', 'text': '适合整理桌面和待办，清爽一点效率会高。宜：整理；忌：囤积。', 'source': 'manual'},
+                    {'id': 'm9', 'text': '会遇到让你笑出来的小事，注意接收。宜：放松；忌：皱眉。', 'source': 'manual'},
+                    {'id': 'm10', 'text': '今天适合早点睡，明天的你会感谢现在的你。宜：早睡；忌：熬夜。', 'source': 'manual'},
+                    {'id': 'm11', 'text': '灵感在线，适合写点东西或做点创作。宜：记录；忌：空想。', 'source': 'manual'},
+                    {'id': 'm12', 'text': '小事顺遂，大事再等等。宜：按部就班；忌：冒进。', 'source': 'manual'},
+                ],
+                'ai_daily': {
+                    'enabled': False, 'count': 10, 'time': '00:10',
+                    'provider_id': '', 'keep_max': 300, 'dedupe': True,
+                    'prompt': '', 'last_run_date': '', 'last_run_count': 0,
+                },
+            },
+        ],
+        'image_pools': [
+            {
+                'id': 'acg_images', 'name': '二次元随机图', 'enabled': True,
+                'source': 'api',
+                'api': {
+                    'url': 'https://www.loliapi.com/acg/pe/',
+                    'timeout': 10, 'max_bytes': 8388608, 'max_redirects': 3,
+                },
+                'items': [],
+            },
+        ],
     },
     'providers': [],
     'default_provider': '',
@@ -276,19 +352,23 @@ def provider_chain(cfg, pid=None, acct=None):
     return chain
 
 
-def get_persona(cfg, pid=None, acct=None):
+def get_persona(cfg, pid=None, acct=None, text=''):
     """人格优先级：会话级 > 账号级 > 全局默认 > 第一个。
 
-    ★ 现在人格的本体是「角色卡片」（cards.py），这里返回的是**兼容形状**
-      （{id, name, prompt}），prompt 由卡片推导（含风格约束与世界书）。
-      老的调用方（机器人回复、试聊）不用改。
+    现在人格的本体是「角色卡片」（cards.py），这里返回的是**兼容形状**
+    （{id, name, prompt}），prompt 由卡片推导（含风格约束与命中的世界书）。
+    text 用于世界书关键词命中（设定集可以很大，只注入命中的部分）。
     """
     from . import cards as _cards
     pid = pid or (acct or {}).get('persona_id') or (acct or {}).get('card_id') \
         or cfg.get('default_card') or cfg.get('default_persona') or ''
     c = _cards.find(cfg, pid)
     if c:
-        return _cards.to_persona(c)
+        return _cards.to_persona(c, text)
+    # 指定的人格/卡片被删了 → 回落到当前默认卡片，而不是随便拿第一个
+    c = _cards.find(cfg, cfg.get('default_card') or cfg.get('default_persona') or '')
+    if c:
+        return _cards.to_persona(c, text)
     for p in cfg.get('personas') or []:
         if p.get('id') == pid:
             return p
