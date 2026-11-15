@@ -1,9 +1,9 @@
 {
   "name": "QQBot",
   "label": "雨咯Bot",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "QQ 机器人控制台（SnowLuma 单后端）",
-  "author": "RainCough",
+  "author": "fongwuyan",
   "icon": "",
   "requirements": [],
   "frontend": {
