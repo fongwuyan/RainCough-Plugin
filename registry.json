@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集(v4)",
-  "updated": "2026-11-16 01:05:00",
+  "updated": "2026-11-16 01:12:00",
   "plugins": [
     {
       "name": "AccountPool",
@@ -11,11 +11,36 @@
       "description": "自研 Go Gateway：账号池、OpenAI/Anthropic/Gemini 兼容、LAN API",
       "lang": "python",
       "interfaces": [
-        "accountpool.status",
-        "accountpool.request",
-        "accountpool.settings.save",
-        "accountpool.gateway.restart",
-        "accountpool.gateway.log"
+        {
+          "id": "accountpool.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "网关状态"
+        },
+        {
+          "id": "accountpool.request",
+          "visibility": "main",
+          "version": "1",
+          "description": "管理 API 转发（仅 /admin/v1/）"
+        },
+        {
+          "id": "accountpool.settings.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存 LAN 设置"
+        },
+        {
+          "id": "accountpool.gateway.restart",
+          "visibility": "main",
+          "version": "1",
+          "description": "重启网关"
+        },
+        {
+          "id": "accountpool.gateway.log",
+          "visibility": "main",
+          "version": "1",
+          "description": "网关日志"
+        }
       ]
     },
     {
@@ -27,35 +52,204 @@
       "description": "禁漫天堂搜索与漫画阅读(接口库 v4 迁移)",
       "lang": "python",
       "interfaces": [
-        "jmcomic.search",
-        "jmcomic.meta",
-        "jmcomic.album",
-        "jmcomic.chapter",
-        "jmcomic.download",
-        "jmcomic.download.status",
-        "jmcomic.library.list",
-        "jmcomic.library.delete",
-        "jmcomic.config.get",
-        "jmcomic.config.save",
-        "jmcomic.info",
-        "jmcomic.image",
-        "jmcomic.cover",
-        "jmcomic.download.cancel",
-        "jmcomic.covers",
-        "jmcomic.prefetch",
-        "jmcomic.perf.stats",
-        "jmcomic.batch.start",
-        "jmcomic.batch.status",
-        "jmcomic.batch.stop",
-        "jmcomic.dl.start",
-        "jmcomic.dl.status",
-        "jmcomic.dl.list",
-        "jmcomic.dl.pause",
-        "jmcomic.dl.resume",
-        "jmcomic.dl.cancel",
-        "jmcomic.dl.remove",
-        "jmcomic.dl.retry_failed",
-        "jmcomic.zip"
+        {
+          "id": "jmcomic.search",
+          "visibility": "all",
+          "version": "1",
+          "description": "搜索"
+        },
+        {
+          "id": "jmcomic.meta",
+          "visibility": "all",
+          "version": "1",
+          "description": "漫画元信息"
+        },
+        {
+          "id": "jmcomic.album",
+          "visibility": "all",
+          "version": "1",
+          "description": "漫画详情+章节"
+        },
+        {
+          "id": "jmcomic.chapter",
+          "visibility": "all",
+          "version": "1",
+          "description": "章节图片列表"
+        },
+        {
+          "id": "jmcomic.download",
+          "visibility": "main",
+          "version": "1",
+          "description": "加入下载队列"
+        },
+        {
+          "id": "jmcomic.download.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "下载进度"
+        },
+        {
+          "id": "jmcomic.library.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "本地库"
+        },
+        {
+          "id": "jmcomic.library.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除本子"
+        },
+        {
+          "id": "jmcomic.config.get",
+          "visibility": "all",
+          "version": "1",
+          "description": "读取配置"
+        },
+        {
+          "id": "jmcomic.config.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存配置"
+        },
+        {
+          "id": "jmcomic.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息"
+        },
+        {
+          "id": "jmcomic.image",
+          "visibility": "all",
+          "version": "1",
+          "description": "按需取单张漫画图(base64)"
+        },
+        {
+          "id": "jmcomic.cover",
+          "visibility": "all",
+          "version": "1",
+          "description": "本子封面(缓存 cache/ 直出)"
+        },
+        {
+          "id": "jmcomic.download.cancel",
+          "visibility": "main",
+          "version": "1",
+          "description": "取消下载(排队立即/下载中标记后清残留)"
+        },
+        {
+          "id": "jmcomic.covers",
+          "visibility": "all",
+          "version": "1",
+          "description": "批量封面(一次取N个)"
+        },
+        {
+          "id": "jmcomic.prefetch",
+          "visibility": "all",
+          "version": "1",
+          "description": "章节图片批量预取(URL化)"
+        },
+        {
+          "id": "jmcomic.perf.stats",
+          "visibility": "all",
+          "version": "1",
+          "description": "性能统计(命中/解码/耗时采样)"
+        },
+        {
+          "id": "jmcomic.batch.start",
+          "visibility": "all",
+          "version": "1",
+          "description": "批量下载: 开始(按关键词/分类)"
+        },
+        {
+          "id": "jmcomic.batch.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "批量下载: 进度"
+        },
+        {
+          "id": "jmcomic.batch.stop",
+          "visibility": "all",
+          "version": "1",
+          "description": "批量下载: 停止"
+        },
+        {
+          "id": "jmcomic.dl.start",
+          "visibility": "all",
+          "version": "1",
+          "description": "内置下载器：开始下载（按页并发/断点续传）"
+        },
+        {
+          "id": "jmcomic.dl.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "内置下载器：单个任务进度"
+        },
+        {
+          "id": "jmcomic.dl.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "内置下载器：全部任务"
+        },
+        {
+          "id": "jmcomic.tasks.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "面板任务列表：下载任务"
+        },
+        {
+          "id": "jmcomic.tasks.clear",
+          "visibility": "main",
+          "version": "1",
+          "description": "面板任务列表：清理已完成/失败下载记录"
+        },
+        {
+          "id": "jmcomic.tasks.retry",
+          "visibility": "main",
+          "version": "1",
+          "description": "面板任务列表：继续/重试下载"
+        },
+        {
+          "id": "jmcomic.dl.pause",
+          "visibility": "all",
+          "version": "1",
+          "description": "内置下载器：暂停"
+        },
+        {
+          "id": "jmcomic.dl.resume",
+          "visibility": "all",
+          "version": "1",
+          "description": "内置下载器：继续"
+        },
+        {
+          "id": "jmcomic.dl.cancel",
+          "visibility": "all",
+          "version": "1",
+          "description": "内置下载器：取消"
+        },
+        {
+          "id": "jmcomic.dl.remove",
+          "visibility": "all",
+          "version": "1",
+          "description": "内置下载器：移除任务（可选删文件）"
+        },
+        {
+          "id": "jmcomic.dl.retry_failed",
+          "visibility": "all",
+          "version": "1",
+          "description": "内置下载器：只补下失败的页"
+        },
+        {
+          "id": "jmcomic.zip",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "整包下载：返回服务端打包好的 zip 地址"
+        }
       ]
     },
     {
@@ -67,79 +261,504 @@
       "description": "QQ 机器人控制台（SnowLuma 单后端）",
       "lang": "python",
       "interfaces": [
-        "qqbot.health",
-        "qqbot.conn.get",
-        "qqbot.conn.save",
-        "qqbot.nc.overview",
-        "qqbot.chat.query",
-        "qqbot.chat.senders",
-        "qqbot.chat.clear_session",
-        "qqbot.chat.media_list",
-        "qqbot.chat.media_delete",
-        "qqbot.chat.media_transcode",
-        "qqbot.chat.media_reindex",
-        "qqbot.chat.media_repair",
-        "rcbot.status",
-        "rcbot.config.get",
-        "rcbot.config.save",
-        "rcbot.tools.search",
-        "rcbot.providers",
-        "rcbot.provider.save",
-        "rcbot.provider.delete",
-        "rcbot.provider.test",
-        "rcbot.provider.models",
-        "rcbot.personas",
-        "rcbot.persona.save",
-        "rcbot.persona.delete",
-        "rcbot.sessions",
-        "rcbot.session.get",
-        "rcbot.session.save",
-        "rcbot.session.clear",
-        "rcbot.session.delete",
-        "rcbot.context",
-        "rcbot.test_chat",
-        "qqbot.account.info",
-        "qqbot.account.qrcode",
-        "qqbot.account.refresh_qrcode",
-        "qqbot.account.status",
-        "qqbot.account.action",
-        "qqbot.account.logs",
-        "qqbot.account.logs.clear",
-        "qqbot.backend.get",
-        "qqbot.backend.set",
-        "qqbot.chat.sessions",
-        "qqbot.chat.messages",
-        "qqbot.chat.stats",
-        "qqbot.chat.export",
-        "qqbot.chat.purge_media",
-        "rcbot.accounts",
-        "rcbot.account.save"
+        {
+          "id": "qqbot.health",
+          "visibility": "all",
+          "version": "1",
+          "description": "探活"
+        },
+        {
+          "id": "qqbot.conn.get",
+          "visibility": "all",
+          "version": "1",
+          "description": "读取连接地址与连通性"
+        },
+        {
+          "id": "qqbot.conn.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存连接地址"
+        },
+        {
+          "id": "qqbot.overview",
+          "visibility": "all",
+          "version": "1",
+          "description": "概览（账号 / 版本 / 系统 / 计数）"
+        },
+        {
+          "id": "qqbot.chat.query",
+          "visibility": "main",
+          "version": "1",
+          "description": "按用户/撤回状态/消息类型查询消息（条件可叠加）"
+        },
+        {
+          "id": "qqbot.chat.senders",
+          "visibility": "main",
+          "version": "1",
+          "description": "聊天中出现过的发送者列表"
+        },
+        {
+          "id": "qqbot.chat.thumb",
+          "visibility": "main",
+          "version": "1",
+          "description": "按需生成图片缩略图（长边 320，磁盘缓存）"
+        },
+        {
+          "id": "qqbot.panel.get",
+          "visibility": "main",
+          "version": "1",
+          "description": "用户面板配置、本地图片与内置工具列表"
+        },
+        {
+          "id": "qqbot.panel.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存用户面板（菜单/文本库/图片库）"
+        },
+        {
+          "id": "qqbot.panel.preview",
+          "visibility": "main",
+          "version": "1",
+          "description": "预览菜单或功能项输出"
+        },
+        {
+          "id": "qqbot.panel.generate",
+          "visibility": "main",
+          "version": "1",
+          "description": "立即让 AI 生成每日文案"
+        },
+        {
+          "id": "qqbot.panel.image_upload",
+          "visibility": "main",
+          "version": "1",
+          "description": "上传本地图片到图片组"
+        },
+        {
+          "id": "qqbot.tools.get",
+          "visibility": "main",
+          "version": "1",
+          "description": "工具链：内置工具列表与工作区占用"
+        },
+        {
+          "id": "qqbot.tools.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存工具开关与工作区配额"
+        },
+        {
+          "id": "qqbot.tools.test",
+          "visibility": "main",
+          "version": "1",
+          "description": "手动测试内置工具"
+        },
+        {
+          "id": "qqbot.tools.fs",
+          "visibility": "main",
+          "version": "1",
+          "description": "工作区文件操作（列出/读/写/建目录/删除）"
+        },
+        {
+          "id": "qqbot.tools.stats",
+          "visibility": "main",
+          "version": "1",
+          "description": "工具调用统计（次数/成功率/耗时）"
+        },
+        {
+          "id": "qqbot.chat.clear_session",
+          "visibility": "main",
+          "version": "1",
+          "description": "一键清空会话"
+        },
+        {
+          "id": "qqbot.chat.media_list",
+          "visibility": "main",
+          "version": "1",
+          "description": "媒体库列表与统计"
+        },
+        {
+          "id": "qqbot.chat.media_delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除媒体文件"
+        },
+        {
+          "id": "qqbot.chat.media_transcode",
+          "visibility": "main",
+          "version": "1",
+          "description": "把视频/语音转成浏览器可播放格式（支持异步任务）"
+        },
+        {
+          "id": "qqbot.chat.media_task",
+          "visibility": "main",
+          "version": "1",
+          "description": "转码任务进度与取消"
+        },
+        {
+          "id": "qqbot.chat.media_reindex",
+          "visibility": "main",
+          "version": "1",
+          "description": "重建媒体索引"
+        },
+        {
+          "id": "qqbot.chat.media_repair",
+          "visibility": "main",
+          "version": "1",
+          "description": "修复媒体引用（转码后路径不一致）"
+        },
+        {
+          "id": "rcbot.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "机器人运行状态"
+        },
+        {
+          "id": "rcbot.config.get",
+          "visibility": "all",
+          "version": "1",
+          "description": "读取上下文/触发/能力配置"
+        },
+        {
+          "id": "rcbot.config.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存上下文/触发/能力配置"
+        },
+        {
+          "id": "rcbot.tools.search",
+          "visibility": "main",
+          "version": "1",
+          "description": "试一下联网搜索"
+        },
+        {
+          "id": "rcbot.providers",
+          "visibility": "all",
+          "version": "1",
+          "description": "模型提供商列表"
+        },
+        {
+          "id": "rcbot.provider.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "新增/修改提供商"
+        },
+        {
+          "id": "rcbot.provider.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除提供商"
+        },
+        {
+          "id": "rcbot.provider.test",
+          "visibility": "main",
+          "version": "1",
+          "description": "测试提供商连通性"
+        },
+        {
+          "id": "rcbot.provider.models",
+          "visibility": "main",
+          "version": "1",
+          "description": "拉取可用模型列表"
+        },
+        {
+          "id": "rcbot.personas",
+          "visibility": "all",
+          "version": "1",
+          "description": "人格列表"
+        },
+        {
+          "id": "rcbot.persona.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "新增/修改人格"
+        },
+        {
+          "id": "rcbot.persona.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除人格"
+        },
+        {
+          "id": "rcbot.sessions",
+          "visibility": "all",
+          "version": "1",
+          "description": "会话列表"
+        },
+        {
+          "id": "rcbot.session.get",
+          "visibility": "all",
+          "version": "1",
+          "description": "会话详情与消息"
+        },
+        {
+          "id": "rcbot.session.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "修改会话（人格/模型/启停）"
+        },
+        {
+          "id": "rcbot.session.clear",
+          "visibility": "main",
+          "version": "1",
+          "description": "清空会话上下文"
+        },
+        {
+          "id": "rcbot.session.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除会话"
+        },
+        {
+          "id": "rcbot.context",
+          "visibility": "all",
+          "version": "1",
+          "description": "上下文预览（含压缩摘要）"
+        },
+        {
+          "id": "rcbot.test_chat",
+          "visibility": "main",
+          "version": "1",
+          "description": "试聊（不经过 QQ）"
+        },
+        {
+          "id": "qqbot.account.info",
+          "visibility": "main",
+          "version": "1",
+          "description": "当前账户信息（昵称/头像/QQ号/登录状态）"
+        },
+        {
+          "id": "qqbot.account.qrcode",
+          "visibility": "main",
+          "version": "1",
+          "description": "取登录入口（SnowLuma 远程桌面）"
+        },
+        {
+          "id": "qqbot.account.refresh_qrcode",
+          "visibility": "main",
+          "version": "1",
+          "description": "刷新登录二维码"
+        },
+        {
+          "id": "qqbot.account.status",
+          "visibility": "main",
+          "version": "1",
+          "description": "查登录进度"
+        },
+        {
+          "id": "qqbot.account.action",
+          "visibility": "main",
+          "version": "1",
+          "description": "账户操作：启动/停止/重启/快登/换号"
+        },
+        {
+          "id": "qqbot.account.logs",
+          "visibility": "main",
+          "version": "1",
+          "description": "SnowLuma 容器日志"
+        },
+        {
+          "id": "qqbot.account.logs.clear",
+          "visibility": "main",
+          "version": "1",
+          "description": "清空实时日志缓冲（容器日志由 Docker 管理）"
+        },
+        {
+          "id": "qqbot.chat.sessions",
+          "visibility": "all",
+          "version": "1",
+          "description": "聊天记录会话列表"
+        },
+        {
+          "id": "qqbot.chat.messages",
+          "visibility": "all",
+          "version": "1",
+          "description": "聊天记录消息分页"
+        },
+        {
+          "id": "qqbot.chat.stats",
+          "visibility": "all",
+          "version": "1",
+          "description": "聊天记录统计与磁盘水位"
+        },
+        {
+          "id": "qqbot.chat.export",
+          "visibility": "main",
+          "version": "1",
+          "description": "导出聊天记录 JSON"
+        },
+        {
+          "id": "qqbot.chat.purge_media",
+          "visibility": "main",
+          "version": "1",
+          "description": "清理媒体文件（保留消息文本）"
+        },
+        {
+          "id": "rcbot.accounts",
+          "visibility": "all",
+          "version": "1",
+          "description": "机器人侧账号列表与连接状态"
+        },
+        {
+          "id": "rcbot.account.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "新增/修改/删除机器人账号"
+        },
+        {
+          "id": "rcbot.memory.map",
+          "visibility": "all",
+          "version": "1",
+          "description": "记忆星空"
+        },
+        {
+          "id": "rcbot.memory.item",
+          "visibility": "all",
+          "version": "1",
+          "description": "记忆详情"
+        },
+        {
+          "id": "rcbot.memory.save",
+          "visibility": "all",
+          "version": "1",
+          "description": "保存记忆"
+        },
+        {
+          "id": "rcbot.memory.delete",
+          "visibility": "all",
+          "version": "1",
+          "description": "删除记忆"
+        },
+        {
+          "id": "rcbot.memory.pin",
+          "visibility": "all",
+          "version": "1",
+          "description": "置顶记忆"
+        },
+        {
+          "id": "rcbot.memory.seed",
+          "visibility": "all",
+          "version": "1",
+          "description": "迁移记忆"
+        },
+        {
+          "id": "rcbot.memory.stats",
+          "visibility": "all",
+          "version": "1",
+          "description": "记忆统计"
+        },
+        {
+          "id": "rcbot.memory.search",
+          "visibility": "all",
+          "version": "1",
+          "description": "搜索记忆"
+        },
+        {
+          "id": "rcbot.memory.tile",
+          "visibility": "all",
+          "version": "1",
+          "description": "星图分块"
+        },
+        {
+          "id": "rcbot.memory.consolidate",
+          "visibility": "all",
+          "version": "1",
+          "description": "巩固记忆"
+        },
+        {
+          "id": "rcbot.memory.bulk",
+          "visibility": "all",
+          "version": "1",
+          "description": "批量记忆"
+        },
+        {
+          "id": "rcbot.memory.triggers",
+          "visibility": "all",
+          "version": "1",
+          "description": "关键词列表"
+        }
       ],
       "environment": {
         "level": "apply",
-        "ports": [
+        "check": [
           {
-            "id": "port6710",
-            "label": "rcbot HTTP 端口",
-            "port": 6710,
-            "bind": "127.0.0.1"
-          }
-        ],
-        "auto": [
-          "deps",
-          "runtime",
-          "silk"
-        ],
-        "manual": [
-          {
-            "id": "napcat",
-            "label": "NapCat 协议端",
-            "guide": "https://napcat.napneko.icu/guide/start"
+            "id": "snowluma",
+            "label": "SnowLuma 容器在运行",
+            "required": true,
+            "run": "docker inspect -f '{{.State.Status}}' snowluma 2>/dev/null || echo absent",
+            "expect": "^running$",
+            "hint": "SnowLuma 容器未运行或不存在 —— 去「QQ 账户」点「启动」或「扫码登录」拉起它"
           },
           {
             "id": "onebot",
-            "label": "QQ 已登录(OneBot 协议端)",
-            "guide": "https://napcat.napneko.icu/guide/start"
+            "label": "QQ 已登录（OneBot get_login_info）",
+            "required": true,
+            "run": "curl -s -m 5 -X POST http://127.0.0.1:3000/get_login_info -H 'Authorization: Bearer rcsnow' -H 'Content-Type: application/json' -d '{}' | grep -q '\"user_id\"' || { echo 'QQ 未登录或 OneBot 未就绪'; exit 1; }; echo logged_in",
+            "expect": "^logged_in$",
+            "hint": "容器在跑但 QQ 没登录 —— 打开「QQ 账户」里的远程桌面扫码（登录态失效时重扫即可）"
+          },
+          {
+            "id": "deps",
+            "label": "rcbot Python 依赖",
+            "required": true,
+            "run": "/opt/rcbot/venv/bin/python -c 'import aiohttp, aiosqlite, PIL'",
+            "hint": "rcbot 的 venv 缺失或缺依赖"
+          },
+          {
+            "id": "runtime",
+            "label": "rcbot 运行时与部署一致且服务在跑",
+            "required": true,
+            "run": "for f in rcbot.py rcbot/*.py; do t=\"/opt/rcbot/$f\"; [ -f \"$t\" ] || { echo \"缺少 $t\"; exit 1; }; [ -r \"$t\" ] || { echo \"无法读取 $t(面板权限不足, 无法比对版本)\"; exit 2; }; cmp -s \"$f\" \"$t\" || { echo \"$f 与已部署版本不一致\"; exit 1; }; done; systemctl is-active --quiet rcbot || { echo \"rcbot 服务未运行\"; exit 1; }; echo same",
+            "hint": "机器人本体未部署、版本落后，或服务没在跑"
+          },
+          {
+            "id": "port6710",
+            "label": "rcbot HTTP 端口",
+            "type": "port",
+            "port": 6710,
+            "bind": "127.0.0.1",
+            "owner": {
+              "unit": "rcbot.service"
+            },
+            "required": true
+          },
+          {
+            "id": "mediadir",
+            "label": "媒体目录可写",
+            "required": true,
+            "run": "d=/opt/rcbot/media; mkdir -p \"$d\" 2>/dev/null || { echo '建不了媒体目录'; exit 1; }; [ -w \"$d\" ] || { echo '媒体目录不可写'; exit 1; }; echo writable",
+            "hint": "rcbot 存聊天记录媒体副本的目录，磁盘满或权限不对会记不下媒体"
+          },
+          {
+            "id": "silk",
+            "label": "语音转码器（可选，缺了语音只能下载不能播放）",
+            "required": false,
+            "run": "[ -x /opt/rcbot/bin/silk_v3_decoder ] || { echo '没有 silk_v3_decoder，语音无法转码'; exit 1; }; echo ok",
+            "hint": "在「环境准备」里执行「编译 silk_v3_decoder」即可补上"
+          }
+        ],
+        "apply": [
+          {
+            "id": "deps",
+            "label": "创建 venv 并安装 rcbot 依赖",
+            "check": "deps",
+            "needs": "root",
+            "timeout": 900,
+            "run": "set -e\nexport DEBIAN_FRONTEND=noninteractive\nif [ ! -x /opt/rcbot/venv/bin/python ]; then\n  python3 -m venv /opt/rcbot/venv 2>/dev/null || { apt-get update -qq && apt-get install -y -qq python3-venv; python3 -m venv /opt/rcbot/venv; }\nfi\n/opt/rcbot/venv/bin/pip install -q --upgrade pip\n/opt/rcbot/venv/bin/pip install -q 'aiohttp>=3.11' 'aiosqlite>=0.17' 'pillow>=9'"
+          },
+          {
+            "id": "runtime",
+            "label": "部署 rcbot 运行时并注册 systemd 服务",
+            "check": "runtime",
+            "needs": "root",
+            "timeout": 180,
+            "run": "set -e\ninstall -d -m 0755 /opt/rcbot /opt/rcbot/data /opt/rcbot/logs /opt/rcbot/rcbot\nrm -f /opt/rcbot/rcbot/*.py\ncp -rf rcbot/. /opt/rcbot/rcbot/\ninstall -m 0644 rcbot.py /opt/rcbot/rcbot.py\n# 源码要可读: 非 root 的面板也要能比对版本, 否则检查只会说\"读不到\"\nchmod 0644 /opt/rcbot/rcbot/*.py\ncat > /etc/systemd/system/rcbot.service <<'RCBOT_UNIT'\n[Unit]\nDescription=RainCough Bot (rcbot)\nAfter=network.target\n\n[Service]\nType=simple\nWorkingDirectory=/opt/rcbot\nExecStart=/opt/rcbot/venv/bin/python /opt/rcbot/rcbot.py\nRestart=always\nRestartSec=5\nEnvironment=PYTHONUNBUFFERED=1\nEnvironment=RCBOT_LOG_LEVEL=INFO\n\n[Install]\nWantedBy=multi-user.target\nRCBOT_UNIT\nsystemctl daemon-reload\nsystemctl enable rcbot\nsystemctl restart rcbot"
+          },
+          {
+            "id": "silk",
+            "label": "编译 silk_v3_decoder（QQ 语音 SILK → mp3，浏览器才能播放）",
+            "check": "silk",
+            "needs": "root",
+            "timeout": 900,
+            "run": "set -e\n# QQ 语音是 SILK，浏览器放不了；ffmpeg 没有 silk 解码器（实测 5.1.9），apt 也没有。\n# 这里编译一份 silk_v3_decoder，rcbot 用它把语音转成 mp3。\nmkdir -p /opt/rcbot/bin\nif [ -x /opt/rcbot/bin/silk_v3_decoder ]; then echo already; exit 0; fi\ncommand -v git >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq git build-essential cmake; }\ncommand -v cmake >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq build-essential cmake; }\ntmp=$(mktemp -d)\ncd \"$tmp\"\ngit clone --depth 1 https://github.com/foyoux/pilk.git 2>/dev/null || {\n  git clone --depth 1 https://github.com/xiangyuecn/Silk.git . 2>/dev/null || {\n    echo '拉不到 silk_v3_decoder 源码'; exit 1; }\n}\nif [ -d silk ]; then cd silk; fi\nif [ -f CMakeLists.txt ]; then\n  cmake -B build -DCMAKE_BUILD_TYPE=Release >/dev/null\n  cmake --build build -j2 >/dev/null\n  find . -name 'silk_v3_decoder' -type f -perm -u+x | head -1 | xargs -r -I{} cp {} /opt/rcbot/bin/silk_v3_decoder\nelif [ -f Makefile ]; then\n  make -s >/dev/null\n  cp silk_v3_decoder /opt/rcbot/bin/silk_v3_decoder 2>/dev/null || true\nfi\nchmod +x /opt/rcbot/bin/silk_v3_decoder\n[ -x /opt/rcbot/bin/silk_v3_decoder ] || { echo '编译没出可执行文件'; exit 1; }\necho ok"
           }
         ]
       }
@@ -153,16 +772,126 @@
       "description": "Lolicon 插画：标签搜索结果列表、随机取图、图片处理与本地缓存（由原 QQ 脚本插件迁移到面板 v4）",
       "lang": "python",
       "interfaces": [
-        "laizhangtu.info",
-        "laizhangtu.config.get",
-        "laizhangtu.config.save",
-        "laizhangtu.fetch",
-        "laizhangtu.search",
-        "laizhangtu.pick",
-        "laizhangtu.history.list",
-        "laizhangtu.history.clear",
-        "laizhangtu.cache.stats",
-        "laizhangtu.cache.clear"
+        {
+          "id": "laizhangtu.info",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "插件信息与能力说明"
+        },
+        {
+          "id": "laizhangtu.config.get",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "读取配置"
+        },
+        {
+          "id": "laizhangtu.config.save",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "保存配置（含取值范围校验）"
+        },
+        {
+          "id": "laizhangtu.fetch",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "按标签表达式取一张插画，处理后落入本地缓存"
+        },
+        {
+          "id": "laizhangtu.search",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "按标签搜索，一次返回最多 20 条作品元数据（不下载图片、不写历史）"
+        },
+        {
+          "id": "laizhangtu.pick",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "从最近一次搜索结果中按 id 选取指定作品，下载处理后落入本地缓存"
+        },
+        {
+          "id": "laizhangtu.history.list",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "最近获取的插画记录"
+        },
+        {
+          "id": "laizhangtu.history.clear",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "清空历史与已见记录"
+        },
+        {
+          "id": "laizhangtu.cache.stats",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "缓存目录占用统计"
+        },
+        {
+          "id": "laizhangtu.cache.clear",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "清空缓存图片（同时清空历史）"
+        }
       ]
     },
     {
@@ -174,23 +903,108 @@
       "description": "KVM/QEMU 虚拟机管理：列表、启停、实时监控、创建、快照、VNC 控制台",
       "lang": "python",
       "interfaces": [
-        "vm.info",
-        "vm.list",
-        "vm.detail",
-        "vm.stats",
-        "vm.action",
-        "vm.autostart",
-        "vm.note.get",
-        "vm.note.save",
-        "vm.images.list",
-        "vm.pools.list",
-        "vm.create",
-        "vm.delete",
-        "vm.console",
-        "vm.snapshot.list",
-        "vm.snapshot.create",
-        "vm.snapshot.revert",
-        "vm.snapshot.delete"
+        {
+          "id": "vm.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "libvirt/QEMU 环境信息与能力探测"
+        },
+        {
+          "id": "vm.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "虚拟机列表(状态/配置/备注)"
+        },
+        {
+          "id": "vm.detail",
+          "visibility": "all",
+          "version": "1",
+          "description": "虚拟机详情(磁盘/网卡/显示)"
+        },
+        {
+          "id": "vm.stats",
+          "visibility": "all",
+          "version": "1",
+          "description": "实时统计(CPU/内存/网络/磁盘IO)"
+        },
+        {
+          "id": "vm.action",
+          "visibility": "main",
+          "version": "1",
+          "description": "开机/关机/重启/强制断电/挂起/恢复"
+        },
+        {
+          "id": "vm.autostart",
+          "visibility": "main",
+          "version": "1",
+          "description": "设置开机自启"
+        },
+        {
+          "id": "vm.note.get",
+          "visibility": "all",
+          "version": "1",
+          "description": "读取备注"
+        },
+        {
+          "id": "vm.note.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存备注"
+        },
+        {
+          "id": "vm.images.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "可用镜像列表"
+        },
+        {
+          "id": "vm.pools.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "存储池列表"
+        },
+        {
+          "id": "vm.create",
+          "visibility": "main",
+          "version": "1",
+          "description": "从镜像创建虚拟机"
+        },
+        {
+          "id": "vm.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除虚拟机(可选删磁盘)"
+        },
+        {
+          "id": "vm.console",
+          "visibility": "main",
+          "version": "1",
+          "description": "VNC 控制台信息"
+        },
+        {
+          "id": "vm.snapshot.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "快照列表"
+        },
+        {
+          "id": "vm.snapshot.create",
+          "visibility": "main",
+          "version": "1",
+          "description": "创建快照"
+        },
+        {
+          "id": "vm.snapshot.revert",
+          "visibility": "main",
+          "version": "1",
+          "description": "回滚到快照"
+        },
+        {
+          "id": "vm.snapshot.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除快照"
+        }
       ]
     }
   ]
