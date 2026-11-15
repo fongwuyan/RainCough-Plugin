@@ -3,7 +3,7 @@
   "label": "来张图",
   "version": "1.1.0",
   "description": "Lolicon 插画：标签搜索结果列表、随机取图、图片处理与本地缓存（由原 QQ 脚本插件迁移到面板 v4）",
-  "author": "光 / RainCough",
+  "author": "fongwuyan",
   "icon": "",
   "requirements": [
     "requests>=2.31",
