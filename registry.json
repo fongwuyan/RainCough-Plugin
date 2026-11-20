@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集(v4)",
-  "updated": "2026-11-16 01:28:00",
+  "updated": "2026-11-21 01:35:00",
   "plugins": [
     {
       "name": "AccountPool",
@@ -955,6 +955,8 @@
       "interfaces": [
         "ghdl.info",
         "ghdl.scan",
+        "ghdl.scan.start",
+        "ghdl.scan.status",
         "ghdl.start",
         "ghdl.tasks",
         "ghdl.cancel",
