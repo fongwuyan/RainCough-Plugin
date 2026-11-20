@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集(v4)",
-  "updated": "2026-11-16 01:18:00",
+  "updated": "2026-11-16 01:28:00",
   "plugins": [
     {
       "name": "AccountPool",
@@ -942,6 +942,23 @@
           "version": "1",
           "description": "删除快照"
         }
+      ]
+    },
+    {
+      "name": "GithubDownloader",
+      "label": "GitHub 下载器",
+      "version": "1.0.0",
+      "path": "GithubDownloader",
+      "author": "fongwuyan",
+      "description": "扫描 GitHub 仓库并下载整仓、Git 克隆、Release 资产和仓库内任意文件，支持直连与 gh-proxy 加速。",
+      "lang": "python",
+      "interfaces": [
+        "ghdl.info",
+        "ghdl.scan",
+        "ghdl.start",
+        "ghdl.tasks",
+        "ghdl.cancel",
+        "ghdl.file"
       ]
     }
   ]
