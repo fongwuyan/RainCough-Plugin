@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集(v4)",
-  "updated": "2026-11-21 03:40:00",
+  "updated": "2026-11-21 07:30:00",
   "plugins": [
     {
       "name": "AccountPool",
@@ -962,6 +962,27 @@
         "ghdl.cancel",
         "ghdl.delete",
         "ghdl.file"
+      ]
+    },
+    {
+      "name": "ArchiveImagePreview",
+      "label": "压缩包图片预览",
+      "version": "1.0.0",
+      "path": "ArchiveImagePreview",
+      "author": "fongwuyan",
+      "description": "上传压缩包，自动扫描其中的图片并以卡片墙预览；支持 ZIP/TAR/TAR.GZ/7Z/RAR，兼容常见图片格式。",
+      "lang": "python",
+      "interfaces": [
+        "zipimg.upload.start",
+        "zipimg.upload.chunk",
+        "zipimg.upload.finish",
+        "zipimg.list",
+        "zipimg.entries",
+        "zipimg.thumb",
+        "zipimg.preview",
+        "zipimg.original",
+        "zipimg.delete",
+        "zipimg.info"
       ]
     }
   ]
