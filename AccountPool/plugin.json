@@ -32,31 +32,61 @@
       "id": "accountpool.status",
       "visibility": "all",
       "version": "1",
-      "description": "网关状态"
+      "description": "网关状态",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      }
     },
     {
       "id": "accountpool.request",
       "visibility": "main",
       "version": "1",
-      "description": "管理 API 转发（仅 /admin/v1/）"
+      "description": "管理 API 转发（仅 /admin/v1/）",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      }
     },
     {
       "id": "accountpool.settings.save",
       "visibility": "main",
       "version": "1",
-      "description": "保存 LAN 设置"
+      "description": "保存 LAN 设置",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      }
     },
     {
       "id": "accountpool.gateway.restart",
       "visibility": "main",
       "version": "1",
-      "description": "重启网关"
+      "description": "重启网关",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      }
     },
     {
       "id": "accountpool.gateway.log",
       "visibility": "main",
       "version": "1",
-      "description": "网关日志"
+      "description": "网关日志",
+      "input": {
+        "type": "object"
+      },
+      "output": {
+        "type": "object"
+      }
     }
   ]
 }
