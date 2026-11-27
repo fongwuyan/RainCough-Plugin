@@ -1,6 +1,6 @@
 {
   "name": "RainCough 插件集(v4)",
-  "updated": "2026-11-22 23:10:00",
+  "updated": "2026-11-22 23:30:00",
   "plugins": [
     {
       "name": "AccountPool",
@@ -40,6 +40,142 @@
           "visibility": "main",
           "version": "1",
           "description": "网关日志"
+        }
+      ]
+    },
+    {
+      "name": "ArchiveImagePreview",
+      "label": "压缩包图片预览",
+      "version": "1.0.0",
+      "path": "ArchiveImagePreview",
+      "author": "fongwuyan",
+      "description": "上传压缩包，自动扫描其中的图片并以卡片墙预览；支持 ZIP/TAR/TAR.GZ/7Z/RAR，兼容常见图片格式。",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "zipimg.upload.start",
+          "visibility": "all",
+          "version": "1",
+          "description": "开始分块上传压缩包"
+        },
+        {
+          "id": "zipimg.upload.chunk",
+          "visibility": "all",
+          "version": "1",
+          "description": "上传一个分块"
+        },
+        {
+          "id": "zipimg.upload.finish",
+          "visibility": "all",
+          "version": "1",
+          "description": "完成上传并扫描图片"
+        },
+        {
+          "id": "zipimg.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "压缩包列表"
+        },
+        {
+          "id": "zipimg.entries",
+          "visibility": "all",
+          "version": "1",
+          "description": "图片条目列表"
+        },
+        {
+          "id": "zipimg.thumb",
+          "visibility": "all",
+          "version": "1",
+          "description": "缩略图"
+        },
+        {
+          "id": "zipimg.preview",
+          "visibility": "all",
+          "version": "1",
+          "description": "大图预览"
+        },
+        {
+          "id": "zipimg.original",
+          "visibility": "all",
+          "version": "1",
+          "description": "原始图片"
+        },
+        {
+          "id": "zipimg.delete",
+          "visibility": "all",
+          "version": "1",
+          "description": "删除压缩包"
+        },
+        {
+          "id": "zipimg.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息"
+        }
+      ]
+    },
+    {
+      "name": "GithubDownloader",
+      "label": "GitHub 下载器",
+      "version": "1.1.1",
+      "path": "GithubDownloader",
+      "author": "fongwuyan",
+      "description": "扫描 GitHub 仓库并下载整仓、Git 克隆、Release 资产和仓库内任意文件，支持直连与 gh-proxy 加速。",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "ghdl.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息"
+        },
+        {
+          "id": "ghdl.scan",
+          "visibility": "all",
+          "version": "1",
+          "description": "扫描仓库可下载内容（同步兼容接口）"
+        },
+        {
+          "id": "ghdl.scan.start",
+          "visibility": "all",
+          "version": "1",
+          "description": "开始异步扫描"
+        },
+        {
+          "id": "ghdl.scan.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "查询异步扫描"
+        },
+        {
+          "id": "ghdl.start",
+          "visibility": "all",
+          "version": "1",
+          "description": "创建下载任务"
+        },
+        {
+          "id": "ghdl.tasks",
+          "visibility": "all",
+          "version": "1",
+          "description": "任务列表/进度"
+        },
+        {
+          "id": "ghdl.cancel",
+          "visibility": "all",
+          "version": "1",
+          "description": "取消任务"
+        },
+        {
+          "id": "ghdl.delete",
+          "visibility": "all",
+          "version": "1",
+          "description": "删除任务与文件"
+        },
+        {
+          "id": "ghdl.file",
+          "visibility": "all",
+          "version": "1",
+          "description": "获取任务文件下载地址"
         }
       ]
     },
@@ -701,649 +837,6 @@
       }
     },
     {
-      "name": "laizhangtu",
-      "label": "来张图",
-      "version": "1.1.0",
-      "path": "laizhangtu",
-      "author": "fongwuyan",
-      "description": "Lolicon 插画：标签搜索结果列表、随机取图、图片处理与本地缓存（由原 QQ 脚本插件迁移到面板 v4）",
-      "lang": "python",
-      "interfaces": [
-        {
-          "id": "laizhangtu.info",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "插件信息与能力说明"
-        },
-        {
-          "id": "laizhangtu.config.get",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "读取配置"
-        },
-        {
-          "id": "laizhangtu.config.save",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "保存配置（含取值范围校验）"
-        },
-        {
-          "id": "laizhangtu.fetch",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "按标签表达式取一张插画，处理后落入本地缓存"
-        },
-        {
-          "id": "laizhangtu.search",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "按标签搜索，一次返回最多 20 条作品元数据（不下载图片、不写历史）"
-        },
-        {
-          "id": "laizhangtu.pick",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "从最近一次搜索结果中按 id 选取指定作品，下载处理后落入本地缓存"
-        },
-        {
-          "id": "laizhangtu.history.list",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "最近获取的插画记录"
-        },
-        {
-          "id": "laizhangtu.history.clear",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "清空历史与已见记录"
-        },
-        {
-          "id": "laizhangtu.cache.stats",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "缓存目录占用统计"
-        },
-        {
-          "id": "laizhangtu.cache.clear",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "清空缓存图片（同时清空历史）"
-        }
-      ]
-    },
-    {
-      "name": "vm",
-      "label": "虚拟机",
-      "version": "1.0.0",
-      "path": "vm",
-      "author": "fongwuyan",
-      "description": "KVM/QEMU 虚拟机管理：列表、启停、实时监控、创建、快照、VNC 控制台",
-      "lang": "python",
-      "interfaces": [
-        {
-          "id": "vm.info",
-          "visibility": "all",
-          "version": "1",
-          "description": "libvirt/QEMU 环境信息与能力探测"
-        },
-        {
-          "id": "vm.list",
-          "visibility": "all",
-          "version": "1",
-          "description": "虚拟机列表(状态/配置/备注)"
-        },
-        {
-          "id": "vm.detail",
-          "visibility": "all",
-          "version": "1",
-          "description": "虚拟机详情(磁盘/网卡/显示)"
-        },
-        {
-          "id": "vm.stats",
-          "visibility": "all",
-          "version": "1",
-          "description": "实时统计(CPU/内存/网络/磁盘IO)"
-        },
-        {
-          "id": "vm.action",
-          "visibility": "main",
-          "version": "1",
-          "description": "开机/关机/重启/强制断电/挂起/恢复"
-        },
-        {
-          "id": "vm.autostart",
-          "visibility": "main",
-          "version": "1",
-          "description": "设置开机自启"
-        },
-        {
-          "id": "vm.note.get",
-          "visibility": "all",
-          "version": "1",
-          "description": "读取备注"
-        },
-        {
-          "id": "vm.note.save",
-          "visibility": "main",
-          "version": "1",
-          "description": "保存备注"
-        },
-        {
-          "id": "vm.images.list",
-          "visibility": "all",
-          "version": "1",
-          "description": "可用镜像列表"
-        },
-        {
-          "id": "vm.pools.list",
-          "visibility": "all",
-          "version": "1",
-          "description": "存储池列表"
-        },
-        {
-          "id": "vm.create",
-          "visibility": "main",
-          "version": "1",
-          "description": "从镜像创建虚拟机"
-        },
-        {
-          "id": "vm.delete",
-          "visibility": "main",
-          "version": "1",
-          "description": "删除虚拟机(可选删磁盘)"
-        },
-        {
-          "id": "vm.console",
-          "visibility": "main",
-          "version": "1",
-          "description": "VNC 控制台信息"
-        },
-        {
-          "id": "vm.snapshot.list",
-          "visibility": "all",
-          "version": "1",
-          "description": "快照列表"
-        },
-        {
-          "id": "vm.snapshot.create",
-          "visibility": "main",
-          "version": "1",
-          "description": "创建快照"
-        },
-        {
-          "id": "vm.snapshot.revert",
-          "visibility": "main",
-          "version": "1",
-          "description": "回滚到快照"
-        },
-        {
-          "id": "vm.snapshot.delete",
-          "visibility": "main",
-          "version": "1",
-          "description": "删除快照"
-        }
-      ]
-    },
-    {
-      "name": "GithubDownloader",
-      "label": "GitHub 下载器",
-      "version": "1.1.1",
-      "path": "GithubDownloader",
-      "author": "fongwuyan",
-      "description": "扫描 GitHub 仓库并下载整仓、Git 克隆、Release 资产和仓库内任意文件，支持直连与 gh-proxy 加速。",
-      "lang": "python",
-      "interfaces": [
-        {
-          "id": "ghdl.info",
-          "visibility": "all",
-          "version": "1",
-          "description": "插件信息"
-        },
-        {
-          "id": "ghdl.scan",
-          "visibility": "all",
-          "version": "1",
-          "description": "扫描仓库可下载内容（同步兼容接口）"
-        },
-        {
-          "id": "ghdl.scan.start",
-          "visibility": "all",
-          "version": "1",
-          "description": "开始异步扫描"
-        },
-        {
-          "id": "ghdl.scan.status",
-          "visibility": "all",
-          "version": "1",
-          "description": "查询异步扫描"
-        },
-        {
-          "id": "ghdl.start",
-          "visibility": "all",
-          "version": "1",
-          "description": "创建下载任务"
-        },
-        {
-          "id": "ghdl.tasks",
-          "visibility": "all",
-          "version": "1",
-          "description": "任务列表/进度"
-        },
-        {
-          "id": "ghdl.cancel",
-          "visibility": "all",
-          "version": "1",
-          "description": "取消任务"
-        },
-        {
-          "id": "ghdl.delete",
-          "visibility": "all",
-          "version": "1",
-          "description": "删除任务与文件"
-        },
-        {
-          "id": "ghdl.file",
-          "visibility": "all",
-          "version": "1",
-          "description": "获取任务文件下载地址"
-        }
-      ]
-    },
-    {
-      "name": "ArchiveImagePreview",
-      "label": "压缩包图片预览",
-      "version": "1.0.0",
-      "path": "ArchiveImagePreview",
-      "author": "fongwuyan",
-      "description": "上传压缩包，自动扫描其中的图片并以卡片墙预览；支持 ZIP/TAR/TAR.GZ/7Z/RAR，兼容常见图片格式。",
-      "lang": "python",
-      "interfaces": [
-        {
-          "id": "zipimg.upload.start",
-          "visibility": "all",
-          "version": "1",
-          "description": "开始分块上传压缩包"
-        },
-        {
-          "id": "zipimg.upload.chunk",
-          "visibility": "all",
-          "version": "1",
-          "description": "上传一个分块"
-        },
-        {
-          "id": "zipimg.upload.finish",
-          "visibility": "all",
-          "version": "1",
-          "description": "完成上传并扫描图片"
-        },
-        {
-          "id": "zipimg.list",
-          "visibility": "all",
-          "version": "1",
-          "description": "压缩包列表"
-        },
-        {
-          "id": "zipimg.entries",
-          "visibility": "all",
-          "version": "1",
-          "description": "图片条目列表"
-        },
-        {
-          "id": "zipimg.thumb",
-          "visibility": "all",
-          "version": "1",
-          "description": "缩略图"
-        },
-        {
-          "id": "zipimg.preview",
-          "visibility": "all",
-          "version": "1",
-          "description": "大图预览"
-        },
-        {
-          "id": "zipimg.original",
-          "visibility": "all",
-          "version": "1",
-          "description": "原始图片"
-        },
-        {
-          "id": "zipimg.delete",
-          "visibility": "all",
-          "version": "1",
-          "description": "删除压缩包"
-        },
-        {
-          "id": "zipimg.info",
-          "visibility": "all",
-          "version": "1",
-          "description": "插件信息"
-        }
-      ]
-    },
-    {
-      "name": "yegames",
-      "label": "叶酱游戏",
-      "version": "1.3.2",
-      "path": "yegames",
-      "author": "fongwuyan",
-      "description": "叶酱汉化作品（7 源）+ TouchGal 商业 galgame 双源卡片库：多源真实挖掘、实时进度悬浮窗、多线程分段下载器（断点续传）、解压密码、直链猎手",
-      "lang": "python",
-      "interfaces": [
-        {
-          "id": "yegames.info",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "插件信息、源清单与下载目录"
-        },
-        {
-          "id": "yegames.config.get",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "读取配置"
-        },
-        {
-          "id": "yegames.config.save",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "保存配置（含源开关、关键词、下载目录）"
-        },
-        {
-          "id": "yegames.library.list",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "卡片库（持久化），带新增/更新/过期统计"
-        },
-        {
-          "id": "yegames.mine.start",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "后台开始挖掘（多源 + 索引 + 匹配 + 合并卡片库）"
-        },
-        {
-          "id": "yegames.mine.status",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "挖掘实时进度：阶段/已做/总数/百分比/明细日志"
-        },
-        {
-          "id": "yegames.mine.cancel",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "取消当前挖掘"
-        },
-        {
-          "id": "yegames.item.links",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "取某张卡片的镜像直链、目录入口与解压密码"
-        },
-        {
-          "id": "yegames.item.bind",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "手动绑定镜像目录"
-        },
-        {
-          "id": "yegames.folder.list",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "列任意镜像目录的文件与直链"
-        },
-        {
-          "id": "yegames.index.stats",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "镜像索引条目数与新鲜度"
-        },
-        {
-          "id": "yegames.dl.start",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "内置下载器：起一个后台下载（支持断点续传）"
-        },
-        {
-          "id": "yegames.dl.status",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "下载任务进度：字节/速度/ETA/状态"
-        },
-        {
-          "id": "yegames.dl.list",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "全部下载任务"
-        },
-        {
-          "id": "yegames.dl.cancel",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "取消下载"
-        },
-        {
-          "id": "yegames.dl.remove",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "把任务从下载列表移除（不动已落盘文件）"
-        },
-        {
-          "id": "yegames.hunt.url",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "从资源页挖网盘直链"
-        },
-        {
-          "id": "yegames.hunt.item",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "对卡片的所有源页挖网盘直链"
-        },
-        {
-          "id": "yegames.tg.list",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "浏览 TouchGal 资源（分页/关键词）"
-        },
-        {
-          "id": "yegames.tg.mine",
-          "visibility": "main",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "把 TouchGal 资源导入卡片库（kind=touchgal）"
-        },
-        {
-          "id": "yegames.tg.links",
-          "visibility": "all",
-          "version": "1",
-          "input": {
-            "type": "object"
-          },
-          "output": {
-            "type": "object"
-          },
-          "description": "取某个 TouchGal 资源的网盘链接与提取码"
-        }
-      ]
-    },
-    {
       "name": "aidraw",
       "label": "AI 绘图",
       "version": "1.4.0",
@@ -1405,6 +898,161 @@
           "visibility": "main",
           "version": "1",
           "description": "清空历史记录",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "aigen",
+      "label": "AI 生图",
+      "version": "2.0.0",
+      "path": "aigen",
+      "author": "fongwuyan",
+      "description": "本地 SD1.5 文生图/图生图, 支持 EasyNegative、VAE、Real-ESRGAN(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "aigen.ping",
+          "visibility": "all",
+          "version": "1",
+          "description": "模型就绪/状态探测",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "aigen.models",
+          "visibility": "all",
+          "version": "1",
+          "description": "模型/LoRA/辅助文件列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "aigen.generate",
+          "visibility": "main",
+          "version": "1",
+          "description": "文生图(异步任务)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "aigen.img2img",
+          "visibility": "main",
+          "version": "1",
+          "description": "图生图(异步任务)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "aigen.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "任务状态/进度/结果图",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "aigen.cancel",
+          "visibility": "main",
+          "version": "1",
+          "description": "取消任务",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "aigen.gallery",
+          "visibility": "all",
+          "version": "1",
+          "description": "输出画廊",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "aigen.gallery.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除输出图片",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "aigen.config.get",
+          "visibility": "all",
+          "version": "1",
+          "description": "读取配置",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "aigen.config.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存配置",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "aigen.settings",
+          "visibility": "all",
+          "version": "1",
+          "description": "存储路径设置",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "aigen.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息",
           "input": {
             "type": "object"
           },
@@ -1938,6 +1586,2585 @@
             "type": "object"
           },
           "description": "人工改判队列结论"
+        }
+      ]
+    },
+    {
+      "name": "compress",
+      "label": "解压压缩",
+      "version": "2.0.0",
+      "path": "compress",
+      "author": "fongwuyan",
+      "description": "解压/压缩/格式转换/对比(7z)(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "compress.dc.check",
+          "visibility": "all",
+          "version": "1",
+          "description": "7z 环境检查",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "compress.dc.list",
+          "visibility": "main",
+          "version": "1",
+          "description": "压缩包内容列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "compress.dc.extract",
+          "visibility": "main",
+          "version": "1",
+          "description": "解压(支持整理)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "compress.dc.compress",
+          "visibility": "main",
+          "version": "1",
+          "description": "压缩(7z/zip/tar.gz等)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "compress.dc.convert",
+          "visibility": "main",
+          "version": "1",
+          "description": "格式转换",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "compress.dc.compare",
+          "visibility": "main",
+          "version": "1",
+          "description": "两压缩包对比",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "compress.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "demo",
+      "label": "接口演示",
+      "version": "1.0.0",
+      "path": "demo",
+      "author": "fongwuyan",
+      "description": "插件接口库 v4 最小演示: 自注册 + 接口 + 跨插件调用",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "demo.ping",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "存活探测: 返回 pong"
+        },
+        {
+          "id": "demo.echo",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "回声: 原样返回 params"
+        },
+        {
+          "id": "demo.cross",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "跨接口调用演示: 经接口库回调 demo.echo"
+        }
+      ]
+    },
+    {
+      "name": "dltool",
+      "label": "下载工具",
+      "version": "2.0.0",
+      "path": "dltool",
+      "author": "fongwuyan",
+      "description": "下载/分片/重命名与文档转换(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "dltool.doc.check",
+          "visibility": "all",
+          "version": "1",
+          "description": "pandoc 环境检查",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "dltool.doc.convert",
+          "visibility": "main",
+          "version": "1",
+          "description": "文档转换",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "dltool.nt.download",
+          "visibility": "main",
+          "version": "1",
+          "description": "URL 批量下载(任务队列)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "dltool.nt.split",
+          "visibility": "main",
+          "version": "1",
+          "description": "文件分片",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "dltool.nt.join",
+          "visibility": "main",
+          "version": "1",
+          "description": "分片合并",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "dltool.nt.rename",
+          "visibility": "main",
+          "version": "1",
+          "description": "批量重命名",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "dltool.nt.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "安全删除(覆写)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "dltool.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "docker",
+      "label": "Docker 管理",
+      "version": "2.0.0",
+      "path": "docker",
+      "author": "fongwuyan",
+      "description": "容器/镜像/卷/网络/Compose 管理(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "docker.env",
+          "visibility": "all",
+          "version": "1",
+          "description": "docker/compose 环境探测",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "docker daemon 信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "总体状态汇总",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.containers.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "容器列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.containers.start",
+          "visibility": "main",
+          "version": "1",
+          "description": "启动容器",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.containers.stop",
+          "visibility": "main",
+          "version": "1",
+          "description": "停止容器",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.containers.restart",
+          "visibility": "main",
+          "version": "1",
+          "description": "重启容器",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.containers.remove",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除容器",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.containers.logs",
+          "visibility": "all",
+          "version": "1",
+          "description": "容器日志",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.containers.stats",
+          "visibility": "all",
+          "version": "1",
+          "description": "容器实时统计",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.containers.create",
+          "visibility": "main",
+          "version": "1",
+          "description": "创建并运行容器",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.images.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "镜像列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.images.pull",
+          "visibility": "main",
+          "version": "1",
+          "description": "拉取镜像(后台)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.images.remove",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除镜像",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.networks.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "网络列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.volumes.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "卷列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.volume.remove",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除卷",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.system.prune",
+          "visibility": "main",
+          "version": "1",
+          "description": "系统资源清理",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.compose.up",
+          "visibility": "main",
+          "version": "1",
+          "description": "Compose 启动",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.compose.down",
+          "visibility": "main",
+          "version": "1",
+          "description": "Compose 停止",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "docker.compose.ps",
+          "visibility": "main",
+          "version": "1",
+          "description": "Compose 状态",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "filehash",
+      "label": "文件校验",
+      "version": "2.0.0",
+      "path": "filehash",
+      "author": "fongwuyan",
+      "description": "哈希计算/生成/校验与目录统计查重(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "filehash.da.stats",
+          "visibility": "main",
+          "version": "1",
+          "description": "目录/压缩包统计",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "filehash.da.duplicate",
+          "visibility": "main",
+          "version": "1",
+          "description": "查重(按哈希)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "filehash.h.calc",
+          "visibility": "main",
+          "version": "1",
+          "description": "计算 md5/sha1/sha256",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "filehash.h.generate",
+          "visibility": "main",
+          "version": "1",
+          "description": "生成校验清单",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "filehash.h.verify",
+          "visibility": "main",
+          "version": "1",
+          "description": "校验清单验证",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "filehash.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "imagetool",
+      "label": "图像工具",
+      "version": "2.0.0",
+      "path": "imagetool",
+      "author": "fongwuyan",
+      "description": "图片相似度与图像处理(ImageMagick)(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "imagetool.similar",
+          "visibility": "main",
+          "version": "1",
+          "description": "两图 dhash 相似度",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "imagetool.process",
+          "visibility": "main",
+          "version": "1",
+          "description": "ImageMagick 处理(resize/quality/rotate/format)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "imagetool.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "kvm",
+      "label": "KVM 虚拟机",
+      "version": "2.0.0",
+      "path": "kvm",
+      "author": "fongwuyan",
+      "description": "KVM/QEMU 虚拟机管理: 列表、启停、详情、VNC、存储池与镜像(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "kvm.config.get",
+          "visibility": "main",
+          "version": "1",
+          "description": "读取配置(含 sudo 密码)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.config.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存配置",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "libvirt/qemu 环境信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.domains.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "虚拟机列表(含备注)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.domain.detail",
+          "visibility": "all",
+          "version": "1",
+          "description": "虚拟机详情(XML 解析)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.domain.stats",
+          "visibility": "all",
+          "version": "1",
+          "description": "实时统计(CPU/内存/网络/磁盘)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.domain.note.get",
+          "visibility": "all",
+          "version": "1",
+          "description": "读取虚拟机备注",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.domain.note.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存虚拟机备注",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.domain.action",
+          "visibility": "main",
+          "version": "1",
+          "description": "启停/挂起/销毁/删除",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.domain.autostart",
+          "visibility": "main",
+          "version": "1",
+          "description": "设置开机自启",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.domain.vnc",
+          "visibility": "main",
+          "version": "1",
+          "description": "启用/查询 VNC 控制台",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.images.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "镜像列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.storage.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "存储池与卷",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "kvm.domains.create",
+          "visibility": "main",
+          "version": "1",
+          "description": "创建虚拟机",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "laizhangsetu",
+      "label": "来张涩图",
+      "version": "2.0.0",
+      "path": "laizhangsetu",
+      "author": "fongwuyan",
+      "description": "调用 Lolicon API 获取随机 Pixiv 图片, 支持标签搜索、R18、图片缓存(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "laizhangsetu.fetch",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "拉取随机涩图(保存到缓存并记录历史)"
+        },
+        {
+          "id": "laizhangsetu.config.get",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "读取配置"
+        },
+        {
+          "id": "laizhangsetu.config.save",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "保存配置"
+        },
+        {
+          "id": "laizhangsetu.settings",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "存储路径统计与切换设置"
+        },
+        {
+          "id": "laizhangsetu.history.list",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "历史记录"
+        },
+        {
+          "id": "laizhangsetu.history.clear",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "清空历史与已见记录"
+        },
+        {
+          "id": "laizhangsetu.cooldown",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "冷却时间(启动快照)"
+        },
+        {
+          "id": "laizhangsetu.info",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "插件信息"
+        }
+      ]
+    },
+    {
+      "name": "laizhangtu",
+      "label": "来张图",
+      "version": "1.1.0",
+      "path": "laizhangtu",
+      "author": "fongwuyan",
+      "description": "Lolicon 插画：标签搜索结果列表、随机取图、图片处理与本地缓存（由原 QQ 脚本插件迁移到面板 v4）",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "laizhangtu.info",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "插件信息与能力说明"
+        },
+        {
+          "id": "laizhangtu.config.get",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "读取配置"
+        },
+        {
+          "id": "laizhangtu.config.save",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "保存配置（含取值范围校验）"
+        },
+        {
+          "id": "laizhangtu.fetch",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "按标签表达式取一张插画，处理后落入本地缓存"
+        },
+        {
+          "id": "laizhangtu.search",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "按标签搜索，一次返回最多 20 条作品元数据（不下载图片、不写历史）"
+        },
+        {
+          "id": "laizhangtu.pick",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "从最近一次搜索结果中按 id 选取指定作品，下载处理后落入本地缓存"
+        },
+        {
+          "id": "laizhangtu.history.list",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "最近获取的插画记录"
+        },
+        {
+          "id": "laizhangtu.history.clear",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "清空历史与已见记录"
+        },
+        {
+          "id": "laizhangtu.cache.stats",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "缓存目录占用统计"
+        },
+        {
+          "id": "laizhangtu.cache.clear",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "清空缓存图片（同时清空历史）"
+        }
+      ]
+    },
+    {
+      "name": "mcserver",
+      "label": "MC 服务器",
+      "version": "2.0.0",
+      "path": "mcserver",
+      "author": "fongwuyan",
+      "description": "多实例 Minecraft 服务器: 实时控制台、监控、启停、实例 CRUD、核心切换(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "mcserver.instances.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "实例列表(含运行状态)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.instance.detail",
+          "visibility": "all",
+          "version": "1",
+          "description": "实例详情",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.instance.add",
+          "visibility": "main",
+          "version": "1",
+          "description": "新增实例",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.instance.update",
+          "visibility": "main",
+          "version": "1",
+          "description": "更新实例",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.instance.remove",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除实例",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.instance.set",
+          "visibility": "main",
+          "version": "1",
+          "description": "切换当前实例",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.instance.clear_active",
+          "visibility": "main",
+          "version": "1",
+          "description": "清空当前实例",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.javas",
+          "visibility": "all",
+          "version": "1",
+          "description": "已安装 Java 列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "当前实例状态(玩家/版本/端口/TPS)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.start",
+          "visibility": "main",
+          "version": "1",
+          "description": "启动服务器",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.stop",
+          "visibility": "main",
+          "version": "1",
+          "description": "停止服务器",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.restart",
+          "visibility": "main",
+          "version": "1",
+          "description": "重启服务器",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.console.get",
+          "visibility": "all",
+          "version": "1",
+          "description": "读取控制台日志(轮询)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.console.send",
+          "visibility": "main",
+          "version": "1",
+          "description": "向控制台发送命令",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.metrics",
+          "visibility": "all",
+          "version": "1",
+          "description": "CPU/内存/玩家监控",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.core.jars",
+          "visibility": "all",
+          "version": "1",
+          "description": "可用服务核心 jar",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.core.switch",
+          "visibility": "main",
+          "version": "1",
+          "description": "切换服务核心",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcserver.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "mcskin",
+      "label": "图片转皮肤",
+      "version": "2.0.0",
+      "path": "mcskin",
+      "author": "fongwuyan",
+      "description": "图片转 MC Java 皮肤: 立绘映射、AI 上色(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "mcskin.detect",
+          "visibility": "main",
+          "version": "1",
+          "description": "图片识别(自动参数)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.convert",
+          "visibility": "main",
+          "version": "1",
+          "description": "转 MC 皮肤",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.paint.models",
+          "visibility": "all",
+          "version": "1",
+          "description": "上色模型列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.paint",
+          "visibility": "main",
+          "version": "1",
+          "description": "AI 上色(异步)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.paint.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "上色任务状态",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.paint.cancel",
+          "visibility": "main",
+          "version": "1",
+          "description": "取消上色",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.text2skin.models",
+          "visibility": "all",
+          "version": "1",
+          "description": "文生肤模型",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.text2skin.styles",
+          "visibility": "all",
+          "version": "1",
+          "description": "风格/色调",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.text2skin",
+          "visibility": "main",
+          "version": "1",
+          "description": "文字生成皮肤(异步)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.text2skin.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "文生肤状态",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.text2skin.history",
+          "visibility": "all",
+          "version": "1",
+          "description": "文生肤历史",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.text2skin.regenerate",
+          "visibility": "main",
+          "version": "1",
+          "description": "重新生成",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.text2skin.feedback",
+          "visibility": "main",
+          "version": "1",
+          "description": "喜好反馈",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "mcskin.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ocrqr",
+      "label": "识别二维码",
+      "version": "2.0.0",
+      "path": "ocrqr",
+      "author": "fongwuyan",
+      "description": "OCR 识别(rapidocr)与二维码生成/解码(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "ocrqr.ocr.check",
+          "visibility": "all",
+          "version": "1",
+          "description": "OCR 环境检查",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "ocrqr.ocr",
+          "visibility": "main",
+          "version": "1",
+          "description": "图片 OCR 识别(base64 输入)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "ocrqr.qr.gen",
+          "visibility": "all",
+          "version": "1",
+          "description": "生成二维码(返回缓存图 URL)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "ocrqr.qr.decode",
+          "visibility": "main",
+          "version": "1",
+          "description": "解码二维码(base64 输入)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "ocrqr.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "texttool",
+      "label": "文本工具",
+      "version": "2.0.0",
+      "path": "texttool",
+      "author": "fongwuyan",
+      "description": "正则匹配/文本替换/JSON↔YAML 转换/文本统计(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "texttool.regex",
+          "visibility": "main",
+          "version": "1",
+          "description": "正则查找",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "texttool.replace",
+          "visibility": "main",
+          "version": "1",
+          "description": "文本替换(支持正则)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "texttool.convert",
+          "visibility": "main",
+          "version": "1",
+          "description": "JSON/YAML 互转与格式化",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "texttool.stats",
+          "visibility": "main",
+          "version": "1",
+          "description": "文本统计",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "texttool.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "touchgal",
+      "label": "TouchGal 游戏查找",
+      "version": "2.0.0",
+      "path": "touchgal",
+      "author": "fongwuyan",
+      "description": "搜索 Galgame 游戏资源、获取下载链接、图片识别(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "touchgal.search",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "关键词搜索游戏"
+        },
+        {
+          "id": "touchgal.resource",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "获取游戏下载资源"
+        },
+        {
+          "id": "touchgal.recognize",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "单模型识图"
+        },
+        {
+          "id": "touchgal.recognize.dual",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "双模型识图(anime+gal)"
+        },
+        {
+          "id": "touchgal.info",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "插件信息"
+        }
+      ]
+    },
+    {
+      "name": "uptime",
+      "label": "Uptime 监控",
+      "version": "3.0.0",
+      "path": "uptime",
+      "author": "fongwuyan",
+      "description": "站点探活监控: 定时检测 HTTP 目标在线状态、响应时间与可用率(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "uptime.targets.list",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "监控目标列表"
+        },
+        {
+          "id": "uptime.targets.create",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "新增监控目标"
+        },
+        {
+          "id": "uptime.targets.update",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "更新监控目标"
+        },
+        {
+          "id": "uptime.targets.delete",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "删除监控目标"
+        },
+        {
+          "id": "uptime.targets.test",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "立即测试目标"
+        },
+        {
+          "id": "uptime.targets.history",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "目标探活历史"
+        },
+        {
+          "id": "uptime.targets.status24",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "24 小时状态格"
+        },
+        {
+          "id": "uptime.status",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "总体状态汇总"
+        },
+        {
+          "id": "uptime.info",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "插件信息"
+        }
+      ]
+    },
+    {
+      "name": "vm",
+      "label": "虚拟机",
+      "version": "1.0.0",
+      "path": "vm",
+      "author": "fongwuyan",
+      "description": "KVM/QEMU 虚拟机管理：列表、启停、实时监控、创建、快照、VNC 控制台",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "vm.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "libvirt/QEMU 环境信息与能力探测"
+        },
+        {
+          "id": "vm.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "虚拟机列表(状态/配置/备注)"
+        },
+        {
+          "id": "vm.detail",
+          "visibility": "all",
+          "version": "1",
+          "description": "虚拟机详情(磁盘/网卡/显示)"
+        },
+        {
+          "id": "vm.stats",
+          "visibility": "all",
+          "version": "1",
+          "description": "实时统计(CPU/内存/网络/磁盘IO)"
+        },
+        {
+          "id": "vm.action",
+          "visibility": "main",
+          "version": "1",
+          "description": "开机/关机/重启/强制断电/挂起/恢复"
+        },
+        {
+          "id": "vm.autostart",
+          "visibility": "main",
+          "version": "1",
+          "description": "设置开机自启"
+        },
+        {
+          "id": "vm.note.get",
+          "visibility": "all",
+          "version": "1",
+          "description": "读取备注"
+        },
+        {
+          "id": "vm.note.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存备注"
+        },
+        {
+          "id": "vm.images.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "可用镜像列表"
+        },
+        {
+          "id": "vm.pools.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "存储池列表"
+        },
+        {
+          "id": "vm.create",
+          "visibility": "main",
+          "version": "1",
+          "description": "从镜像创建虚拟机"
+        },
+        {
+          "id": "vm.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除虚拟机(可选删磁盘)"
+        },
+        {
+          "id": "vm.console",
+          "visibility": "main",
+          "version": "1",
+          "description": "VNC 控制台信息"
+        },
+        {
+          "id": "vm.snapshot.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "快照列表"
+        },
+        {
+          "id": "vm.snapshot.create",
+          "visibility": "main",
+          "version": "1",
+          "description": "创建快照"
+        },
+        {
+          "id": "vm.snapshot.revert",
+          "visibility": "main",
+          "version": "1",
+          "description": "回滚到快照"
+        },
+        {
+          "id": "vm.snapshot.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除快照"
+        }
+      ]
+    },
+    {
+      "name": "vpn",
+      "label": "VPN 网络",
+      "version": "2.0.0",
+      "path": "vpn",
+      "author": "fongwuyan",
+      "description": "v2ray/wireguard/openvpn 订阅管理: 订阅拉取、节点测试、连接控制(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "vpn.env",
+          "visibility": "all",
+          "version": "1",
+          "description": "工具链环境探测",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.overview",
+          "visibility": "all",
+          "version": "1",
+          "description": "通道总览(直连/代理/wg/ovpn)",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.logs",
+          "visibility": "all",
+          "version": "1",
+          "description": "通道日志",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.stop.all",
+          "visibility": "main",
+          "version": "1",
+          "description": "停止全部通道",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.v2.subs.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "订阅列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.v2.subs.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "添加订阅",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.v2.subs.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除订阅",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.v2.subs.refresh",
+          "visibility": "main",
+          "version": "1",
+          "description": "拉取订阅节点",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.v2.nodes.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "节点列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.v2.nodes.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除节点",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.v2.nodes.test",
+          "visibility": "main",
+          "version": "1",
+          "description": "测试节点延迟",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.v2.connect",
+          "visibility": "main",
+          "version": "1",
+          "description": "连接/断开代理",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.v2.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "代理状态",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.wg.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "WireGuard 状态",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.wg.import",
+          "visibility": "main",
+          "version": "1",
+          "description": "导入 wg 配置",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.wg.up",
+          "visibility": "main",
+          "version": "1",
+          "description": "启用 wg 接口",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.wg.down",
+          "visibility": "main",
+          "version": "1",
+          "description": "关闭 wg 接口",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.wg.server.get",
+          "visibility": "main",
+          "version": "1",
+          "description": "读取 wg 服务端配置",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.wg.server.save",
+          "visibility": "main",
+          "version": "1",
+          "description": "保存 wg 服务端配置",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.ovpn.status",
+          "visibility": "all",
+          "version": "1",
+          "description": "OpenVPN 状态",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.ovpn.import",
+          "visibility": "main",
+          "version": "1",
+          "description": "导入 ovpn 配置",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.ovpn.up",
+          "visibility": "main",
+          "version": "1",
+          "description": "启动 ovpn 客户端",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.ovpn.down",
+          "visibility": "main",
+          "version": "1",
+          "description": "停止 ovpn 客户端",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "vpn.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "webspy",
+      "label": "采集解析",
+      "version": "2.0.0",
+      "path": "webspy",
+      "author": "fongwuyan",
+      "description": "搜索/链接检测/RSS/正文提取(接口库 v4 迁移)",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "webspy.search",
+          "visibility": "all",
+          "version": "1",
+          "description": "Bing 搜索",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "webspy.urlcheck",
+          "visibility": "main",
+          "version": "1",
+          "description": "批量链接检测",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "webspy.rss.list",
+          "visibility": "all",
+          "version": "1",
+          "description": "订阅源列表",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "webspy.rss.add",
+          "visibility": "main",
+          "version": "1",
+          "description": "添加订阅源",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "webspy.rss.delete",
+          "visibility": "main",
+          "version": "1",
+          "description": "删除订阅源",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "webspy.rss.fetch",
+          "visibility": "all",
+          "version": "1",
+          "description": "抓取订阅条目",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "webspy.readability",
+          "visibility": "all",
+          "version": "1",
+          "description": "网页正文提取",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        },
+        {
+          "id": "webspy.info",
+          "visibility": "all",
+          "version": "1",
+          "description": "插件信息",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          }
+        }
+      ]
+    },
+    {
+      "name": "yegames",
+      "label": "叶酱游戏",
+      "version": "1.3.2",
+      "path": "yegames",
+      "author": "fongwuyan",
+      "description": "叶酱汉化作品（7 源）+ TouchGal 商业 galgame 双源卡片库：多源真实挖掘、实时进度悬浮窗、多线程分段下载器（断点续传）、解压密码、直链猎手",
+      "lang": "python",
+      "interfaces": [
+        {
+          "id": "yegames.info",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "插件信息、源清单与下载目录"
+        },
+        {
+          "id": "yegames.config.get",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "读取配置"
+        },
+        {
+          "id": "yegames.config.save",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "保存配置（含源开关、关键词、下载目录）"
+        },
+        {
+          "id": "yegames.library.list",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "卡片库（持久化），带新增/更新/过期统计"
+        },
+        {
+          "id": "yegames.mine.start",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "后台开始挖掘（多源 + 索引 + 匹配 + 合并卡片库）"
+        },
+        {
+          "id": "yegames.mine.status",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "挖掘实时进度：阶段/已做/总数/百分比/明细日志"
+        },
+        {
+          "id": "yegames.mine.cancel",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "取消当前挖掘"
+        },
+        {
+          "id": "yegames.item.links",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "取某张卡片的镜像直链、目录入口与解压密码"
+        },
+        {
+          "id": "yegames.item.bind",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "手动绑定镜像目录"
+        },
+        {
+          "id": "yegames.folder.list",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "列任意镜像目录的文件与直链"
+        },
+        {
+          "id": "yegames.index.stats",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "镜像索引条目数与新鲜度"
+        },
+        {
+          "id": "yegames.dl.start",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "内置下载器：起一个后台下载（支持断点续传）"
+        },
+        {
+          "id": "yegames.dl.status",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "下载任务进度：字节/速度/ETA/状态"
+        },
+        {
+          "id": "yegames.dl.list",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "全部下载任务"
+        },
+        {
+          "id": "yegames.dl.cancel",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "取消下载"
+        },
+        {
+          "id": "yegames.dl.remove",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "把任务从下载列表移除（不动已落盘文件）"
+        },
+        {
+          "id": "yegames.hunt.url",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "从资源页挖网盘直链"
+        },
+        {
+          "id": "yegames.hunt.item",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "对卡片的所有源页挖网盘直链"
+        },
+        {
+          "id": "yegames.tg.list",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "浏览 TouchGal 资源（分页/关键词）"
+        },
+        {
+          "id": "yegames.tg.mine",
+          "visibility": "main",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "把 TouchGal 资源导入卡片库（kind=touchgal）"
+        },
+        {
+          "id": "yegames.tg.links",
+          "visibility": "all",
+          "version": "1",
+          "input": {
+            "type": "object"
+          },
+          "output": {
+            "type": "object"
+          },
+          "description": "取某个 TouchGal 资源的网盘链接与提取码"
         }
       ]
     }

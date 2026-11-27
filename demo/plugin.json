@@ -1,0 +1,31 @@
+{
+  "name": "demo",
+  "label": "接口演示",
+  "version": "1.0.0",
+  "description": "插件接口库 v4 最小演示: 自注册 + 接口 + 跨插件调用",
+  "author": "fongwuyan",
+  "icon": "",
+  "frontend": {
+    "entry": "assets/plugin.js",
+    "vue": "3.5",
+    "pages": [
+      { "path": "", "title": "接口演示" }
+    ]
+  },
+  "backend": {
+    "lang": "python",
+    "exec": ["python", "server.py"],
+    "capabilities": ["invoke", "heartbeat", "log.tail"]
+  },
+  "interfaces": [
+    { "id": "demo.ping", "visibility": "all", "version": "1",
+      "input": {"type": "object"}, "output": {"type": "object"},
+      "description": "存活探测: 返回 pong" },
+    { "id": "demo.echo", "visibility": "all", "version": "1",
+      "input": {"type": "object"}, "output": {"type": "object"},
+      "description": "回声: 原样返回 params" },
+    { "id": "demo.cross", "visibility": "all", "version": "1",
+      "input": {"type": "object"}, "output": {"type": "object"},
+      "description": "跨接口调用演示: 经接口库回调 demo.echo" }
+  ]
+}
